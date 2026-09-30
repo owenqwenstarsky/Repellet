@@ -1840,7 +1840,8 @@ kbd {
   color: #6d8199;
   margin: 0 12px 0 4px;
 }
-.terminal-tabs > button:not(.icon-button) {
+.terminal-tabs > button:not(.icon-button),
+.terminal-tab > button:not(.terminal-close) {
   height: 36px;
   display: flex;
   align-items: center;
@@ -1851,7 +1852,8 @@ kbd {
   color: #6c849f;
   white-space: nowrap;
 }
-.terminal-tabs > button.active {
+.terminal-tabs > button.active,
+.terminal-tab.active {
   color: #a6c1d7;
   border-bottom-color: #7eaab8;
 }
@@ -1869,7 +1871,8 @@ kbd {
   align-items: center;
   opacity: 0;
 }
-.terminal-tabs > button:hover .terminal-close {
+.terminal-tab:hover .terminal-close,
+.terminal-close:focus-visible {
   opacity: 0.8;
 }
 .terminal-spacer {
@@ -2500,4 +2503,18 @@ kbd {
 .modal:has(.git-diff-editor) {
   width: 90vw;
   max-width: 1100px;
+}
+
+.terminal-tab {
+  height: 36px;
+  border-bottom: 1px solid transparent;
+  display: flex;
+  align-items: center;
+}
+.terminal-tab > .terminal-close {
+  padding: 4px;
+}
+
+.terminal-tab.active > button {
+  color: #a6c1d7;
 }

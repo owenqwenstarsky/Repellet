@@ -19,7 +19,7 @@ import {
   Braces,
 } from 'lucide-react';
 import { api, post, errorMessage } from './api';
-import { useUi, Spinner } from './ui';
+import { useUi, Spinner, Dropdown } from './ui';
 export function FileTree({
   projectId,
   active,
@@ -119,6 +119,7 @@ export function FileTree({
           }}
           onContextMenu={(e) => {
             e.preventDefault();
+            e.currentTarget.focus();
             setSelected(entry.path);
             setMenu({ path: entry.path, x: e.clientX, y: e.clientY });
           }}
@@ -229,8 +230,9 @@ export function FileTree({
       {menu && (
         <>
           <div className="menu-dismiss" onClick={() => setMenu(null)} />
-          <div
-            className="dropdown context-menu"
+          <Dropdown
+            onClose={() => setMenu(null)}
+            className="context-menu"
             style={{
               left: Math.min(menu.x, window.innerWidth - 200),
               top: Math.min(menu.y, window.innerHeight - 160),
@@ -293,7 +295,7 @@ export function FileTree({
                 </button>
               </>
             )}
-          </div>
+          </Dropdown>
         </>
       )}
     </>
@@ -318,16 +320,28 @@ export function SearchPane({
   const [busy, setBusy] = useState(false);
   const [searched, setSearched] = useState(false);
   const ui = useUi();
+  const request = useRef(0);
+  useEffect(
+    () => () => {
+      request.current++;
+    },
+    [projectId],
+  );
   async function search() {
     if (!query) return;
+    const version = ++request.current;
     setBusy(true);
     try {
-      setMatches(await api(`/projects/${projectId}/search?query=${encodeURIComponent(query)}`));
+      const results = await api<SearchMatch[]>(
+        `/projects/${projectId}/search?query=${encodeURIComponent(query)}`,
+      );
+      if (version !== request.current) return;
+      setMatches(results);
       setSearched(true);
     } catch (e) {
-      ui.notify(errorMessage(e));
+      if (version === request.current) ui.notify(errorMessage(e));
     } finally {
-      setBusy(false);
+      if (version === request.current) setBusy(false);
     }
   }
   return (
@@ -346,7 +360,13 @@ export function SearchPane({
           id="file-search"
           autoFocus
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            request.current++;
+            setBusy(false);
+            setSearched(false);
+            setMatches([]);
+            setQuery(e.target.value);
+          }}
           placeholder="Find in project…"
         />
         {editable && (

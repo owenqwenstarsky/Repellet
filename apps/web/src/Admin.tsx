@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { User, Project, Limits } from '@repellet/shared';
 import {
   UserPlus,
@@ -21,6 +21,7 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
   const ui = useUi();
   async function load() {
     try {
@@ -140,6 +141,8 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
             className="resource-form"
             onSubmit={async (e) => {
               e.preventDefault();
+              if (inFlight.current) return;
+              inFlight.current = true;
               setBusy(true);
               try {
                 await put('/admin/settings', { limits });
@@ -147,6 +150,7 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
               } catch (e) {
                 ui.notify(errorMessage(e));
               } finally {
+                inFlight.current = false;
                 setBusy(false);
               }
             }}
@@ -227,6 +231,8 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
           <form
             onSubmit={async (e) => {
               e.preventDefault();
+              if (inFlight.current) return;
+              inFlight.current = true;
               setBusy(true);
               try {
                 await post('/admin/users', Object.fromEntries(new FormData(e.currentTarget)));
@@ -236,6 +242,7 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
               } catch (e) {
                 ui.notify(errorMessage(e));
               } finally {
+                inFlight.current = false;
                 setBusy(false);
               }
             }}

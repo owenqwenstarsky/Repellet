@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { Project, User, Runtime, GitHubRepository, SetupSuggestion } from '@repellet/shared';
 import { runtimeCatalog, starterCatalog } from '@repellet/shared';
 import {
@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { GitHubPicker } from './GitHub';
 import { api, post, patch, remove, errorMessage } from './api';
-import { Modal, Status, Spinner, useUi } from './ui';
+import { Modal, Status, Spinner, useUi, Dropdown } from './ui';
 export function RuntimePicker({
   value,
   onChange,
@@ -177,7 +177,7 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
                 {menu === p.id && (
                   <>
                     <div className="menu-dismiss" onClick={() => setMenu(null)} />
-                    <div className="dropdown">
+                    <Dropdown onClose={() => setMenu(null)}>
                       <button
                         onClick={() => {
                           setMenu(null);
@@ -231,7 +231,7 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
                           </button>
                         </>
                       )}
-                    </div>
+                    </Dropdown>
                   </>
                 )}
               </div>
@@ -322,11 +322,26 @@ function CreateProject({
   const [runtimeSuggestion, setRuntimeSuggestion] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const detection = useRef(0);
+  const inFlight = useRef(false);
+  const environmentEdits = useRef(0);
+  useEffect(
+    () => () => {
+      detection.current++;
+    },
+    [],
+  );
+  function clearDetection() {
+    detection.current++;
+    setRepo(null);
+    setRuntimeSuggestion('');
+  }
   return (
     <Modal title="Create a project" onClose={onClose}>
       <form
         onSubmit={async (e) => {
           e.preventDefault();
+          if (inFlight.current) return;
           if (github && !repo) {
             setError('Choose a GitHub repository.');
             return;
@@ -335,6 +350,7 @@ function CreateProject({
             setError('Choose at least one runtime.');
             return;
           }
+          inFlight.current = true;
           setBusy(true);
           setError('');
           const form = new FormData(e.currentTarget);
@@ -353,6 +369,7 @@ function CreateProject({
             );
           } catch (e) {
             setError(errorMessage(e));
+            inFlight.current = false;
             setBusy(false);
           }
         }}
@@ -373,7 +390,7 @@ function CreateProject({
             onChange={(e) => {
               setClone(e.target.value === 'clone');
               setGithub(e.target.value === 'github');
-              setRepo(null);
+              clearDetection();
               const starter = starterCatalog.find((s) => s.id === e.target.value);
               setStarterId(starter?.id || '');
               if (starter) setRuntimes([...starter.runtimes]);
@@ -391,16 +408,20 @@ function CreateProject({
         </label>
         {github && (
           <GitHubPicker
+            value={repo}
             onSelect={(repo) => {
               setRepo(repo);
               setRuntimeSuggestion('');
+              const request = ++detection.current;
+              const edits = environmentEdits.current;
               if (repo)
                 api<SetupSuggestion>(
                   `/github/repositories/${repo.id}/suggestion?installationId=${repo.installationId}`,
                 )
                   .then((s) => {
+                    if (request !== detection.current) return;
                     if (s.runtimes.length) {
-                      setRuntimes(s.runtimes);
+                      if (edits === environmentEdits.current) setRuntimes(s.runtimes);
                       setRuntimeSuggestion(
                         'Detected: ' +
                           s.runtimes.join(', ') +
@@ -408,7 +429,9 @@ function CreateProject({
                       );
                     }
                   })
-                  .catch((e) => setRuntimeSuggestion(errorMessage(e)));
+                  .catch((e) => {
+                    if (request === detection.current) setRuntimeSuggestion(errorMessage(e));
+                  });
             }}
           />
         )}
@@ -422,7 +445,14 @@ function CreateProject({
         <p className="field-help">
           Combine runtimes. Git and common build tools are always included.
         </p>
-        <RuntimePicker value={runtimes} onChange={setRuntimes} disabled={!!starterId} />
+        <RuntimePicker
+          value={runtimes}
+          onChange={(value) => {
+            environmentEdits.current++;
+            setRuntimes(value);
+          }}
+          disabled={!!starterId}
+        />
         <button
           type="button"
           className="text-button clone-toggle"
@@ -430,6 +460,7 @@ function CreateProject({
             setClone(!clone);
             setStarterId('');
             setGithub(false);
+            clearDetection();
           }}
         >
           <GitBranch size={16} />

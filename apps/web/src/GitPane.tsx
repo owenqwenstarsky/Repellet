@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense } from 'react';
+import { useEffect, useState, useRef, lazy, Suspense } from 'react';
 import type { GitStatus } from '@repellet/shared';
 import {
   GitBranch,
@@ -33,11 +33,25 @@ export function GitPane({
     } | null>(null),
     [error, setError] = useState('');
   const ui = useUi();
+  const statusRequest = useRef(0),
+    diffRequest = useRef(0);
+  useEffect(
+    () => () => {
+      statusRequest.current++;
+      diffRequest.current++;
+    },
+    [projectId],
+  );
   async function load() {
+    const version = ++statusRequest.current;
     try {
-      setStatus(await api(`/projects/${projectId}/git/status`));
+      const result = await api<GitStatus>(`/projects/${projectId}/git/status`);
+      if (version === statusRequest.current) {
+        setStatus(result);
+        setError('');
+      }
     } catch (e) {
-      setError(errorMessage(e));
+      if (version === statusRequest.current) setError(errorMessage(e));
     }
   }
   useEffect(() => {
@@ -60,13 +74,17 @@ export function GitPane({
   const staged = status?.entries.filter((e) => ![' ', '?'].includes(e.index)) || [],
     unstaged = status?.entries.filter((e) => e.worktree !== ' ') || [];
   async function showDiff(path: string, staged: boolean) {
+    const version = ++diffRequest.current;
     try {
       const result = await api<{ original: string; modified: string }>(
         `/projects/${projectId}/git/diff?path=${encodeURIComponent(path)}&staged=${staged}`,
       );
-      setDiff({ path, staged, ...result });
+      if (version === diffRequest.current) {
+        setDiff({ path, staged, ...result });
+        setError('');
+      }
     } catch (e) {
-      setError(errorMessage(e));
+      if (version === diffRequest.current) setError(errorMessage(e));
     }
   }
   return (
@@ -206,7 +224,10 @@ export function GitPane({
       {diff && (
         <Modal
           title={`${diff.path} · ${diff.staged ? 'staged' : 'unstaged'}`}
-          onClose={() => setDiff(null)}
+          onClose={() => {
+            diffRequest.current++;
+            setDiff(null);
+          }}
         >
           <Suspense fallback={<Spinner />}>
             <CodeDiff original={diff.original} modified={diff.modified} />

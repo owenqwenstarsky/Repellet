@@ -54,6 +54,9 @@ export function Workspace({
   const preferencesKey = preferenceKey(user.id, id);
   const [saved] = useState(() => readPreferences(preferencesKey));
   const restored = useRef(false);
+  const selectionVersion = useRef(0);
+  const runInFlight = useRef(false);
+  const loadVersion = useRef(0);
   const positions = useRef(saved.positions);
   const snapshot = useRef<WorkspacePreferences>(saved);
   const [quickOpen, setQuickOpen] = useState(false);
@@ -83,23 +86,34 @@ export function Workspace({
   const initializedTerminal = useRef(false);
   const mounted = useRef(true);
   const ui = useUi();
-  const editable = project?.role !== 'viewer';
+  const editable = !!project && project.role !== 'viewer';
+  const latestProject = useRef(project);
+  latestProject.current = project;
+  const canRun =
+    editable &&
+    project.state === 'running' &&
+    !project.storageExceeded &&
+    ['none', 'ready'].includes(project.preparation.status) &&
+    !busy;
   const base = `/projects/${id}`;
   async function load() {
+    const request = ++loadVersion.current;
     try {
       const p = await api<Project>(base);
-      if (!mounted.current) return;
+      if (!mounted.current || request !== loadVersion.current) return;
       setProject(p);
+      setLoadError('');
       if (p.preparation.status !== 'none') {
         const progress = await api<{ jobs: PreparationJob[] }>(base + '/preparation');
-        if (mounted.current) setPreparationLog(progress.jobs.find((j) => j.step)?.log || '');
+        if (mounted.current && request === loadVersion.current)
+          setPreparationLog(progress.jobs.find((j) => j.step)?.log || '');
       }
       if (p.state === 'building' || p.state === 'starting') {
         const log = await api<{ log: string }>(base + '/build-log');
-        if (mounted.current) setBuildLog(log.log);
+        if (mounted.current && request === loadVersion.current) setBuildLog(log.log);
       }
     } catch (e) {
-      if (mounted.current) {
+      if (mounted.current && request === loadVersion.current) {
         setLoadError(errorMessage(e));
       }
     }
@@ -131,6 +145,7 @@ export function Workspace({
     const timer = setInterval(load, 2000);
     return () => {
       mounted.current = false;
+      loadVersion.current++;
       clearInterval(timer);
     };
   }, [id]);
@@ -209,6 +224,7 @@ export function Workspace({
   useEffect(() => {
     if (project?.state !== 'running' || restored.current) return;
     let disposed = false;
+    const version = selectionVersion.current;
     void (async () => {
       const candidates = saved.tabs.length
         ? saved.tabs
@@ -224,7 +240,7 @@ export function Workspace({
           if (!file.binary && file.hash) existing.push(path);
         } catch {}
       }
-      if (disposed) return;
+      if (disposed || restored.current || version !== selectionVersion.current) return;
       // Starter files may not have been scaffolded yet; try again after preparation changes.
       if (
         !existing.length &&
@@ -281,8 +297,10 @@ export function Workspace({
     if (restored.current && active && !tabs.includes(active)) setActive(tabs.at(-1) || '');
   }, [tabs]);
   async function openFile(path: string, line = 1, column = 1) {
+    const version = ++selectionVersion.current;
     try {
       const file = await api<FileContent>(base + `/file?path=${encodeURIComponent(path)}`);
+      if (!mounted.current || version !== selectionVersion.current) return;
       if (file.binary) {
         ui.notify('This file is binary or larger than 2 MiB. Use Download from its file menu.');
         return;
@@ -303,18 +321,30 @@ export function Workspace({
       return;
     }
     delete positions.current[path];
+    if (!mounted.current) return;
     setTabs((v) => v.filter((t) => t !== path));
-    if (active === path) setActive(tabs.filter((t) => t !== path).at(-1) || '');
   }
   async function run() {
+    if (!canRun || runInFlight.current) return;
     if (!project?.runConfig.command.trim()) {
       if (project?.role === 'owner') setSettings(true);
       else ui.notify('The project owner needs to set a run command.');
       return;
     }
+    runInFlight.current = true;
     setBusy(true);
     try {
       await flushOpenDocuments(id);
+      const current = latestProject.current;
+      if (
+        !mounted.current ||
+        !current ||
+        current.role === 'viewer' ||
+        current.state !== 'running' ||
+        current.storageExceeded ||
+        !['none', 'ready'].includes(current.preparation.status)
+      )
+        return;
       await post(base + '/run');
       setShowTerminal(true);
       setTerminal('run');
@@ -324,11 +354,13 @@ export function Workspace({
     } catch (e) {
       ui.notify(errorMessage(e));
     } finally {
+      runInFlight.current = false;
       setBusy(false);
     }
   }
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || document.querySelector('[role="dialog"]')) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
         e.preventDefault();
         setQuickOpen(true);
@@ -344,17 +376,21 @@ export function Workspace({
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         setPane('search');
+        setShowSidebar(true);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [project, editable]);
-  if (loadError)
+  }, [project, editable, busy]);
+  if (loadError && !project)
     return (
       <div className="workspace-load-error">
         <AlertTriangle size={30} />
         <h2>Workspace unavailable</h2>
         <p>{loadError}</p>
+        <button className="button primary" onClick={load}>
+          Retry workspace
+        </button>
         <button className="button secondary" onClick={onBack}>
           <ArrowLeft size={16} />
           Back to projects
@@ -367,6 +403,14 @@ export function Workspace({
   const url = project.previewPort ? previewUrl(project.previewPort) : '';
   return (
     <div className="workspace">
+      {loadError && (
+        <div className="form-error" role="alert">
+          {loadError}{' '}
+          <button className="text-button" onClick={load}>
+            Retry workspace
+          </button>
+        </div>
+      )}
       {quickOpen && (
         <QuickOpen
           projectId={id}
@@ -426,12 +470,7 @@ export function Workspace({
             <button
               aria-label="Run"
               className="button primary run-button"
-              disabled={
-                !ready ||
-                busy ||
-                project.storageExceeded ||
-                !['none', 'ready'].includes(project.preparation.status)
-              }
+              disabled={!canRun}
               onClick={run}
             >
               {busy ? (
@@ -602,6 +641,7 @@ export function Workspace({
                       <div className={`editor-tab ${active === path ? 'active' : ''}`} key={path}>
                         <button
                           onClick={() => {
+                            selectionVersion.current++;
                             setActive(path);
                             setSelection(undefined);
                           }}
@@ -766,20 +806,22 @@ export function Workspace({
                     <div className="terminal-tabs">
                       <span className="terminal-label">TERMINAL</span>
                       {terminals.map((t) => (
-                        <button
+                        <div
+                          className={`terminal-tab ${terminal === t.id ? 'active' : ''}`}
                           key={t.id}
-                          className={terminal === t.id ? 'active' : ''}
-                          onClick={() => setTerminal(t.id)}
                         >
-                          <span className={`terminal-dot ${t.alive ? 'alive' : ''}`} />
-                          {t.name}
+                          <button
+                            className={terminal === t.id ? 'active' : ''}
+                            onClick={() => setTerminal(t.id)}
+                          >
+                            <span className={`terminal-dot ${t.alive ? 'alive' : ''}`} />
+                            {t.name}
+                          </button>
                           {editable && !t.isRun && (
-                            <span
+                            <button
                               className="terminal-close"
-                              role="button"
                               aria-label={`Stop ${t.name}`}
-                              onClick={async (e) => {
-                                e.stopPropagation();
+                              onClick={async () => {
                                 try {
                                   await removeTerminal(t.id);
                                   await loadTerminals();
@@ -789,9 +831,9 @@ export function Workspace({
                               }}
                             >
                               <X size={11} />
-                            </span>
+                            </button>
                           )}
-                        </button>
+                        </div>
                       ))}
                       <div className="terminal-spacer" />
                       {editable && (
@@ -903,6 +945,8 @@ function ResizeHandle({
   horizontal?: boolean;
   onDelta: (delta: number) => void;
 }) {
+  const cleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => cleanup.current?.(), []);
   return (
     <div
       className={`resize-handle ${horizontal ? 'horizontal' : ''}`}
@@ -911,11 +955,16 @@ function ResizeHandle({
       aria-orientation={horizontal ? 'horizontal' : 'vertical'}
       tabIndex={0}
       onKeyDown={(e) => {
-        if (['ArrowLeft', 'ArrowUp'].includes(e.key)) onDelta(-10);
-        if (['ArrowRight', 'ArrowDown'].includes(e.key)) onDelta(10);
+        const decrease = horizontal ? 'ArrowUp' : 'ArrowLeft';
+        const increase = horizontal ? 'ArrowDown' : 'ArrowRight';
+        if (e.key === decrease || e.key === increase) {
+          e.preventDefault();
+          onDelta(e.key === decrease ? -10 : 10);
+        }
       }}
       onPointerDown={(e) => {
         e.preventDefault();
+        cleanup.current?.();
         let previous = horizontal ? e.clientY : e.clientX;
         const move = (event: PointerEvent) => {
           const current = horizontal ? event.clientY : event.clientX;
@@ -925,11 +974,15 @@ function ResizeHandle({
         const end = () => {
           window.removeEventListener('pointermove', move);
           window.removeEventListener('pointerup', end);
+          window.removeEventListener('pointercancel', end);
+          cleanup.current = null;
           document.body.classList.remove('resizing');
         };
+        cleanup.current = end;
         document.body.classList.add('resizing');
         window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', end, { once: true });
+        window.addEventListener('pointercancel', end, { once: true });
       }}
     />
   );

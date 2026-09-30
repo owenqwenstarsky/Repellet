@@ -1,31 +1,49 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import type { Project, SetupSuggestion, GitHubRepository } from '@repellet/shared';
 import { api, post, put, errorMessage } from './api';
 import { GitHubPicker } from './GitHub';
 import { useUi } from './ui';
+import { usePollingField } from './usePollingField';
 export function RepositorySetup({
   project,
   onChanged,
+  onConfirmed,
 }: {
   project: Project;
   onChanged: () => void;
+  onConfirmed?: (config: Project['runConfig']) => void;
 }) {
   const ui = useUi();
-  const [cwd, setCwd] = useState(project.runConfig.cwd),
-    [setup, setSetup] = useState(project.setupCommand),
-    [command, setCommand] = useState(project.runConfig.command),
-    [port, setPort] = useState(project.runConfig.port);
+  const [cwd, setCwd] = usePollingField(project.runConfig.cwd),
+    [setup, setSetup] = usePollingField(project.setupCommand),
+    [command, setCommand] = usePollingField(project.runConfig.command),
+    [port, setPort] = usePollingField(project.runConfig.port);
   const [suggestion, setSuggestion] = useState<SetupSuggestion>(),
     [repo, setRepo] = useState<GitHubRepository | null>(null),
     [busy, setBusy] = useState(false);
+  const inspection = useRef(0);
+  const inFlight = useRef(false);
+  useEffect(() => {
+    inspection.current++;
+    setSuggestion(undefined);
+  }, [cwd]);
+  useEffect(
+    () => () => {
+      inspection.current++;
+    },
+    [],
+  );
   const base = `/projects/${project.id}`;
   async function act(fn: () => Promise<void>) {
+    if (inFlight.current || project.role !== 'owner' || project.state !== 'running') return;
+    inFlight.current = true;
     setBusy(true);
     try {
       await fn();
     } catch (e) {
       ui.notify(errorMessage(e));
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
@@ -36,7 +54,7 @@ export function RepositorySetup({
           ? `Connected repository: ${project.repository.fullName}`
           : 'Connect a matching GitHub origin to use your account for pull and push.'}
       </p>
-      <GitHubPicker onSelect={setRepo} />
+      <GitHubPicker value={repo} onSelect={setRepo} />
       <button
         className="button secondary"
         disabled={!repo || busy || project.state !== 'running'}
@@ -61,14 +79,24 @@ export function RepositorySetup({
       </p>
       <label>
         Setup working directory
-        <input value={cwd} onChange={(e) => setCwd(e.target.value)} />
+        <input
+          value={cwd}
+          onChange={(e) => {
+            inspection.current++;
+            setSuggestion(undefined);
+            setCwd(e.target.value);
+          }}
+        />
       </label>
       <button
         className="button secondary"
         disabled={busy || project.state !== 'running'}
         onClick={() =>
           act(async () => {
-            setSuggestion(await post(base + '/setup/suggest', { cwd }));
+            const request = ++inspection.current;
+            setSuggestion(undefined);
+            const result = await post<SetupSuggestion>(base + '/setup/suggest', { cwd });
+            if (request === inspection.current) setSuggestion(result);
           })
         }
       >
@@ -91,6 +119,9 @@ export function RepositorySetup({
               setSetup(suggestion.setupCommand);
               setCommand(suggestion.runConfig.command);
               setPort(suggestion.runConfig.port);
+              setCwd(suggestion.runConfig.cwd);
+              inspection.current++;
+              setSuggestion(undefined);
             }}
           >
             Use suggestions
@@ -125,6 +156,7 @@ export function RepositorySetup({
               runConfig: { command, cwd, port },
               confirmed: true,
             });
+            onConfirmed?.({ command, cwd, port });
             await post(base + '/open');
             // If changing the port required a container restart, preparation is resumed after it opens.
             if (port === project.runConfig.port && setup.trim()) await post(base + '/prepare');
