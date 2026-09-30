@@ -247,7 +247,8 @@ export async function monitor() {
     const currentLimits = await limits();
     const active = await db.select().from(projects).where(eq(projects.state, 'running'));
     for (const p of active) {
-      if (operations.has(p.id)) continue;
+      // Dependency installation holds the project operation lock, but still needs quota checks.
+      if (operations.has(p.id) && !['files', 'installing'].includes(p.preparation.status)) continue;
       try {
         const status = await workerJson<{ running: boolean; oomKilled: boolean }>(
           `/projects/${p.id}`,
@@ -277,6 +278,7 @@ export async function monitor() {
           .set({ storageBytes: usage.bytes, storageExceeded: usage.exceeded })
           .where(eq(projects.id, p.id));
         emit(p.id, { type: 'storage', bytes: usage.bytes, exceeded: usage.exceeded });
+        if (operations.has(p.id)) continue;
         if (hasClients(p.id))
           await db.update(projects).set({ lastActiveAt: new Date() }).where(eq(projects.id, p.id));
         else if (Date.now() - p.lastActiveAt.getTime() > currentLimits.idleMinutes * 60000)

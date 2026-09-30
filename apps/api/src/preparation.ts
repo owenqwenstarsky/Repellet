@@ -35,9 +35,10 @@ export async function prepareProject(id: string) {
   return serialize(id, async () => {
     const [project] = await db.select().from(projects).where(eq(projects.id, id));
     if (!project || project.state !== 'running') throw new Error('Open the workspace first');
-    if (!project.setupCommand && !project.starterId) return;
+    const needsInstall = !!project.setupCommand.trim();
+    if (!needsInstall && !project.starterId) return;
     await flushProject(id);
-    if (project.preparation.status === 'ready') {
+    if (needsInstall && project.preparation.status === 'ready') {
       const current = await bridge<{ fingerprint: string }>(id, '/fingerprint', 'POST', {
         cwd: project.runConfig.cwd,
         command: project.setupCommand,
@@ -119,45 +120,47 @@ export async function prepareProject(id: string) {
         await setPreparation(id, preparation);
       }
       check();
-      const { fingerprint } = await bridge<{ fingerprint: string }>(id, '/fingerprint', 'POST', {
-        cwd: project.runConfig.cwd,
-        command: project.setupCommand,
-      });
-      if (preparation.fingerprint !== fingerprint || preparation.status !== 'ready') {
-        preparation.status = 'installing';
-        await setPreparation(id, preparation);
-        await update('installing');
-        await bridge(id, '/preparation', 'POST', {
-          id: job.id,
-          command: project.setupCommand,
+      if (needsInstall) {
+        const { fingerprint } = await bridge<{ fingerprint: string }>(id, '/fingerprint', 'POST', {
           cwd: project.runConfig.cwd,
+          command: project.setupCommand,
         });
-        for (;;) {
-          check();
-          const status = await bridge<{ state: string; log: string; exitCode: number | null }>(
-            id,
-            `/preparation/${job.id}`,
-          );
-          await update('installing', status.log);
-          if (status.state !== 'running') {
-            if (status.state !== 'succeeded')
-              throw new Error(
-                `Dependency installation ${status.state} (exit ${status.exitCode ?? 'unknown'}). See preparation logs.`,
-              );
-            break;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 500));
-        }
-        check();
-        preparation.fingerprint = (
-          await bridge<{ fingerprint: string }>(id, '/fingerprint', 'POST', {
-            cwd: project.runConfig.cwd,
+        if (preparation.fingerprint !== fingerprint || preparation.status !== 'ready') {
+          preparation.status = 'installing';
+          await setPreparation(id, preparation);
+          await update('installing');
+          await bridge(id, '/preparation', 'POST', {
+            id: job.id,
             command: project.setupCommand,
-          })
-        ).fingerprint;
+            cwd: project.runConfig.cwd,
+          });
+          for (;;) {
+            check();
+            const status = await bridge<{ state: string; log: string; exitCode: number | null }>(
+              id,
+              `/preparation/${job.id}`,
+            );
+            await update('installing', status.log);
+            if (status.state !== 'running') {
+              if (status.state !== 'succeeded')
+                throw new Error(
+                  `Dependency installation ${status.state} (exit ${status.exitCode ?? 'unknown'}). See preparation logs.`,
+                );
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 500));
+          }
+          check();
+          preparation.fingerprint = (
+            await bridge<{ fingerprint: string }>(id, '/fingerprint', 'POST', {
+              cwd: project.runConfig.cwd,
+              command: project.setupCommand,
+            })
+          ).fingerprint;
+        }
       }
       finishStep('succeeded');
-      preparation.status = 'ready';
+      preparation.status = needsInstall ? 'ready' : 'none';
       await setPreparation(id, preparation);
       await db
         .update(jobs)
@@ -245,7 +248,7 @@ export async function probePreview(id: string, port: number) {
 export async function assertPrepared(id: string) {
   const [project] = await db.select().from(projects).where(eq(projects.id, id));
   if (!project) throw new Error('Project not found');
-  if (project.setupCommand) {
+  if (project.setupCommand.trim()) {
     const { fingerprint } = await bridge<{ fingerprint: string }>(id, '/fingerprint', 'POST', {
       cwd: project.runConfig.cwd,
       command: project.setupCommand,

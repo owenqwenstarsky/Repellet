@@ -3,6 +3,7 @@ import type { Project, SetupSuggestion, GitHubRepository } from '@repellet/share
 import { api, post, put, errorMessage } from './api';
 import { GitHubPicker } from './GitHub';
 import { useUi } from './ui';
+import { flushOpenDocuments } from './documentSaves';
 export function RepositorySetup({
   project,
   onChanged,
@@ -68,6 +69,7 @@ export function RepositorySetup({
         disabled={busy || project.state !== 'running'}
         onClick={() =>
           act(async () => {
+            await flushOpenDocuments(project.id);
             setSuggestion(await post(base + '/setup/suggest', { cwd }));
           })
         }
@@ -120,6 +122,7 @@ export function RepositorySetup({
         disabled={busy || project.state !== 'running'}
         onClick={() =>
           act(async () => {
+            await flushOpenDocuments(project.id);
             await put(base + '/setup', {
               setupCommand: setup,
               runConfig: { command, cwd, port },

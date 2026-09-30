@@ -3,11 +3,18 @@ import pg from 'pg';
 import dotenv from 'dotenv';
 import { randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
+import { defaultLimits } from '@repellet/shared';
+import type { FastifyInstance } from 'fastify';
 dotenv.config({ quiet: true });
-const fake = vi.hoisted(() => ({ bridge: vi.fn(), workerJson: vi.fn() }));
+const fake = vi.hoisted(() => ({ bridge: vi.fn(), workerJson: vi.fn(), flushProject: vi.fn() }));
 vi.mock('../apps/api/src/worker.js', () => fake);
+vi.mock('../apps/api/src/collaboration.js', async (original) => ({
+  ...(await original<typeof import('../apps/api/src/collaboration.js')>()),
+  flushProject: fake.flushProject,
+}));
 const name = 'repellet_prepare_' + randomBytes(6).toString('hex');
 let admin: pg.Client,
+  app: FastifyInstance,
   db: typeof import('../apps/api/src/db.js'),
   schema: typeof import('../apps/api/src/schema.js'),
   preparation: typeof import('../apps/api/src/preparation.js');
@@ -28,9 +35,12 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
     schema = await import('../apps/api/src/schema.js');
     await db.migrate();
     preparation = await import('../apps/api/src/preparation.js');
+    app = await (
+      await import('../apps/api/src/app.js')
+    ).createApp({ static: false, logger: false });
   });
   beforeEach(async () => {
-    await db.pool.query('TRUNCATE users, projects CASCADE');
+    await db.pool.query('TRUNCATE users, projects, installation CASCADE');
     const [user] = await db.db
       .insert(schema.users)
       .values({ username: 'owner', displayName: 'Owner', passwordHash: 'unused' })
@@ -56,6 +66,7 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
     installCalls = 0;
     fake.bridge.mockReset();
     fake.workerJson.mockReset();
+    fake.flushProject.mockReset().mockResolvedValue(undefined);
     fake.bridge.mockImplementation(async (_id: string, path: string) => {
       if (path === '/scaffold') {
         scaffoldCalls++;
@@ -81,6 +92,7 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
   });
   afterAll(async () => {
     vi.useRealTimers();
+    await app?.close();
     await db?.pool.end();
     if (admin) {
       await admin.query(`DROP DATABASE ${name} WITH (FORCE)`);
@@ -89,6 +101,40 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
   });
   const project = async () =>
     (await db.db.select().from(schema.projects).where(eq(schema.projects.id, id)))[0]!;
+  it('flushes accepted editor changes before inspecting repository manifests', async () => {
+    const { tokenHash } = await import('../apps/api/src/security.js');
+    await db.db.insert(schema.sessions).values({
+      userId: (await project()).ownerId,
+      tokenHash: tokenHash('setup-inspection-session'),
+      expiresAt: new Date(Date.now() + 60000),
+    });
+    let flushed = false;
+    fake.flushProject.mockImplementation(async () => {
+      flushed = true;
+    });
+    fake.bridge.mockImplementation(async (_id: string, path: string) => {
+      if (path === '/inspect')
+        return {
+          files: {
+            'package.json': JSON.stringify({
+              scripts: flushed ? { start: 'node server.js' } : { dev: 'vite' },
+            }),
+          },
+        };
+      return {};
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${id}/setup/suggest`,
+      headers: {
+        origin: process.env.PUBLIC_URL || 'http://localhost:3000',
+        cookie: 'repellet_session=setup-inspection-session',
+      },
+      payload: { cwd: '' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().runConfig.command).toBe('npm run start');
+  });
   it('scaffolds once, bounds logs, records duration, and reuses unchanged installation', async () => {
     await preparation.prepareProject(id);
     expect((await project()).preparation.status).toBe('ready');
@@ -125,6 +171,42 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
     status = 'succeeded';
     await preparation.prepareProject(id);
     expect(scaffoldCalls).toBe(1);
+  });
+  it('continues storage monitoring during preparation and records quota cancellation', async () => {
+    await db.db.insert(schema.installation).values({ id: 1, limits: defaultLimits });
+    status = 'running';
+    const originalBridge = fake.bridge.getMockImplementation()!;
+    fake.bridge.mockImplementation(async (...args: unknown[]) => {
+      if (args[1] === '/usage') {
+        status = 'cancelled';
+        return { bytes: 6000 * 1024 * 1024, exceeded: true };
+      }
+      return originalBridge(...args);
+    });
+    fake.workerJson.mockResolvedValue({ running: true, oomKilled: false });
+    const running = preparation.prepareProject(id).catch((error: Error) => error);
+    try {
+      await vi.waitFor(() => expect(installCalls).toBe(1));
+      await (await import('../apps/api/src/lifecycle.js')).monitor();
+      expect(fake.bridge.mock.calls.some((call) => call[1] === '/usage')).toBe(true);
+      expect((await running)?.message).toContain('Dependency installation cancelled');
+      expect((await project()).storageExceeded).toBe(true);
+      expect((await project()).preparation.status).toBe('failed');
+    } finally {
+      await preparation.cancelProjectWork(id);
+      await running;
+    }
+  });
+  it.each(['', '   '])('scaffolds without running an empty setup command (%j)', async (command) => {
+    await db.db
+      .update(schema.projects)
+      .set({ setupCommand: command })
+      .where(eq(schema.projects.id, id));
+    await preparation.prepareProject(id);
+    expect(scaffoldCalls).toBe(1);
+    expect(installCalls).toBe(0);
+    expect((await project()).preparation.status).toBe('none');
+    expect((await preparation.assertPrepared(id)).preparation.scaffolded).toBe(true);
   });
   it('reconciles interrupted preparation without silently running installation again', async () => {
     await db.db
