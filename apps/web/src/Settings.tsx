@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { Project, User, Runtime } from '@repellet/shared';
 import {
   Save,
@@ -18,6 +18,7 @@ import { api, put, patch, post, remove, errorMessage } from './api';
 import { Modal, useUi, Spinner, Avatar } from './ui';
 import { RepositorySetup } from './RepositorySetup';
 import { RuntimePicker } from './Projects';
+import { usePollingField } from './usePollingField';
 export function ProjectSettings({
   project,
   onClose,
@@ -29,23 +30,33 @@ export function ProjectSettings({
   onChanged: () => void;
   onDuplicate: (id: string) => void;
 }) {
-  const [tab, setTab] = useState(project.runConfig.command ? 'general' : 'repository');
-  const [name, setName] = useState(project.name);
-  const [description, setDescription] = useState(project.description);
-  const [command, setCommand] = useState(project.runConfig.command);
-  const [cwd, setCwd] = useState(project.runConfig.cwd);
-  const [port, setPort] = useState(project.runConfig.port);
-  const [runtimes, setRuntimes] = useState<Runtime[]>(project.runtimes);
+  const [tab, setTab] = useState(
+    project.role === 'owner' && !project.runConfig.command ? 'repository' : 'general',
+  );
+  const [name, setName] = usePollingField(project.name);
+  const [description, setDescription] = usePollingField(project.description);
+  const [command, setCommand] = usePollingField(project.runConfig.command);
+  const [cwd, setCwd] = usePollingField(project.runConfig.cwd);
+  const [port, setPort] = usePollingField(project.runConfig.port);
+  const [runtimes, setRuntimes] = usePollingField<Runtime[]>(project.runtimes);
   const [variables, setVariables] = useState<{ key: string; value: string }[] | null>(null);
+  const [environmentError, setEnvironmentError] = useState('');
+  const [environmentAttempt, setEnvironmentAttempt] = useState(0);
   const [visible, setVisible] = useState(false);
   const [members, setMembers] = useState<{ user: User; role: string }[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [selectedUser, setSelectedUser] = useState('');
   const [role, setRole] = useState('editor');
   const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
+  const inviteInFlight = useRef(false);
+  const [inviteBusy, setInviteBusy] = useState(false);
   const ui = useUi();
   const manage = project.role === 'owner';
   const base = `/projects/${project.id}`;
+  useEffect(() => {
+    if (!manage && ['environment', 'repository'].includes(tab)) setTab('general');
+  }, [manage, tab]);
   async function loadMembers() {
     try {
       setMembers(await api(base + '/members'));
@@ -56,14 +67,35 @@ export function ProjectSettings({
   }
   useEffect(() => {
     void loadMembers();
-    if (manage)
-      api<{ variables: Record<string, string> }>(base + '/environment')
-        .then((v) =>
-          setVariables(Object.entries(v.variables).map(([key, value]) => ({ key, value }))),
-        )
-        .catch((e) => ui.notify(errorMessage(e)));
-  }, []);
+  }, [base, manage]);
+  useEffect(() => {
+    if (!manage) {
+      setVariables(null);
+      return;
+    }
+    let disposed = false;
+    setVariables(null);
+    setEnvironmentError('');
+    api<{ variables: Record<string, string> }>(base + '/environment')
+      .then((v) => {
+        if (!disposed)
+          setVariables(Object.entries(v.variables).map(([key, value]) => ({ key, value })));
+      })
+      .catch((e) => {
+        if (!disposed) setEnvironmentError(errorMessage(e));
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [base, manage, environmentAttempt]);
   async function save() {
+    if (
+      !manage ||
+      inFlight.current ||
+      (tab === 'environment' && (variables === null || environmentError))
+    )
+      return;
+    inFlight.current = true;
     setBusy(true);
     try {
       if (tab === 'general') {
@@ -102,6 +134,7 @@ export function ProjectSettings({
     } catch (e) {
       ui.notify(errorMessage(e));
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
@@ -212,13 +245,17 @@ export function ProjectSettings({
           </div>
         </div>
       )}
-      {tab === 'environment' && (
+      {manage && tab === 'environment' && (
         <>
           <div className="label">Runtime selection</div>
           <p className="field-help">
             Changing runtimes rebuilds the container and keeps your files.
           </p>
-          <RuntimePicker value={runtimes} onChange={setRuntimes} />
+          <RuntimePicker
+            value={runtimes}
+            onChange={setRuntimes}
+            disabled={variables === null || busy}
+          />
           <div className="form-divider" />
           <div className="env-heading">
             <div className="label">Environment variables</div>
@@ -233,7 +270,14 @@ export function ProjectSettings({
           <p className="field-help">
             Encrypted on the server. Editors can read them through terminals and running apps.
           </p>
-          {variables === null ? (
+          {environmentError ? (
+            <p className="form-error" role="alert">
+              {environmentError}{' '}
+              <button className="text-button" onClick={() => setEnvironmentAttempt((v) => v + 1)}>
+                Retry environment
+              </button>
+            </p>
+          ) : variables === null ? (
             <Spinner />
           ) : (
             <div className="env-list">
@@ -275,14 +319,25 @@ export function ProjectSettings({
           )}
           <button
             className="text-button"
-            onClick={() => setVariables((v) => [...(v || []), { key: '', value: '' }])}
+            disabled={variables === null || busy}
+            onClick={() => setVariables((v) => v && [...v, { key: '', value: '' }])}
           >
             <Plus size={15} />
             Add variable
           </button>
         </>
       )}
-      {tab === 'repository' && <RepositorySetup project={project} onChanged={onChanged} />}
+      {manage && tab === 'repository' && (
+        <RepositorySetup
+          project={project}
+          onChanged={onChanged}
+          onConfirmed={(config) => {
+            setCommand(config.command);
+            setCwd(config.cwd);
+            setPort(config.port);
+          }}
+        />
+      )}
       {tab === 'members' && (
         <>
           <p className="field-help">
@@ -340,6 +395,9 @@ export function ProjectSettings({
               className="invite-form"
               onSubmit={async (e) => {
                 e.preventDefault();
+                if (!manage || !selectedUser || inviteInFlight.current) return;
+                inviteInFlight.current = true;
+                setInviteBusy(true);
                 try {
                   await put(base + '/members', { userId: selectedUser, role });
                   setSelectedUser('');
@@ -347,6 +405,9 @@ export function ProjectSettings({
                   ui.notify('Project access added.', 'success');
                 } catch (e) {
                   ui.notify(errorMessage(e));
+                } finally {
+                  inviteInFlight.current = false;
+                  setInviteBusy(false);
                 }
               }}
             >
@@ -373,7 +434,7 @@ export function ProjectSettings({
                 <option value="editor">Editor</option>
                 <option value="viewer">Viewer</option>
               </select>
-              <button className="button primary" disabled={!selectedUser}>
+              <button className="button primary" disabled={!selectedUser || inviteBusy}>
                 <UserPlus size={15} />
                 Add
               </button>

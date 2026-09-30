@@ -1,4 +1,12 @@
-import { createContext, useContext, useState, useRef, useEffect, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  type ReactNode,
+} from 'react';
 import { X, AlertCircle, Check, Loader2, ChevronDown } from 'lucide-react';
 type DialogRequest = {
   title: string;
@@ -20,13 +28,27 @@ export function UiProvider({ children }: { children: ReactNode }) {
   const [dialog, setDialog] = useState<DialogRequest | null>(null);
   const [value, setValue] = useState('');
   const resolve = useRef<((value: string | null) => void) | null>(null);
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  useEffect(
+    () => () => {
+      resolve.current?.(null);
+      resolve.current = null;
+      for (const timer of timers.current) clearTimeout(timer);
+      timers.current.clear();
+    },
+    [],
+  );
   const notify = (text: string, kind = 'error') => {
     const id = Date.now() + Math.random();
     setToasts((v) => [...v.slice(-3), { id, text, kind }]);
-    setTimeout(
-      () => setToasts((v) => v.filter((t) => t.id !== id)),
+    const timer = setTimeout(
+      () => {
+        timers.current.delete(timer);
+        setToasts((v) => v.filter((t) => t.id !== id));
+      },
       kind === 'error' ? 10000 : 4000,
     );
+    timers.current.add(timer);
   };
   const finish = (result: string | null) => {
     resolve.current?.(result);
@@ -108,36 +130,56 @@ export function Modal({
   small?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const old = document.activeElement as HTMLElement | null;
+  const [opener] = useState(() => document.activeElement as HTMLElement | null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  const initialFocus = useRef<HTMLElement | null>(null);
+  const topmost = () => isTopDialog(ref.current);
+  useLayoutEffect(() => {
+    if (ref.current?.contains(document.activeElement))
+      initialFocus.current = document.activeElement as HTMLElement;
+    if (topmost() && !ref.current?.contains(document.activeElement))
+      (initialFocus.current || focusable(ref.current!)[0] || ref.current)?.focus();
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (!topmost() || e.defaultPrevented) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        close.current();
+      }
       if (e.key === 'Tab' && ref.current) {
-        const elements = [
-          ...ref.current.querySelectorAll<HTMLElement>('button,input,textarea,select,a[href]'),
-        ].filter((el) => !el.hasAttribute('disabled'));
+        const elements = focusable(ref.current);
         const first = elements[0],
-          last = elements[elements.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
+          last = elements.at(-1);
+        if (!first) {
           e.preventDefault();
-          last?.focus();
+          ref.current.focus();
+        } else if (
+          !ref.current.contains(document.activeElement) ||
+          (e.shiftKey && document.activeElement === first)
+        ) {
+          e.preventDefault();
+          (e.shiftKey ? last : first)?.focus();
         } else if (!e.shiftKey && document.activeElement === last) {
           e.preventDefault();
-          first?.focus();
+          first.focus();
         }
       }
     };
     document.addEventListener('keydown', handler);
     return () => {
       document.removeEventListener('keydown', handler);
-      old?.focus();
+      const remaining = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')]
+        .filter((el) => el !== ref.current && !ref.current?.contains(el))
+        .at(-1);
+      if (opener?.isConnected && (!remaining || remaining.contains(opener))) opener.focus();
     };
-  }, [onClose]);
+  }, []);
   return (
     <div
       className="modal-backdrop"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget && topmost()) close.current();
       }}
     >
       <div
@@ -146,15 +188,82 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
       >
         <header className="modal-header">
           <h2>{title}</h2>
-          <button className="icon-button" aria-label="Close dialog" onClick={onClose}>
+          <button
+            className="icon-button"
+            aria-label="Close dialog"
+            onClick={() => {
+              if (topmost()) close.current();
+            }}
+          >
             <X size={20} />
           </button>
         </header>
         {children}
       </div>
+    </div>
+  );
+}
+function isTopDialog(element: HTMLElement | null) {
+  return [...document.querySelectorAll('[role="dialog"]')].at(-1) === element;
+}
+function focusable(root: HTMLElement) {
+  return [
+    ...root.querySelectorAll<HTMLElement>('button,input,textarea,select,a[href],[tabindex]'),
+  ].filter((el) => {
+    if (
+      el.tabIndex < 0 ||
+      el.matches(':disabled') ||
+      el.closest('[hidden],[inert],[aria-hidden="true"]')
+    )
+      return false;
+    for (let parent: HTMLElement | null = el; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+    }
+    return true;
+  });
+}
+export function Dropdown({
+  children,
+  onClose,
+  className = '',
+  style,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [opener] = useState(() => document.activeElement as HTMLElement | null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  const restore = () => {
+    if (opener?.isConnected) opener.focus();
+  };
+  useLayoutEffect(() => {
+    focusable(ref.current!)[0]?.focus();
+    const key = (event: KeyboardEvent) => {
+      if (document.querySelector('[role="dialog"]')) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        close.current();
+      }
+    };
+    document.addEventListener('keydown', key);
+    return () => {
+      document.removeEventListener('keydown', key);
+      if (!document.querySelector('[role="dialog"]')) restore();
+    };
+  }, []);
+  return (
+    <div ref={ref} className={`dropdown ${className}`} style={style} onClickCapture={restore}>
+      {children}
     </div>
   );
 }

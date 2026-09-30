@@ -1,49 +1,76 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import type { GitHubRepository, User } from '@repellet/shared';
 import { api, post, put, remove, errorMessage } from './api';
-import { useUi } from './ui';
-export function GitHubPicker({ onSelect }: { onSelect: (repo: GitHubRepository | null) => void }) {
+import { useUi, Spinner } from './ui';
+export function GitHubPicker({
+  value,
+  onSelect,
+}: {
+  value: GitHubRepository | null;
+  onSelect: (repo: GitHubRepository | null) => void;
+}) {
   const [repositories, setRepositories] = useState<GitHubRepository[]>([]),
     [query, setQuery] = useState(''),
-    [error, setError] = useState('');
+    [error, setError] = useState(''),
+    [loading, setLoading] = useState(true),
+    [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let disposed = false;
+    setLoading(true);
+    setError('');
     api<GitHubRepository[]>('/github/repositories')
       .then((v) => {
-        if (!disposed) setRepositories(v);
+        if (!disposed) {
+          setRepositories(v);
+          setLoading(false);
+        }
       })
       .catch((e) => {
-        if (!disposed) setError(errorMessage(e));
+        if (!disposed) {
+          setError(errorMessage(e));
+          setLoading(false);
+        }
       });
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [attempt]);
   return (
     <div>
       <label>
         Filter repositories
         <input value={query} onChange={(e) => setQuery(e.target.value)} />
       </label>
+      {loading && <Spinner label="Loading repositories…" />}
+      {!loading && !error && !repositories.length && <p>No repositories available.</p>}
       {error && (
-        <p className="form-error">
+        <p className="form-error" role="alert">
           {error}{' '}
           <a href="/github" target="_blank" rel="noreferrer">
             GitHub connection
           </a>
+          <button type="button" className="text-button" onClick={() => setAttempt((v) => v + 1)}>
+            Retry repositories
+          </button>
         </p>
       )}
       <label>
         GitHub repository
         <select
-          defaultValue=""
+          value={value?.id ?? ''}
+          disabled={loading || !!error}
           onChange={(e) =>
             onSelect(repositories.find((r) => r.id === Number(e.target.value)) || null)
           }
         >
           <option value="">Select a repository…</option>
-          {repositories
-            .filter((r) => r.fullName.toLowerCase().includes(query.toLowerCase()))
+          {(value && !repositories.some((r) => r.id === value.id)
+            ? [...repositories, value]
+            : repositories
+          )
+            .filter(
+              (r) => r.id === value?.id || r.fullName.toLowerCase().includes(query.toLowerCase()),
+            )
             .map((r) => (
               <option key={r.id} value={r.id}>
                 {r.fullName}
@@ -52,6 +79,12 @@ export function GitHubPicker({ onSelect }: { onSelect: (repo: GitHubRepository |
             ))}
         </select>
       </label>
+      {!loading &&
+        !error &&
+        !!repositories.length &&
+        !repositories.some((r) => r.fullName.toLowerCase().includes(query.toLowerCase())) && (
+          <p>No matching repositories.</p>
+        )}
     </div>
   );
 }
@@ -80,13 +113,17 @@ export function GitHubSettings({ user }: { user: User }) {
   useEffect(() => {
     void load();
   }, []);
+  const inFlight = useRef(false);
   async function act(fn: () => Promise<void>) {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     try {
       await fn();
     } catch (e) {
       ui.notify(errorMessage(e));
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
@@ -144,6 +181,7 @@ export function GitHubSettings({ user }: { user: User }) {
               App installation
               <select
                 aria-label="App installation"
+                disabled={busy}
                 value={connection.installationId || ''}
                 onChange={(e) =>
                   act(async () => {
@@ -162,7 +200,7 @@ export function GitHubSettings({ user }: { user: User }) {
             </label>
           )}
           {connection.connected && (
-            <button className="button secondary" onClick={load}>
+            <button className="button secondary" disabled={busy} onClick={load}>
               Refresh installations
             </button>
           )}
