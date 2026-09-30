@@ -21,7 +21,10 @@ export function QuickOpen({
     let disposed = false;
     api<FileIndex>(`/projects/${projectId}/file-index`)
       .then((v) => {
-        if (!disposed) setPaths(v.paths);
+        if (!disposed) {
+          setPaths(v.paths);
+          setError('');
+        }
       })
       .catch((e) => {
         if (!disposed) setError(errorMessage(e));
@@ -38,6 +41,9 @@ export function QuickOpen({
         .every((part) => path.toLowerCase().includes(part)),
     )
     .slice(0, 100);
+  useEffect(() => {
+    setSelected((v) => Math.max(0, Math.min(v, results.length - 1)));
+  }, [paths, query]);
   useEffect(() => {
     document.getElementById(`quick-file-${selected}`)?.scrollIntoView({ block: 'nearest' });
   }, [selected]);

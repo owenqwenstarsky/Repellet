@@ -217,6 +217,7 @@ export function CodeEditor({
         wsUrl(`/ws/projects/${projectId}/document?path=${encodeURIComponent(path)}`),
       );
       socket.onmessage = (event) => {
+        if (disposed) return;
         let msg: any;
         try {
           msg = JSON.parse(event.data);
@@ -224,6 +225,7 @@ export function CodeEditor({
           return;
         }
         if (msg.type === 'sync') {
+          setError('');
           Y.applyUpdate(doc, fromB64(msg.update), 'server');
           synced = true;
           setConflict(msg.conflict);
@@ -279,6 +281,7 @@ export function CodeEditor({
         }
       };
       socket.onclose = (e) => {
+        if (disposed) return;
         setConnected(false);
         editor?.updateOptions({ readOnly: true });
         if (e.code === 1008) {

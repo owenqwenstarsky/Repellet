@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { User } from '@repellet/shared';
 import {
   FolderCode,
@@ -11,7 +11,7 @@ import {
   KeyRound,
 } from 'lucide-react';
 import { api, post, errorMessage } from './api';
-import { UiProvider, useUi, Logo, Avatar, Spinner, Modal } from './ui';
+import { UiProvider, useUi, Logo, Avatar, Spinner, Modal, Dropdown } from './ui';
 import { Auth } from './Auth';
 import { Projects } from './Projects';
 import { GitHubSettings } from './GitHub';
@@ -45,6 +45,13 @@ function Application() {
   const [current, setCurrent] = useState(route);
   const [userMenu, setUserMenu] = useState(false);
   const [password, setPassword] = useState(false);
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const passwordInFlight = useRef(false);
+  const passwordVersion = useRef(0);
+  function showPassword(open: boolean) {
+    passwordVersion.current++;
+    setPassword(open);
+  }
   const [workerHealthy, setWorkerHealthy] = useState(true);
   const [bootError, setBootError] = useState('');
   const ui = useUi();
@@ -73,7 +80,10 @@ function Application() {
       .catch((e) => setBootError(errorMessage(e)))
       .finally(() => setLoading(false));
     const pop = () => setCurrent(route());
-    const unauthorized = () => setUser(null);
+    const unauthorized = () => {
+      showPassword(false);
+      setUser(null);
+    };
     window.addEventListener('popstate', pop);
     window.addEventListener('repellet:unauthorized', unauthorized);
     return () => {
@@ -172,11 +182,11 @@ function Application() {
             {userMenu && (
               <>
                 <div className="menu-dismiss" onClick={() => setUserMenu(false)} />
-                <div className="dropdown account-menu">
+                <Dropdown className="account-menu" onClose={() => setUserMenu(false)}>
                   <button
                     onClick={() => {
                       setUserMenu(false);
-                      setPassword(true);
+                      showPassword(true);
                     }}
                   >
                     <KeyRound size={15} />
@@ -196,7 +206,7 @@ function Application() {
                     <LogOut size={15} />
                     Sign out
                   </button>
-                </div>
+                </Dropdown>
               </>
             )}
           </div>
@@ -222,20 +232,28 @@ function Application() {
         )}
       </section>
       {password && (
-        <Modal title="Change password" onClose={() => setPassword(false)} small>
+        <Modal title="Change password" onClose={() => showPassword(false)} small>
           <form
             onSubmit={async (e) => {
               e.preventDefault();
+              if (passwordInFlight.current) return;
+              const version = passwordVersion.current;
+              passwordInFlight.current = true;
+              setPasswordBusy(true);
               try {
                 const result = await post<{ user: User }>(
                   '/auth/password',
                   Object.fromEntries(new FormData(e.currentTarget)),
                 );
+                if (version !== passwordVersion.current) return;
                 setUser(result.user);
-                setPassword(false);
+                showPassword(false);
                 ui.notify('Password changed. Other sessions were signed out.', 'success');
               } catch (e) {
-                ui.notify(errorMessage(e));
+                if (version === passwordVersion.current) ui.notify(errorMessage(e));
+              } finally {
+                passwordInFlight.current = false;
+                setPasswordBusy(false);
               }
             }}
           >
@@ -261,10 +279,16 @@ function Application() {
               />
             </label>
             <div className="modal-actions">
-              <button type="button" className="button secondary" onClick={() => setPassword(false)}>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => showPassword(false)}
+              >
                 Cancel
               </button>
-              <button className="button primary">Change password</button>
+              <button className="button primary" disabled={passwordBusy}>
+                Change password
+              </button>
             </div>
           </form>
         </Modal>

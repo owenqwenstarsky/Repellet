@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import type { User } from '@repellet/shared';
 import { ArrowRight, TerminalSquare, FolderCode, Users, LockKeyhole, Loader2 } from 'lucide-react';
 import { post, errorMessage } from './api';
@@ -6,6 +6,14 @@ import { Logo } from './ui';
 export function Auth({ setup, onAuth }: { setup: boolean; onAuth: (user: User) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const inFlight = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   return (
     <main className="auth-screen">
       <aside className="auth-story">
@@ -43,16 +51,19 @@ export function Auth({ setup, onAuth }: { setup: boolean; onAuth: (user: User) =
           className="auth-form"
           onSubmit={async (e) => {
             e.preventDefault();
+            if (inFlight.current) return;
+            inFlight.current = true;
             setBusy(true);
             setError('');
             const b = Object.fromEntries(new FormData(e.currentTarget));
             try {
               const result = await post<{ user: User }>(setup ? '/setup' : '/auth/login', b);
-              onAuth(result.user);
+              if (mounted.current) onAuth(result.user);
             } catch (e) {
-              setError(errorMessage(e));
+              if (mounted.current) setError(errorMessage(e));
             } finally {
-              setBusy(false);
+              inFlight.current = false;
+              if (mounted.current) setBusy(false);
             }
           }}
         >
