@@ -1,0 +1,86 @@
+name: repellet
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: repellet
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Run npm run setup first}
+      POSTGRES_DB: repellet
+    volumes:
+      - database:/var/lib/postgresql/data
+    networks: [control]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U repellet -d repellet]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+  app:
+    image: repellet/app:0.1.0
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+      target: app
+    environment:
+      DATABASE_URL: postgresql://repellet:${DB_PASSWORD}@database:5432/repellet
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Run npm run setup first}
+      WORKER_TOKEN: ${WORKER_TOKEN:?Run npm run setup first}
+      WORKER_URL: http://worker:3002
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+    ports:
+      - '${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-3000}:3000'
+    networks: [control]
+    depends_on:
+      database:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          'fetch("http://localhost:3000/api/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))',
+        ]
+      interval: 15s
+      timeout: 8s
+      retries: 5
+    restart: unless-stopped
+  worker:
+    image: repellet/worker:0.1.0
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+      target: worker
+    environment:
+      WORKER_TOKEN: ${WORKER_TOKEN}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      INTERNAL_APP_URL: http://app:3000
+      DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-repellet}-workspaces
+      PREVIEW_PORT_RANGE: ${PREVIEW_PORT_RANGE:-41000-41031}
+      WORKER_IN_DOCKER: 'true'
+    volumes:
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+    ports:
+      - '${BIND_ADDRESS:-127.0.0.1}:${PREVIEW_PORT_RANGE:-41000-41031}:${PREVIEW_PORT_RANGE:-41000-41031}'
+    networks: [control, workspaces]
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          'fetch("http://localhost:3002/health",{headers:{authorization:"Bearer "+process.env.WORKER_TOKEN}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+volumes:
+  database:
+networks:
+  control:
+  workspaces:
+    name: ${COMPOSE_PROJECT_NAME:-repellet}-workspaces

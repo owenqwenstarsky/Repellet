@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.cache/
+playwright-report/
+test-results/
+package-lock.json
+packages/bridge/package-lock.json
+.env*

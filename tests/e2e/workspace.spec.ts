@@ -1,0 +1,226 @@
+import { test, expect, type Page } from '@playwright/test';
+import { WebSocket } from 'ws';
+import path from 'node:path';
+import tar from 'tar-stream';
+async function login(page: Page, username = 'e2e-owner') {
+  await page.goto('/');
+  await page.getByLabel('Username', { exact: true }).fill(username);
+  await page.getByLabel('Password', { exact: true }).fill('repellet-e2e-password-123');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
+}
+async function newFile(page: Page, path: string, content: string) {
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  await page.getByRole('button', { name: 'New file', exact: true }).click();
+  await page.getByLabel('Workspace path').fill(path);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.locator('.editor-tab.active')).toContainText(path.split('/').pop()!);
+  const editor = page.locator('.monaco-editor textarea').first();
+  await expect(editor).toBeAttached();
+  await expect(page.locator('.connection-indicator.connected')).toBeVisible();
+  await editor.focus();
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.evaluate((text) => navigator.clipboard.writeText(text), content);
+  await page.keyboard.press('ControlOrMeta+V');
+  await expect
+    .poll(async () => {
+      const r = await page.request.get(
+        `/api/projects/${page.url().split('/').pop()}/file?path=${encodeURIComponent(path)}`,
+      );
+      return r.ok() ? (await r.json()).content : '';
+    })
+    .toBe(content);
+}
+test('owner setup, IDE workflows, private previews, collaboration, and viewers', async ({
+  page,
+  browser,
+}) => {
+  const consoleErrors: string[] = [];
+  page.on('pageerror', (e) => consoleErrors.push(e.message));
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Set up your workspace' })).toBeVisible();
+  await page.getByLabel('Setup token').fill('repellet-e2e-setup-token');
+  await page.getByLabel('Display name').fill('Workspace Owner');
+  await page.getByLabel('Username', { exact: true }).fill('e2e-owner');
+  await page.getByLabel('Password', { exact: true }).fill('repellet-e2e-password-123');
+  await page.getByRole('button', { name: 'Create owner account' }).click();
+  await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
+  await page.screenshot({ path: '.cache/dashboard.png', fullPage: true });
+  await page.getByRole('button', { name: 'Create project', exact: true }).click();
+  await page.getByLabel('Project name', { exact: true }).fill('Browser workspace');
+  await page
+    .getByLabel('Description', { exact: false })
+    .fill('A real collaborative development environment');
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Create project', exact: true })
+    .click();
+  await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeEnabled({
+    timeout: 300000,
+  });
+  const id = page.url().split('/').pop()!;
+  await newFile(
+    page,
+    'server.mjs',
+    "import http from 'node:http';\nhttp.createServer((req, res) => {\n  res.setHeader('Content-Type', 'text/html');\n  res.end('<h1>Repellet preview works</h1>');\n}).listen(3000, '0.0.0.0');\n",
+  );
+  // Native directory uploads preserve nested paths, and folder downloads return an archive.
+  await page
+    .locator('input[webkitdirectory]')
+    .setInputFiles(path.resolve('tests/fixtures/upload-folder'));
+  await expect
+    .poll(async () => {
+      const response = await page.request.get(
+        `/api/projects/${id}/file?path=upload-folder/nested/note.txt`,
+      );
+      return response.ok() ? (await response.json()).content : '';
+    })
+    .toBe('Nested folders survive upload.\n');
+  const download = await page.request.get(`/api/projects/${id}/files/download?path=upload-folder`);
+  expect(download.headers()['content-type']).toContain('application/x-tar');
+  const extract = tar.extract();
+  const entries = new Map<string, string>();
+  const unpacked = new Promise<void>((resolve, reject) => {
+    extract.on('entry', (header, stream, next) => {
+      let content = '';
+      stream.on('data', (chunk) => (content += String(chunk)));
+      stream.on('end', () => {
+        entries.set(header.name, content);
+        next();
+      });
+      stream.on('error', reject);
+    });
+    extract.on('finish', resolve);
+    extract.on('error', reject);
+  });
+  extract.end(await download.body());
+  await unpacked;
+  expect(entries.get('nested/note.txt')).toBe('Nested folders survive upload.\n');
+  await page.getByRole('button', { name: 'Project settings', exact: true }).click();
+  await page.getByLabel('Run command').fill('node server.mjs');
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect
+    .poll(
+      async () => {
+        const url = await page.getByLabel('Preview URL').inputValue();
+        const response = await page.request.get(url).catch(() => null);
+        return response?.status();
+      },
+      { timeout: 30000 },
+    )
+    .toBe(200);
+  await page.getByRole('button', { name: 'Refresh preview', exact: true }).click();
+  await expect(
+    page.frameLocator('iframe[title="Project preview"]').getByText('Repellet preview works'),
+  ).toBeVisible();
+  const preview = await page.getByLabel('Preview URL').inputValue();
+  const anonymous = await browser.newContext();
+  const denied = await anonymous.request.get(preview);
+  expect(denied.status()).toBe(403);
+  await anonymous.close();
+  // Two real browser sessions edit one document.
+  const origin = { origin: 'http://localhost:3315' };
+  const created = await page.request.post('/api/admin/users', {
+    headers: origin,
+    data: {
+      username: 'e2e-editor',
+      displayName: 'Collaborator',
+      password: 'repellet-e2e-password-123',
+    },
+  });
+  expect(created.status()).toBe(201);
+  const editorUser = await created.json();
+  expect(
+    (
+      await page.request.put(`/api/projects/${id}/members`, {
+        headers: origin,
+        data: { userId: editorUser.id, role: 'editor' },
+      })
+    ).ok(),
+  ).toBe(true);
+  await newFile(page, 'notes.txt', 'Hello team\n');
+  const collaborator = await browser.newContext();
+  const other = await collaborator.newPage();
+  await login(other, 'e2e-editor');
+  await other.getByRole('button', { name: 'Open Browser workspace', exact: true }).click();
+  await expect(other.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
+  await other.locator('.file-row').filter({ hasText: 'notes.txt' }).click();
+  await expect(other.locator('.connection-indicator.connected')).toBeVisible();
+  const input = other.locator('.monaco-editor textarea').first();
+  await input.focus();
+  await other.keyboard.press('ControlOrMeta+End');
+  await other.keyboard.insertText('Edited together\n');
+  await expect(page.locator('.view-lines')).toContainText('Edited together');
+  await expect(page.locator('.collaborators [title="Collaborator"]')).toBeVisible();
+  await expect.poll(() => page.locator('.yRemoteSelectionHead').count()).toBeGreaterThan(0);
+  // Terminal edits that race autosave produce a visible conflict.
+  await newFile(page, 'conflict.txt', 'initial\n');
+  const terminals = await (await page.request.get(`/api/projects/${id}/terminals`)).json();
+  const term = terminals.find((t: any) => !t.isRun && t.alive);
+  const cookies = (await page.context().cookies()).map((c) => `${c.name}=${c.value}`).join('; ');
+  const shell = new WebSocket(
+    `ws://localhost:3315/ws/projects/${id}/channel?path=${encodeURIComponent(`/terminals/${term.id}/connect`)}`,
+    { headers: { origin: 'http://localhost:3315', cookie: cookies } },
+  );
+  await new Promise<void>((resolve, reject) => {
+    shell.once('message', () => resolve());
+    shell.once('error', reject);
+  });
+  await page.locator('.monaco-editor textarea').first().focus();
+  await page.keyboard.press('ControlOrMeta+End');
+  await page.keyboard.insertText('editor change\n');
+  shell.send(
+    JSON.stringify({
+      type: 'input',
+      data: "printf 'external change\\n' > /workspace/conflict.txt\r",
+    }),
+  );
+  await expect(page.getByText('This file changed on disk. Autosave is paused.')).toBeVisible();
+  await page.getByRole('button', { name: 'Reload from disk', exact: true }).click();
+  await expect(page.locator('.view-lines')).toContainText('external change');
+  shell.close();
+  await page.screenshot({ path: '.cache/workspace.png', fullPage: true });
+  // Concurrent renames serialize, and accepted content survives the winning rename.
+  const renames = await Promise.all(
+    ['renamed-a.txt', 'renamed-b.txt'].map((to) =>
+      page.request.post(`/api/projects/${id}/files/move`, {
+        headers: origin,
+        data: { from: 'conflict.txt', to },
+      }),
+    ),
+  );
+  expect(renames.filter((r) => r.ok())).toHaveLength(1);
+  const renamed = renames[0]!.ok() ? 'renamed-a.txt' : 'renamed-b.txt';
+  expect(
+    (await (await page.request.get(`/api/projects/${id}/file?path=${renamed}`)).json()).content,
+  ).toBe('external change\n');
+  // Downgrade the collaborator and verify both UI and server enforcement.
+  expect(
+    (
+      await page.request.put(`/api/projects/${id}/members`, {
+        headers: origin,
+        data: { userId: editorUser.id, role: 'viewer' },
+      })
+    ).ok(),
+  ).toBe(true);
+  await other.reload();
+  await expect(other.getByText('View only', { exact: true })).toBeVisible();
+  expect(
+    await other
+      .locator('.workspace-header')
+      .getByRole('button', { name: 'Run', exact: true })
+      .count(),
+  ).toBe(0);
+  expect(
+    (
+      await other.request.post(`/api/projects/${id}/files/create`, {
+        headers: origin,
+        data: { path: 'forbidden.txt', kind: 'file' },
+      })
+    ).status(),
+  ).toBe(403);
+  await collaborator.close();
+  expect(consoleErrors).toEqual([]);
+});

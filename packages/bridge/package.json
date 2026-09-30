@@ -1,0 +1,23 @@
+{
+  "name": "@repellet/bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "fastify": "^5.7.4",
+    "@fastify/websocket": "^11.2.0",
+    "chokidar": "^4.0.3",
+    "node-pty": "^1.1.0",
+    "tar-stream": "^3.1.7"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^22.19.0",
+    "@types/ws": "^8.18.1",
+    "@types/tar-stream": "^3.1.4"
+  }
+}

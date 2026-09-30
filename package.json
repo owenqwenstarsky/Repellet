@@ -1,0 +1,37 @@
+{
+  "name": "repellet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "build": "npm run build -w @repellet/shared && npm run build -w @repellet/bridge && npm run build -w @repellet/api && npm run build -w @repellet/worker && npm run build -w @repellet/web",
+    "dev": "npm run build -w @repellet/shared && ADDITIONAL_ORIGINS=http://localhost:5173 concurrently -k -n api,worker,web 'npm run dev -w @repellet/api' 'npm run dev -w @repellet/worker' 'npm run dev -w @repellet/web'",
+    "typecheck": "npm run build -w @repellet/shared && npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "test:docker": "RUN_DOCKER_TESTS=1 vitest run tests/docker.test.ts tests/backup.test.ts",
+    "test:e2e": "playwright test",
+    "check": "npm run typecheck && npm test && npm run build",
+    "backup": "node scripts/backup.mjs backup",
+    "backup:verify": "node scripts/backup.mjs verify",
+    "restore": "node scripts/backup.mjs restore",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^22.19.0",
+    "concurrently": "^9.2.1",
+    "prettier": "3.9.9",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

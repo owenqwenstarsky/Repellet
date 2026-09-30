@@ -1,0 +1,33 @@
+name: Validate
+on: [push, pull_request]
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run setup
+      - run: docker compose -f compose.yaml -f compose.dev.yaml up -d database
+      - run: npm run check
+      - run: docker build -f docker/workspace.Dockerfile -t repellet/workspace-base:0.1.0 .
+      - run: npm run test:docker
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - run: docker compose build app worker
+      - run: npm audit --audit-level=high
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-artifacts-${{ matrix.runner }}
+          path: |
+            test-results/
+            playwright-report/

@@ -1,0 +1,1 @@
+Nested folders survive upload.

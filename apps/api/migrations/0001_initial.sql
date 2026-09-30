@@ -1,0 +1,11 @@
+CREATE TABLE users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), username text NOT NULL UNIQUE, display_name text NOT NULL, password_hash text NOT NULL, is_owner boolean NOT NULL DEFAULT false, enabled boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now());
+CREATE UNIQUE INDEX one_site_owner ON users(is_owner) WHERE is_owner;
+CREATE TABLE sessions (token_hash text PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX sessions_user_idx ON sessions(user_id);
+CREATE TABLE installation (id integer PRIMARY KEY CHECK(id=1), setup_token text, limits jsonb NOT NULL, maintenance boolean NOT NULL DEFAULT false);
+CREATE TABLE projects (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),owner_id uuid NOT NULL REFERENCES users(id),name text NOT NULL,description text NOT NULL DEFAULT '',runtimes jsonb NOT NULL,state text NOT NULL DEFAULT 'stopped',run_config jsonb NOT NULL,environment text,clone_url text,preview_port integer,storage_bytes bigint NOT NULL DEFAULT 0,storage_exceeded boolean NOT NULL DEFAULT false,error text,last_active_at timestamptz NOT NULL DEFAULT now(),created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX projects_owner_idx ON projects(owner_id);
+CREATE TABLE project_members(project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,role text NOT NULL CHECK(role IN ('editor','viewer')),PRIMARY KEY(project_id,user_id));
+CREATE TABLE documents(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,path text NOT NULL,state text NOT NULL,disk_hash text,dirty boolean NOT NULL DEFAULT false,conflict boolean NOT NULL DEFAULT false,updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(project_id,path));
+CREATE INDEX documents_project_idx ON documents(project_id);
+CREATE TABLE jobs(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,kind text NOT NULL,state text NOT NULL DEFAULT 'pending',error text,created_at timestamptz NOT NULL DEFAULT now(),finished_at timestamptz);
