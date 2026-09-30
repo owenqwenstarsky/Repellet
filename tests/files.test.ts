@@ -55,3 +55,81 @@ describe('filesystem writes and isolation', () => {
     expect((await files.readFile('main.ts')).content).toBe('second');
   });
 });
+
+describe('replacement coverage and partial progress', () => {
+  it('replaces every matching file beyond 1,000 display rows', async () => {
+    await fs.mkdir(path.join(files.root, 'many'));
+    const names = Array.from({ length: 110 }, (_, i) => `many/${i}.txt`);
+    await Promise.all(
+      names.map((name) =>
+        fs.writeFile(path.join(files.root, name), 'needle-for-replacement\n'.repeat(12)),
+      ),
+    );
+    const result = await files.replaceFiles('needle-for-replacement', 'updated', async () => {});
+    expect(result.files).toBe(110);
+    for (const name of names)
+      expect((await files.readFile(name)).content).toBe('updated\n'.repeat(12));
+  });
+  it('reports completed paths if a later write fails', async () => {
+    await fs.mkdir(path.join(files.root, 'partial'));
+    for (const name of ['one.txt', 'two.txt', 'three.txt'])
+      await fs.writeFile(path.join(files.root, 'partial', name), 'partial-needle');
+    let checks = 0;
+    const error = await files
+      .replaceFiles('partial-needle', 'done', async () => {
+        if (++checks === 2)
+          throw Object.assign(new Error('Storage exhausted'), { statusCode: 507 });
+      })
+      .catch((e) => e);
+    expect(error.statusCode).toBe(507);
+    expect(error.completedFiles).toHaveLength(1);
+    expect(error.message).toContain('after updating 1 file');
+    expect((await files.readFile(error.completedFiles[0])).content).toBe('done');
+    const contents = await Promise.all(
+      ['one.txt', 'two.txt', 'three.txt'].map((name) => files.readFile('partial/' + name)),
+    );
+    expect(contents.filter((file) => file.content === 'partial-needle')).toHaveLength(2);
+  });
+  it('reports oversized files that cannot be edited', async () => {
+    await fs.writeFile(
+      path.join(files.root, 'oversized.txt'),
+      'oversized-needle' + 'x'.repeat(2 * 1024 * 1024),
+    );
+    const result = await files.replaceFiles('oversized-needle', 'done', async () => {});
+    expect(result.files).toBe(0);
+    expect(result.skippedFiles).toEqual(['oversized.txt']);
+  });
+});
+describe('Git index and missing-path operations', () => {
+  it('unstages before the first commit without removing working files, and diffs deleted files', async () => {
+    const { git, unstageFiles, gitDiff } = await import('../packages/bridge/src/git.js');
+    await git(['init']);
+    await fs.writeFile(path.join(files.root, 'tracked.txt'), 'original\n');
+    await git(['add', '--', 'tracked.txt']);
+    await unstageFiles(['tracked.txt']);
+    expect(await fs.readFile(path.join(files.root, 'tracked.txt'), 'utf8')).toBe('original\n');
+    expect((await git(['ls-files', '--', 'tracked.txt'])).stdout).toBe('');
+    await git(['add', '--', 'tracked.txt']);
+    await git([
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      'commit',
+      '-m',
+      'Initial',
+    ]);
+    await fs.rm(path.join(files.root, 'tracked.txt'));
+    const unstagedDeletion = await gitDiff('tracked.txt');
+    expect(unstagedDeletion.diff).toContain('-original');
+    expect(unstagedDeletion).toMatchObject({ original: 'original\n', modified: '' });
+    await git(['add', '--', 'tracked.txt']);
+    const stagedDeletion = await gitDiff('tracked.txt', true);
+    expect(stagedDeletion.diff).toContain('-original');
+    expect(stagedDeletion).toMatchObject({ original: 'original\n', modified: '' });
+    await unstageFiles(['tracked.txt']);
+    expect((await gitDiff('tracked.txt', true)).diff).toBe('');
+    await expect(gitDiff('../outside')).rejects.toMatchObject({ statusCode: 400 });
+    await expect(gitDiff('outside/missing')).rejects.toMatchObject({ statusCode: 403 });
+  });
+});

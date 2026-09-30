@@ -11,53 +11,63 @@ import {
   FileDiff,
 } from 'lucide-react';
 import { api, post, errorMessage } from './api';
-import { useUi, Spinner, Modal } from './ui';
+import { useUi, Spinner, Modal, LoadError } from './ui';
+import { gitGroups, isConflicted } from './gitState';
 const CodeDiff = lazy(() => import('./CodeDiff').then((m) => ({ default: m.CodeDiff })));
 export function GitPane({
   projectId,
   editable,
   revision,
+  visible = true,
 }: {
   projectId: string;
   editable: boolean;
   revision: number;
+  visible?: boolean;
 }) {
-  const [status, setStatus] = useState<GitStatus | null>(null),
-    [message, setMessage] = useState(''),
-    [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<GitStatus | null>(null);
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
   const [diff, setDiff] = useState<{
-      path: string;
-      original: string;
-      modified: string;
-      staged: boolean;
-    } | null>(null),
-    [error, setError] = useState('');
-  const ui = useUi();
-  const statusRequest = useRef(0),
-    diffRequest = useRef(0);
+    path: string;
+    content: string;
+    original: string;
+    modified: string;
+    staged: boolean;
+  } | null>(null);
+  const [error, setError] = useState('');
+  const pending = useRef(false);
+  const request = useRef(0);
+  const diffRequest = useRef(0);
   useEffect(
     () => () => {
-      statusRequest.current++;
+      request.current++;
       diffRequest.current++;
     },
     [projectId],
   );
+  const ui = useUi();
   async function load() {
-    const version = ++statusRequest.current;
+    const intent = ++request.current;
     try {
       const result = await api<GitStatus>(`/projects/${projectId}/git/status`);
-      if (version === statusRequest.current) {
+      if (intent === request.current) {
         setStatus(result);
         setError('');
       }
     } catch (e) {
-      if (version === statusRequest.current) setError(errorMessage(e));
+      if (intent === request.current) setError(errorMessage(e));
     }
   }
   useEffect(() => {
-    void load();
-  }, [projectId, revision]);
+    if (visible) void load();
+    return () => {
+      request.current++;
+    };
+  }, [projectId, revision, visible]);
   async function action(action: string, extra: Record<string, unknown> = {}) {
+    if (pending.current) return;
+    pending.current = true;
     setBusy(true);
     setError('');
     try {
@@ -68,23 +78,8 @@ export function GitPane({
     } catch (e) {
       setError(errorMessage(e));
     } finally {
+      pending.current = false;
       setBusy(false);
-    }
-  }
-  const staged = status?.entries.filter((e) => ![' ', '?'].includes(e.index)) || [],
-    unstaged = status?.entries.filter((e) => e.worktree !== ' ') || [];
-  async function showDiff(path: string, staged: boolean) {
-    const version = ++diffRequest.current;
-    try {
-      const result = await api<{ original: string; modified: string }>(
-        `/projects/${projectId}/git/diff?path=${encodeURIComponent(path)}&staged=${staged}`,
-      );
-      if (version === diffRequest.current) {
-        setDiff({ path, staged, ...result });
-        setError('');
-      }
-    } catch (e) {
-      if (version === diffRequest.current) setError(errorMessage(e));
     }
   }
   return (
@@ -96,17 +91,19 @@ export function GitPane({
         </button>
       </div>
       {error && (
-        <div className="form-error" role="alert">
-          <p>{error}</p>
+        <>
+          <LoadError message={error} onRetry={load} />
           <p className="field-help">
             Pull requires a fast-forward. For diverged branches or conflicts, resolve in the
             terminal. GitHub remotes need an active connection and repository permission; protected
             branches may reject pushes.
           </p>
-        </div>
+        </>
       )}
       {!status ? (
-        <Spinner />
+        error ? null : (
+          <Spinner />
+        )
       ) : !status.initialized ? (
         <div className="pane-empty">
           <GitBranch size={30} />
@@ -139,13 +136,21 @@ export function GitPane({
             {editable && (
               <button
                 className="icon-button"
-                aria-label="Create branch"
+                title="Switch or create branch"
+                disabled={busy}
+                aria-label="Manage branches"
                 onClick={async () => {
-                  const name = await ui.ask({ title: 'Create branch', label: 'Branch name' });
-                  if (name) void action('branch', { branch: name });
+                  const name = await ui.ask({
+                    title: 'Switch branch',
+                    label: 'Branch name',
+                    maxLength: 250,
+                    description:
+                      'Enter an existing branch name. To create one, use the + button below.',
+                  });
+                  if (name) void action('checkout', { branch: name });
                 }}
               >
-                <Plus size={14} />
+                <RefreshCw size={14} />
               </button>
             )}
           </div>
@@ -155,65 +160,143 @@ export function GitPane({
           </p>
           {editable && (
             <>
-              <div className="git-actions">
-                <button className="button secondary" disabled={busy} onClick={() => action('pull')}>
+              <div className="git-controls">
+                <button
+                  className="button secondary small"
+                  disabled={busy}
+                  onClick={() => action('pull')}
+                >
                   <ArrowDown size={14} />
                   Pull
                 </button>
-                <button className="button secondary" disabled={busy} onClick={() => action('push')}>
+                <button
+                  className="button secondary small"
+                  disabled={busy}
+                  onClick={() => action('push')}
+                >
                   <ArrowUp size={14} />
                   Push
                 </button>
-              </div>
-              <div className="commit-box">
-                <textarea
-                  aria-label="Commit message"
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                  placeholder="Commit message"
-                />
                 <button
-                  className="button primary"
-                  disabled={busy || !message.trim() || !staged.length}
-                  onClick={() => action('commit', { message })}
+                  className="icon-button"
+                  disabled={busy}
+                  aria-label="Create branch"
+                  onClick={async () => {
+                    const name = await ui.ask({
+                      title: 'Create branch',
+                      label: 'Branch name',
+                      maxLength: 250,
+                    });
+                    if (name) void action('branch', { branch: name });
+                  }}
                 >
-                  <Check size={14} />
-                  Commit staged
+                  <Plus size={16} />
                 </button>
               </div>
+              <textarea
+                maxLength={10000}
+                aria-label="Commit message"
+                rows={3}
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder="Commit message…"
+              />
+              <button
+                className="button primary commit-button"
+                disabled={
+                  busy ||
+                  !message.trim() ||
+                  status.entries.some(isConflicted) ||
+                  !gitGroups(status.entries)[1]!.entries.length
+                }
+                onClick={() => action('commit', { message })}
+              >
+                <Check size={15} />
+                Commit staged changes
+              </button>
             </>
           )}
-          {(
-            [
-              ['Staged', staged, true],
-              ['Unstaged', unstaged, false],
-            ] as const
-          ).map(([label, entries, staged]) => (
-            <section key={label}>
-              <div className="pane-heading">
-                {label} ({entries.length})
-              </div>
-              {entries.map((e) => (
-                <div className="git-file" key={e.path}>
-                  <button onClick={() => showDiff(e.path, staged)}>
-                    <FileDiff size={14} />
-                    <span>{e.path}</span>
-                    <small>{staged ? e.index : e.worktree}</small>
-                  </button>
-                  {editable && (
+          {status.entries.some(isConflicted) && (
+            <p className="form-error" role="alert">
+              Resolve and stage conflicts before committing.
+            </p>
+          )}
+          {gitGroups(status.entries)
+            .filter((group) => group.entries.length)
+            .map((group) => (
+              <section key={group.title}>
+                <div className="git-changes-heading">
+                  <span>{group.title}</span>
+                  <span>{group.entries.length}</span>
+                  {editable && !group.staged && (
                     <button
                       className="icon-button"
                       disabled={busy}
-                      aria-label={`${staged ? 'Unstage' : 'Stage'} ${e.path}`}
-                      onClick={() => action(staged ? 'unstage' : 'stage', { paths: [e.path] })}
+                      title="Stage all"
+                      aria-label={`Stage all ${group.title.toLowerCase()} changes`}
+                      onClick={() => action('stage', { paths: group.entries.map((e) => e.path) })}
                     >
-                      {staged ? <Minus size={15} /> : <Plus size={15} />}
+                      <Plus size={15} />
                     </button>
                   )}
                 </div>
-              ))}
-            </section>
-          ))}
+                {group.entries.map((entry) => (
+                  <div className="git-file" key={entry.path}>
+                    <button
+                      title={`View ${group.staged ? 'staged' : group.conflict ? 'conflicted' : 'unstaged'} diff: ${entry.path}`}
+                      onClick={async () => {
+                        const version = ++diffRequest.current;
+                        try {
+                          const result = await api<{
+                            diff: string;
+                            original: string;
+                            modified: string;
+                          }>(
+                            `/projects/${projectId}/git/diff?path=${encodeURIComponent(entry.path)}&staged=${group.staged}`,
+                          );
+                          if (version !== diffRequest.current) return;
+                          setDiff({
+                            original: result.original,
+                            modified: result.modified,
+                            staged: group.staged,
+                            path: `${group.staged ? 'Staged' : group.conflict ? 'Conflict' : 'Unstaged'}: ${entry.path}`,
+                            content:
+                              result.diff ||
+                              'No tracked diff available. Open the file to inspect its contents.',
+                          });
+                        } catch (e) {
+                          if (version === diffRequest.current) setError(errorMessage(e));
+                        }
+                      }}
+                    >
+                      <FileDiff size={14} />
+                      <span title={entry.path}>{entry.path}</span>
+                      <small>
+                        {group.conflict
+                          ? entry.index + entry.worktree
+                          : group.staged
+                            ? entry.index
+                            : entry.worktree === '?'
+                              ? 'U'
+                              : entry.worktree}
+                      </small>
+                    </button>
+                    {editable && (
+                      <button
+                        className="icon-button"
+                        disabled={busy}
+                        aria-label={`${group.staged ? 'Unstage' : 'Stage'} ${entry.path}`}
+                        onClick={() =>
+                          action(group.staged ? 'unstage' : 'stage', { paths: [entry.path] })
+                        }
+                      >
+                        {group.staged ? <Minus size={15} /> : <Plus size={15} />}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </section>
+            ))}
           {!status.entries.length && <p className="pane-empty-text">Working tree is clean.</p>}
           <p className="field-help git-help">
             Use Repository setup to connect a matching GitHub remote. Other remotes use terminal
@@ -223,15 +306,19 @@ export function GitPane({
       )}
       {diff && (
         <Modal
-          title={`${diff.path} · ${diff.staged ? 'staged' : 'unstaged'}`}
+          title={diff.path}
           onClose={() => {
             diffRequest.current++;
             setDiff(null);
           }}
         >
-          <Suspense fallback={<Spinner />}>
-            <CodeDiff original={diff.original} modified={diff.modified} />
-          </Suspense>
+          {typeof diff.original === 'string' && typeof diff.modified === 'string' ? (
+            <Suspense fallback={<Spinner />}>
+              <CodeDiff original={diff.original} modified={diff.modified} />
+            </Suspense>
+          ) : (
+            <pre className="diff-view">{diff.content}</pre>
+          )}
         </Modal>
       )}
     </div>

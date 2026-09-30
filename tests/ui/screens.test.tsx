@@ -65,7 +65,7 @@ beforeEach(() => {
 it('dismisses the account menu with Escape and restores account focus', async () => {
   const keyboard = userEvent.setup();
   render(<App />);
-  const opener = await screen.findByRole('button', { name: /Owen.*Site owner/ });
+  const opener = await screen.findByRole('button', { name: 'Account for Owen' });
   await keyboard.click(opener);
   expect(screen.getByText('Sign out')).toBeTruthy();
   await keyboard.keyboard('{Escape}');
@@ -119,9 +119,14 @@ it('prevents duplicate password changes', async () => {
   vi.mocked(post).mockReturnValue(pending.promise);
   const keyboard = userEvent.setup();
   render(<App />);
-  await keyboard.click(await screen.findByRole('button', { name: /Owen.*Site owner/ }));
+  await keyboard.click(await screen.findByRole('button', { name: 'Account for Owen' }));
   await keyboard.click(screen.getByText('Change password'));
   const form = screen.getByRole('dialog').querySelector('form')!;
+  for (const input of form.querySelectorAll<HTMLInputElement>('input')) {
+    fireEvent.change(input, {
+      target: { value: input.type === 'password' ? 'long-password-123' : 'newperson' },
+    });
+  }
   act(() => {
     fireEvent.submit(form);
     fireEvent.submit(form);
@@ -141,6 +146,11 @@ it('prevents duplicate administration account and resource submissions', async (
   await screen.findByText('@owen');
   fireEvent.click(screen.getByText('Add person'));
   const form = screen.getByRole('dialog').querySelector('form')!;
+  for (const input of form.querySelectorAll<HTMLInputElement>('input')) {
+    fireEvent.change(input, {
+      target: { value: input.type === 'password' ? 'long-password-123' : 'newperson' },
+    });
+  }
   act(() => {
     fireEvent.submit(form);
     fireEvent.submit(form);
@@ -227,7 +237,7 @@ it('does not dismiss a newly opened password form when an older request complete
   vi.mocked(post).mockReturnValueOnce(pending.promise);
   const keyboard = userEvent.setup();
   render(<App />);
-  const opener = await screen.findByRole('button', { name: /Owen.*Site owner/ });
+  const opener = await screen.findByRole('button', { name: 'Account for Owen' });
   await keyboard.click(opener);
   await keyboard.click(screen.getByText('Change password'));
   fireEvent.submit(screen.getByRole('dialog').querySelector('form')!);
@@ -265,6 +275,8 @@ it('resolves a pending confirmation when its provider unmounts', async () => {
   expect(done).toHaveBeenCalledWith(null);
 });
 it('retains preview behavior and supports keyboard resizing without scrolling', async () => {
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1440);
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(800);
   const original = vi.mocked(api).getMockImplementation()!;
   vi.mocked(api).mockImplementation((path) =>
     path === '/projects/project'

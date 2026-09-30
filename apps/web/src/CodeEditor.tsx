@@ -33,7 +33,7 @@ monaco.editor.defineTheme('repellet', {
   base: 'vs-dark',
   inherit: true,
   rules: [
-    { token: 'comment', foreground: '656E7B' },
+    { token: 'comment', foreground: '8992A0' },
     { token: 'keyword', foreground: 'BAA2D2' },
     { token: 'string', foreground: 'A1BE8D' },
     { token: 'number', foreground: 'D2AC7E' },
@@ -42,7 +42,7 @@ monaco.editor.defineTheme('repellet', {
   colors: {
     'editor.background': '#17191d',
     'editor.foreground': '#cbd0d9',
-    'editorLineNumber.foreground': '#4b525e',
+    'editorLineNumber.foreground': '#8992a0',
     'editorLineNumber.activeForeground': '#abb3bf',
     'editor.selectionBackground': '#31444d',
     'editor.inactiveSelectionBackground': '#2b343d',
@@ -89,6 +89,8 @@ export function CodeEditor({
   user,
   editable,
   onStatus,
+  onLanguageStatus,
+  viewStates,
   onDefinition,
   selection,
   position,
@@ -100,6 +102,8 @@ export function CodeEditor({
   user: User;
   editable: boolean;
   onStatus: (s: string) => void;
+  onLanguageStatus: (s: string) => void;
+  viewStates: Map<string, monaco.editor.ICodeEditorViewState>;
   onDefinition: (path: string, line: number, column: number) => void;
   selection?: { line: number; column: number };
   position?: { line: number; column: number; scrollTop: number; scrollLeft: number };
@@ -123,6 +127,17 @@ export function CodeEditor({
   const initialPosition = useRef(position);
   const status = useRef(onStatus);
   status.current = onStatus;
+  const languageStatus = useRef(onLanguageStatus);
+  languageStatus.current = onLanguageStatus;
+  useEffect(() => {
+    if (!editor) return;
+    const saved = viewStates.get(path);
+    if (saved) editor.restoreViewState(saved);
+    return () => {
+      const state = editor.saveViewState();
+      if (state) viewStates.set(path, state);
+    };
+  }, [editor, path, viewStates]);
   useEffect(() => {
     if (!editor) return;
     const model = editor.getModel();
@@ -148,7 +163,12 @@ export function CodeEditor({
       languageDispose: (() => void) | null = null,
       timer: ReturnType<typeof setTimeout> | undefined,
       disposed = false,
-      synced = false;
+      synced = false,
+      diskConflict = false,
+      documentError = '',
+      online = false;
+    languageStatus.current('');
+    status.current('Connecting…');
     const pending = new Map<string, string>();
     const waits = new Set<{
       resolve: () => void;
@@ -188,6 +208,18 @@ export function CodeEditor({
         }),
     );
     let sequence = 0;
+    const publish = (value: string) =>
+      status.current(
+        documentError
+          ? 'Error'
+          : diskConflict
+            ? 'Disk conflict'
+            : !online
+              ? 'Reconnecting…'
+              : pending.size
+                ? 'Saving…'
+                : value,
+      );
     const send = (message: unknown) => {
       if (socket?.readyState === 1) socket.send(JSON.stringify(message));
     };
@@ -197,7 +229,7 @@ export function CodeEditor({
         encoded = toB64(data);
       pending.set(requestId, encoded);
       send({ type: 'update', update: encoded, requestId });
-      status.current('Saving…');
+      publish('Saving…');
     };
     doc.on('update', update);
     const awarenessUpdate = (
@@ -228,6 +260,10 @@ export function CodeEditor({
           setError('');
           Y.applyUpdate(doc, fromB64(msg.update), 'server');
           synced = true;
+          diskConflict = !!msg.conflict;
+          online = true;
+          documentError = '';
+          setError('');
           setConflict(msg.conflict);
           setConnected(true);
           if (!binding)
@@ -249,10 +285,9 @@ export function CodeEditor({
               projectId,
               path,
               model!,
-              (s) => {
-                if (!pending.size) status.current(s);
-              },
+              (s) => languageStatus.current(s),
               onDefinition,
+              editable,
             );
           if (initialPosition.current) {
             const pos = initialPosition.current;
@@ -260,38 +295,52 @@ export function CodeEditor({
             editor!.setPosition({ lineNumber: pos.line, column: pos.column });
             editor!.setScrollPosition({ scrollTop: pos.scrollTop, scrollLeft: pos.scrollLeft });
           }
-          status.current(msg.conflict ? 'Disk conflict' : msg.dirty ? 'Saving…' : 'Saved');
+          publish(msg.dirty ? 'Saving…' : 'Saved');
         } else if (msg.type === 'update') Y.applyUpdate(doc, fromB64(msg.update), 'server');
         else if (msg.type === 'awareness')
           applyAwarenessUpdate(awareness, fromB64(msg.update), 'server');
         else if (msg.type === 'ack') {
           pending.delete(msg.requestId);
           acknowledge();
-          if (!pending.size) status.current('Saved to server');
-        } else if (msg.type === 'saved') status.current('Saved');
-        else if (msg.type === 'conflict') {
+          publish('Saved to server');
+        } else if (msg.type === 'saved') {
+          documentError = '';
+          setError('');
+          publish('Saved');
+        } else if (msg.type === 'conflict') {
+          diskConflict = true;
           setConflict(true);
-          status.current('Disk conflict');
+          publish('Disk conflict');
         } else if (msg.type === 'resolved') {
+          diskConflict = false;
+          documentError = '';
+          setError('');
           setConflict(false);
-          status.current('Saved');
+          publish('Saved');
         } else if (msg.type === 'error') {
+          documentError = msg.message;
           setError(msg.message);
           status.current('Error');
         }
       };
       socket.onclose = (e) => {
         if (disposed) return;
+        online = false;
+        synced = false;
         setConnected(false);
         editor?.updateOptions({ readOnly: true });
         if (e.code === 1008) {
-          setError(e.reason || 'Access changed. Reopen this file.');
+          documentError = e.reason || 'Access changed. Reopen this file.';
+          setError(documentError);
+          publish('Error');
           return;
         }
-        status.current('Reconnecting…');
+        publish('Reconnecting…');
         if (!disposed) timer = setTimeout(connect, 2000);
       };
-      socket.onerror = () => status.current('Connection interrupted');
+      socket.onerror = () => {
+        if (!disposed) publish('Connection interrupted');
+      };
     }
     editor.updateOptions({ readOnly: true });
     connect();
@@ -354,6 +403,7 @@ export function CodeEditor({
       {error && <div className="form-error editor-error">{error}</div>}
       <Editor
         path={modelUri(projectId, path)}
+        saveViewState={false}
         language={language(path)}
         theme="repellet"
         onMount={setEditor as OnMount}

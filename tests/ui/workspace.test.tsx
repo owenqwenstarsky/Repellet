@@ -130,7 +130,7 @@ it('offers retry and recovers from an initial load failure', async () => {
   vi.mocked(api).mockRejectedValueOnce(new Error('Offline'));
   mount();
   await screen.findByText('Workspace unavailable');
-  fireEvent.click(screen.getByText('Retry workspace'));
+  fireEvent.click(screen.getByText('Retry'));
   await screen.findByLabelText('Project settings');
   expect(screen.queryByText('Workspace unavailable')).toBeNull();
 });

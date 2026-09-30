@@ -9,6 +9,8 @@ import { user } from './helpers';
 const { editor } = vi.hoisted(() => ({
   editor: {
     getModel: () => ({}),
+    saveViewState: () => null,
+    restoreViewState: vi.fn(),
     getPosition: () => null,
     onDidChangeCursorPosition: () => ({ dispose: vi.fn() }),
     onDidScrollChange: () => ({ dispose: vi.fn() }),
@@ -59,6 +61,8 @@ it('clears document connection errors on sync and ignores socket callbacks after
         user={user}
         editable
         onStatus={onStatus}
+        onLanguageStatus={vi.fn()}
+        viewStates={new Map()}
         onDefinition={vi.fn()}
       />
     </UiProvider>,

@@ -67,7 +67,8 @@ class Service {
     this.send({ jsonrpc: '2.0', method, params });
   }
   request(method: string, params: unknown): Promise<any> {
-    if (!this.ready && method !== 'initialize') return Promise.resolve(null);
+    if (this.socket?.readyState !== 1 || (!this.ready && method !== 'initialize'))
+      return Promise.resolve(null);
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
       const timer = setTimeout(() => {
@@ -108,6 +109,7 @@ class Service {
     );
     this.socket = socket;
     socket.onmessage = async (event) => {
+      if (this.disposed || socket !== this.socket) return;
       let msg: any;
       try {
         msg = JSON.parse(event.data);
@@ -116,7 +118,7 @@ class Service {
       }
       if (msg.method === 'repellet/ready') {
         try {
-          await this.request('initialize', {
+          const initialized = await this.request('initialize', {
             processId: null,
             rootUri: 'file:///workspace',
             workspaceFolders: [{ uri: 'file:///workspace', name: 'workspace' }],
@@ -130,7 +132,13 @@ class Service {
               },
             },
           });
-          if (this.disposed || socket !== this.socket || socket.readyState !== 1) return;
+          if (
+            this.disposed ||
+            socket !== this.socket ||
+            socket.readyState !== 1 ||
+            initialized === null
+          )
+            return;
           this.ready = true;
           this.notify('initialized', {});
           for (const doc of this.docs.values()) this.open(doc);
@@ -184,11 +192,11 @@ class Service {
               : null,
         });
     };
-    socket.onclose = () => {
-      if (this.disposed) return;
+    socket.onclose = (event) => {
+      if (this.disposed || socket !== this.socket) return;
       this.clear();
       publish(this, 'Language service disconnected; retrying…');
-      this.retry = setTimeout(() => this.connect(), 2000);
+      if (event.code !== 1008) this.retry = setTimeout(() => this.connect(), 2000);
     };
     socket.onerror = () => publish(this, 'Language service unavailable');
   }
@@ -208,7 +216,9 @@ export function connectLanguage(
   model: monaco.editor.ITextModel,
   onStatus: (status: string) => void,
   onDefinition: (path: string, line: number, column: number) => void,
+  editable = true,
 ) {
+  const formatting = editable ? connectFormatting(projectId, path, model, onStatus) : () => {};
   const ext = path.split('.').pop();
   const runtime =
     ext === 'py'
@@ -220,7 +230,7 @@ export function connectLanguage(
           : ext === 'rs'
             ? 'rust'
             : null;
-  if (!runtime) return () => {};
+  if (!runtime) return formatting;
   const key = projectId + ':' + runtime;
   let service = services.get(key);
   if (!service) {
@@ -241,6 +251,7 @@ export function connectLanguage(
   });
   registerProviders(model.getLanguageId());
   return () => {
+    formatting();
     changed.dispose();
     if (service!.ready)
       service!.notify('textDocument/didClose', { textDocument: { uri: serverUri(path) } });
@@ -342,33 +353,6 @@ function registerProviders(language: string) {
     }),
   );
   registrations.push(
-    monaco.languages.registerDocumentFormattingEditProvider(language, {
-      provideDocumentFormattingEdits: async (m) => {
-        const doc = documents.get(m.uri.toString());
-        if (!doc) return null as any;
-        const { model, path, projectId, onStatus, onDefinition, service } = doc;
-        const ready = service.ready;
-        const active = (candidate: monaco.editor.ITextModel) => candidate === model && ready;
-        const request = (method: string, params: unknown) => service.request(method, params);
-        const textDocument = () => ({ uri: serverUri(path) });
-
-        if (m !== model) return [];
-        const revision = m.getVersionId();
-        try {
-          const result = await post<{ content: string }>(`/projects/${projectId}/format`, {
-            path,
-            content: m.getValue(),
-          });
-          if (m.isDisposed() || m.getVersionId() !== revision) return [];
-          return [{ range: m.getFullModelRange(), text: result.content }];
-        } catch (e) {
-          onStatus(e instanceof Error ? e.message : 'Formatting failed');
-          return [];
-        }
-      },
-    }),
-  );
-  registrations.push(
     monaco.languages.registerDefinitionProvider(language, {
       provideDefinition: async (m, p) => {
         const doc = documents.get(m.uri.toString());
@@ -433,4 +417,54 @@ function completionKind(kind: number) {
     monaco.languages.CompletionItemKind.TypeParameter,
   ];
   return kinds[kind - 1] ?? monaco.languages.CompletionItemKind.Text;
+}
+
+const formattingDocuments = new Map<
+  monaco.editor.ITextModel,
+  { projectId: string; path: string; onStatus: (status: string) => void }
+>();
+const formattingProviders = new Map<string, monaco.IDisposable>();
+export function connectFormatting(
+  projectId: string,
+  path: string,
+  model: monaco.editor.ITextModel,
+  onStatus: (status: string) => void,
+) {
+  const language = model.getLanguageId();
+  const document = { projectId, path, onStatus };
+  formattingDocuments.set(model, document);
+  if (!formattingProviders.has(language)) {
+    const provider = monaco.languages.registerDocumentFormattingEditProvider(language, {
+      provideDocumentFormattingEdits: async (m) => {
+        const document = formattingDocuments.get(m);
+        if (!document) return [];
+        const { projectId, path, onStatus } = document;
+        const revision = m.getVersionId();
+        try {
+          const result = await post<{ content: string }>(`/projects/${projectId}/format`, {
+            path,
+            content: m.getValue(),
+          });
+          if (
+            formattingDocuments.get(m) !== document ||
+            m.isDisposed() ||
+            m.getVersionId() !== revision
+          )
+            return [];
+          return [{ range: m.getFullModelRange(), text: result.content }];
+        } catch (e) {
+          onStatus(e instanceof Error ? e.message : 'Formatting failed');
+          return [];
+        }
+      },
+    });
+    formattingProviders.set(language, provider);
+  }
+  return () => {
+    if (formattingDocuments.get(model) === document) formattingDocuments.delete(model);
+    if (![...formattingDocuments.keys()].some((m) => m.getLanguageId() === language)) {
+      formattingProviders.get(language)?.dispose();
+      formattingProviders.delete(language);
+    }
+  };
 }

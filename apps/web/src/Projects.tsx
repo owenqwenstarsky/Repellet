@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Project, User, Runtime, GitHubRepository, SetupSuggestion } from '@repellet/shared';
-import { runtimeCatalog, starterCatalog } from '@repellet/shared';
+import { runtimeCatalog, starterCatalog, projectCreateSchema } from '@repellet/shared';
 import {
   Plus,
   Search,
@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { GitHubPicker } from './GitHub';
 import { api, post, patch, remove, errorMessage } from './api';
-import { Modal, Status, Spinner, useUi, Dropdown } from './ui';
+import { Modal, Status, Spinner, useUi, Menu, LoadError } from './ui';
 export function RuntimePicker({
   value,
   onChange,
@@ -59,12 +59,14 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
   const [filter, setFilter] = useState('all');
   const [creating, setCreating] = useState(false);
   const [menu, setMenu] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState('');
   const ui = useUi();
   async function load() {
     try {
       setProjects(await api('/projects'));
+      setLoadError('');
     } catch (e) {
-      ui.notify(errorMessage(e));
+      setLoadError(errorMessage(e));
     }
   }
   useEffect(() => {
@@ -102,6 +104,7 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
           ].map(([id, label]) => (
             <button
               key={id}
+              aria-pressed={filter === id}
               className={filter === id ? 'active' : ''}
               onClick={() => setFilter(id!)}
             >
@@ -119,8 +122,11 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
           />
         </div>
       </div>
+      {loadError && <LoadError message={loadError} onRetry={load} />}
       {projects === null ? (
-        <Spinner />
+        loadError ? null : (
+          <Spinner />
+        )
       ) : filtered?.length ? (
         <div className="project-list">
           <div className="project-list-heading">
@@ -137,8 +143,8 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
                   <Code2 size={23} />
                 </div>
                 <span>
-                  <strong>{p.name}</strong>
-                  <small>
+                  <strong title={p.name}>{p.name}</strong>
+                  <small title={p.description || `Shared by ${p.ownerName || 'a teammate'}`}>
                     {p.description ||
                       `${p.ownerId === user.id ? 'Your project' : `Shared by ${p.ownerName || 'a teammate'}`}`}
                   </small>
@@ -169,6 +175,8 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
                 </button>
                 <button
                   className="icon-button"
+                  aria-haspopup="menu"
+                  aria-expanded={menu === p.id}
                   aria-label={`Actions for ${p.name}`}
                   onClick={() => setMenu(menu === p.id ? null : p.id)}
                 >
@@ -177,7 +185,7 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
                 {menu === p.id && (
                   <>
                     <div className="menu-dismiss" onClick={() => setMenu(null)} />
-                    <Dropdown onClose={() => setMenu(null)}>
+                    <Menu onClose={() => setMenu(null)}>
                       <button
                         onClick={() => {
                           setMenu(null);
@@ -195,6 +203,8 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
                                 title: 'Rename project',
                                 value: p.name,
                                 label: 'Project name',
+                                maxLength: 80,
+                                pattern: '.*\\S.*',
                               });
                               if (name)
                                 try {
@@ -231,7 +241,7 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
                           </button>
                         </>
                       )}
-                    </Dropdown>
+                    </Menu>
                   </>
                 )}
               </div>
@@ -323,7 +333,6 @@ function CreateProject({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const detection = useRef(0);
-  const inFlight = useRef(false);
   const environmentEdits = useRef(0);
   useEffect(
     () => () => {
@@ -336,12 +345,25 @@ function CreateProject({
     setRepo(null);
     setRuntimeSuggestion('');
   }
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const alive = useRef(true),
+    pending = useRef(false);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const dismiss = () => {
+    alive.current = false;
+    onClose();
+  };
   return (
-    <Modal title="Create a project" onClose={onClose}>
+    <Modal title="Create a project" onClose={dismiss}>
       <form
         onSubmit={async (e) => {
           e.preventDefault();
-          if (inFlight.current) return;
+          if (pending.current) return;
           if (github && !repo) {
             setError('Choose a GitHub repository.');
             return;
@@ -350,37 +372,72 @@ function CreateProject({
             setError('Choose at least one runtime.');
             return;
           }
-          inFlight.current = true;
+          pending.current = true;
           setBusy(true);
           setError('');
           const form = new FormData(e.currentTarget);
           try {
-            onCreated(
-              await post('/projects', {
-                name: form.get('name'),
-                description: form.get('description'),
-                runtimes,
-                ...(clone ? { cloneUrl: form.get('cloneUrl') } : {}),
-                ...(starterId ? { starterId } : {}),
-                ...(github && repo
-                  ? { githubSource: { repositoryId: repo.id, installationId: repo.installationId } }
-                  : {}),
-              }),
-            );
+            const result = projectCreateSchema.safeParse({
+              name: form.get('name'),
+              description: form.get('description'),
+              runtimes: [...runtimes],
+              ...(clone ? { cloneUrl: form.get('cloneUrl') } : {}),
+              ...(starterId ? { starterId } : {}),
+              ...(github && repo
+                ? { githubSource: { repositoryId: repo.id, installationId: repo.installationId } }
+                : {}),
+            });
+            if (!result.success) {
+              setFieldErrors(
+                Object.fromEntries(
+                  result.error.issues.map((issue) => [String(issue.path[0]), issue.message]),
+                ),
+              );
+              setError('Check the highlighted fields.');
+              return;
+            }
+            setFieldErrors({});
+            const created = await post<Project>('/projects', result.data);
+            if (alive.current) onCreated(created);
           } catch (e) {
-            setError(errorMessage(e));
-            inFlight.current = false;
-            setBusy(false);
+            if (alive.current) setError(errorMessage(e));
+          } finally {
+            pending.current = false;
+            if (alive.current) setBusy(false);
           }
         }}
       >
         <label>
           Project name
-          <input autoFocus name="name" required maxLength={80} placeholder="my-next-project" />
+          <input
+            data-autofocus
+            name="name"
+            aria-invalid={!!fieldErrors.name}
+            aria-describedby={fieldErrors.name ? 'create-name-error' : undefined}
+            required
+            maxLength={80}
+            placeholder="my-next-project"
+          />
+          {fieldErrors.name && (
+            <p className="form-error" role="alert" id="create-name-error">
+              {fieldErrors.name}
+            </p>
+          )}
         </label>
         <label>
           Description <span className="optional">optional</span>
-          <input name="description" maxLength={500} placeholder="What are you building?" />
+          <input
+            name="description"
+            aria-invalid={!!fieldErrors.description}
+            aria-describedby={fieldErrors.description ? 'create-description-error' : undefined}
+            maxLength={500}
+            placeholder="What are you building?"
+          />
+          {fieldErrors.description && (
+            <p className="form-error" role="alert" id="create-description-error">
+              {fieldErrors.description}
+            </p>
+          )}
         </label>
         <label>
           Project source
@@ -469,7 +526,20 @@ function CreateProject({
         {clone && (
           <label>
             Repository URL
-            <input name="cloneUrl" required placeholder="https://github.com/you/repository.git" />
+            <input
+              name="cloneUrl"
+              aria-invalid={!!fieldErrors.cloneUrl}
+              aria-describedby={fieldErrors.cloneUrl ? 'create-cloneUrl-error' : undefined}
+              maxLength={2048}
+              pattern="(https://[^\s]+|git@[a-zA-Z0-9.\-]+:[^\s]+)"
+              required
+              placeholder="https://github.com/you/repository.git"
+            />
+            {fieldErrors.cloneUrl && (
+              <p className="form-error" role="alert" id="create-cloneUrl-error">
+                {fieldErrors.cloneUrl}
+              </p>
+            )}
             <span className="field-help">
               For private repositories, configure credentials in an empty project’s terminal and
               clone there.
@@ -482,7 +552,7 @@ function CreateProject({
           </p>
         )}
         <div className="modal-actions">
-          <button type="button" className="button secondary" onClick={onClose}>
+          <button type="button" className="button secondary" onClick={dismiss}>
             Cancel
           </button>
           <button className="button primary" disabled={busy}>
