@@ -14,6 +14,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install filesystem test dependencies
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: npm ci
       - run: npm run setup
       - run: docker compose -f compose.yaml -f compose.dev.yaml up -d database
