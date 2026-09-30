@@ -21,9 +21,10 @@ vi.mock('monaco-editor', () => ({
   },
 }));
 vi.mock('../apps/web/src/api', () => ({ wsUrl: (s: string) => s, post: vi.fn() }));
-import { connectLanguage } from '../apps/web/src/language';
+import { connectLanguage, connectFormatting } from '../apps/web/src/language';
 import { post } from '../apps/web/src/api';
 const model = {
+  uri: { toString: () => 'file:///repellet/project/main.ts' },
   getLanguageId: () => 'typescript',
   getValue: () => 'latest content',
   getVersionId: () => 1,
@@ -90,6 +91,27 @@ describe('language reconnection', () => {
   });
 });
 describe('project formatting', () => {
+  it('routes formatting to each retained editor through one provider per language', async () => {
+    const otherModel = { ...model, getValue: () => 'second document' };
+    const closeFirst = connectFormatting('project', 'one.ts', model, vi.fn());
+    const closeSecond = connectFormatting('project', 'two.ts', otherModel, vi.fn());
+    expect(providers.formatting).toHaveBeenCalledTimes(1);
+    const format = providers.formatting.mock.calls[0][1].provideDocumentFormattingEdits;
+    await format(model);
+    expect(post).toHaveBeenLastCalledWith('/projects/project/format', {
+      path: 'one.ts',
+      content: 'latest content',
+    });
+    closeFirst();
+    expect(providers.dispose).not.toHaveBeenCalled();
+    await format(otherModel);
+    expect(post).toHaveBeenLastCalledWith('/projects/project/format', {
+      path: 'two.ts',
+      content: 'second document',
+    });
+    closeSecond();
+    expect(providers.dispose).toHaveBeenCalled();
+  });
   for (const path of ['README.md', 'config.json', 'style.css', 'index.html'])
     it(`registers formatting without a runtime for ${path}`, async () => {
       const dispose = connectLanguage('project', path, model, vi.fn(), vi.fn());

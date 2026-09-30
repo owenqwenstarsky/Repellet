@@ -25,7 +25,10 @@ vi.mock('y-monaco', () => ({
     }
   },
 }));
-vi.mock('../apps/web/src/language', () => ({ connectLanguage: mocks.language }));
+vi.mock('../apps/web/src/language', () => ({
+  connectLanguage: mocks.language,
+  modelUri: (project: string, path: string) => 'file:///repellet/' + project + '/' + path,
+}));
 vi.mock('@monaco-editor/react', () => ({
   loader: { config: vi.fn() },
   default: function Editor({ onMount }: any) {
@@ -41,6 +44,9 @@ beforeEach(() => {
   vi.stubGlobal('WebSocket', FakeSocket);
   mocks.editor = {
     getModel: () => ({}),
+    getPosition: () => null,
+    onDidChangeCursorPosition: () => ({ dispose: vi.fn() }),
+    onDidScrollChange: () => ({ dispose: vi.fn() }),
     saveViewState: vi.fn(() => ({ cursor: 42, scrollTop: 900 })),
     restoreViewState: vi.fn(),
     updateOptions: vi.fn(),

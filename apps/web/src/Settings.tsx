@@ -23,6 +23,8 @@ import {
 import { api, put, patch, post, remove, errorMessage } from './api';
 import { Modal, useUi, Spinner, Avatar, LoadError } from './ui';
 import { RuntimePicker } from './Projects';
+import { RepositorySetup } from './RepositorySetup';
+import { usePollingField } from './usePollingField';
 export function ProjectSettings({
   project,
   onClose,
@@ -34,13 +36,15 @@ export function ProjectSettings({
   onChanged: () => void;
   onDuplicate: (id: string) => void;
 }) {
-  const [tab, setTab] = useState('general');
-  const [name, setName] = useState(project.name);
-  const [description, setDescription] = useState(project.description);
-  const [command, setCommand] = useState(project.runConfig.command);
-  const [cwd, setCwd] = useState(project.runConfig.cwd);
-  const [port, setPort] = useState(project.runConfig.port);
-  const [runtimes, setRuntimes] = useState<Runtime[]>(project.runtimes);
+  const [tab, setTab] = useState(
+    project.role === 'owner' && !project.runConfig.command ? 'repository' : 'general',
+  );
+  const [name, setName] = usePollingField(project.name);
+  const [description, setDescription] = usePollingField(project.description);
+  const [command, setCommand] = usePollingField(project.runConfig.command);
+  const [cwd, setCwd] = usePollingField(project.runConfig.cwd);
+  const [port, setPort] = usePollingField(project.runConfig.port);
+  const [runtimes, setRuntimes] = usePollingField<Runtime[]>(project.runtimes);
   const [variables, setVariables] = useState<{ key: string; value: string }[] | null>(null);
   const [visible, setVisible] = useState(false);
   const [members, setMembers] = useState<{ user: User; role: string }[] | null>(null);
@@ -64,6 +68,9 @@ export function ProjectSettings({
   const ui = useUi();
   const manage = project.role === 'owner';
   const base = `/projects/${project.id}`;
+  useEffect(() => {
+    if (!manage && ['environment', 'repository'].includes(tab)) setTab('general');
+  }, [manage, tab]);
   async function loadMembers() {
     const request = ++membersRequest.current;
     setMembersError('');
@@ -101,12 +108,13 @@ export function ProjectSettings({
     alive.current = true;
     void loadMembers();
     if (manage) void loadEnvironment();
+    else setVariables(null);
     return () => {
       alive.current = false;
       environmentRequest.current++;
       membersRequest.current++;
     };
-  }, []);
+  }, [base, manage]);
   async function memberAction(operation: () => Promise<unknown>) {
     if (pending.current) return;
     pending.current = true;
@@ -122,7 +130,12 @@ export function ProjectSettings({
     }
   }
   async function save() {
-    if (pending.current || !manage || (tab === 'environment' && variables === null)) return;
+    if (
+      pending.current ||
+      !manage ||
+      (tab === 'environment' && (variables === null || environmentError))
+    )
+      return;
     if (
       [...fields.current!.querySelectorAll<HTMLInputElement>('input')].some(
         (input) => !input.reportValidity(),
@@ -136,6 +149,7 @@ export function ProjectSettings({
     const errors: Record<string, string> = {};
     if (tab === 'general') {
       const result = projectCreateSchema
+        .innerType()
         .pick({ name: true, description: true })
         .extend({ runConfig: runConfigSchema })
         .safeParse(submitted);
@@ -209,8 +223,9 @@ export function ProjectSettings({
             ['general', 'General', SlidersHorizontal],
             ['environment', 'Environment', Box],
             ['members', 'People', Users],
+            ['repository', 'Repository setup', Box],
           ]
-            .filter(([id]) => manage || id !== 'environment')
+            .filter(([id]) => manage || !['environment', 'repository'].includes(id as string))
             .map(([id, label, Icon]) => (
               <button
                 disabled={busy}
@@ -354,7 +369,7 @@ export function ProjectSettings({
             </div>
           </div>
         )}
-        {tab === 'environment' && (
+        {manage && tab === 'environment' && (
           <>
             <div className="label">Runtime selection</div>
             <p className="field-help">
@@ -379,7 +394,13 @@ export function ProjectSettings({
             <p className="field-help">
               Encrypted on the server. Editors can read them through terminals and running apps.
             </p>
-            {environmentError && <LoadError message={environmentError} onRetry={loadEnvironment} />}
+            {environmentError && (
+              <LoadError
+                message={environmentError}
+                onRetry={loadEnvironment}
+                retryLabel="Retry environment"
+              />
+            )}
             {variables === null ? (
               environmentError ? null : (
                 <Spinner />
@@ -446,6 +467,17 @@ export function ProjectSettings({
               Add variable
             </button>
           </>
+        )}
+        {manage && tab === 'repository' && (
+          <RepositorySetup
+            project={project}
+            onChanged={onChanged}
+            onConfirmed={(config) => {
+              setCommand(config.command);
+              setCwd(config.cwd);
+              setPort(config.port);
+            }}
+          />
         )}
         {tab === 'members' && (
           <>
@@ -552,7 +584,7 @@ export function ProjectSettings({
         <button className="button secondary" onClick={dismiss}>
           Close
         </button>
-        {manage && tab !== 'members' && (
+        {manage && !['members', 'repository'].includes(tab) && (
           <button
             className="button primary"
             disabled={busy || (variables === null && tab === 'environment')}

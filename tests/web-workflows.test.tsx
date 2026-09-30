@@ -32,7 +32,15 @@ function baseApi(path: string): any {
   if (path === '/projects/project') return Promise.resolve(project);
   if (path.endsWith('/environment')) return Promise.resolve({ variables: {} });
   if (path.endsWith('/git/status'))
-    return Promise.resolve({ initialized: true, branch: 'main', entries: [] });
+    return Promise.resolve({
+      initialized: true,
+      branches: ['main'],
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+      branch: 'main',
+      entries: [],
+    });
   if (path.includes('/file?')) return Promise.resolve({ binary: false });
   return Promise.resolve([]);
 }
@@ -91,7 +99,7 @@ describe('environment snapshots and validation', () => {
         ? Promise.resolve({ variables: { EXISTING: 'value' } })
         : baseApi(path),
     );
-    fireEvent.click(screen.getByText('Retry'));
+    fireEvent.click(screen.getByText('Retry environment'));
     await flush();
     expect((screen.getByLabelText('Variable name 1') as HTMLInputElement).value).toBe('EXISTING');
     fireEvent.click(screen.getByText('Save changes'));
@@ -248,6 +256,10 @@ describe('Git states', () => {
   it('renders both mixed-file actions, accurate deletion badges, and disables Commit during conflicts', async () => {
     mockedApi.mockResolvedValue({
       initialized: true,
+      branches: ['main'],
+      upstream: null,
+      ahead: 0,
+      behind: 0,
       branch: 'long/branch',
       entries: [
         { path: 'mixed.ts', index: 'M', worktree: 'M' },
@@ -344,6 +356,7 @@ describe('workspace state recovery', () => {
     await flush();
     fireEvent.keyDown(window, { key: 'Enter', ctrlKey: true });
     fireEvent.keyDown(window, { key: 'Enter', ctrlKey: true });
+    await flush();
     expect(mockedPost.mock.calls.filter(([p]) => p.endsWith('/run'))).toHaveLength(1);
     await act(async () => run.resolve({}));
     fireEvent.click(screen.getByLabelText('Project settings'));
@@ -482,6 +495,10 @@ describe('pane loading feedback and deferred mutations', () => {
     mockedPost.mockReturnValue(mutation.promise);
     mockedApi.mockResolvedValue({
       initialized: true,
+      branches: ['main'],
+      upstream: null,
+      ahead: 0,
+      behind: 0,
       branch: 'main',
       entries: [{ path: 'file.ts', index: ' ', worktree: 'M' }],
     });

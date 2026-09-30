@@ -95,8 +95,31 @@ app.post('/projects/:id/preview', async (req) => {
     throw new Error('Invalid preview target port');
   return { port: await enablePreview(idFrom(req), b.targetPort, b.port) };
 });
+app.post('/projects/:id/probe', async (req) => {
+  const id = idFrom(req);
+  const port = (req.body as { port: number }).port;
+  if (!Number.isInteger(port) || port < 1024 || port > 65535)
+    throw new Error('Invalid preview port');
+  const current = await inspect(id);
+  if (!current?.State.Running) return { responding: false };
+  const host = config.inDocker ? `repellet-project-${id}` : '127.0.0.1';
+  const target = config.inDocker
+    ? port
+    : Number(current.NetworkSettings.Ports[`${port}/tcp`]?.[0]?.HostPort);
+  if (!target) return { responding: false };
+  try {
+    const response = await fetch(`http://${host}:${target}/`, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(2000),
+    });
+    await response.body?.cancel();
+    return { responding: true, httpStatus: response.status };
+  } catch {
+    return { responding: false };
+  }
+});
 const allowedPath =
-  /^\/(health|files(?:\/(?:create|move|delete|upload))?|file|search|replace|format|terminals(?:\/[0-9a-z-]+)?|run(?:\/stop)?|environment|limits|usage|git(?:\/(?:status|diff))?|shutdown)(?:\?[^\r\n]*)?$/;
+  /^\/(preparation(?:\/[a-z0-9-]+)?|scaffold|fingerprint|inspect|health|files(?:\/(?:create|move|delete|upload))?|file-index|file|search|replace|format|terminals(?:\/[0-9a-z-]+)?|run(?:\/stop)?|environment|limits|usage|git(?:\/(?:status|diff|remote))?|shutdown)(?:\?[^\r\n]*)?$/;
 app.post('/projects/:id/request', async (req) => {
   const b = req.body as { path: string; method: string; body?: unknown };
   if (!allowedPath.test(b.path) || !['GET', 'POST', 'PUT', 'DELETE'].includes(b.method))

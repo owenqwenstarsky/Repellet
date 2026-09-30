@@ -101,6 +101,30 @@ describe.skipIf(!enabled)('backup restoration with PostgreSQL and Docker volumes
         security.encrypt(JSON.stringify({ RESTORED_SECRET: 'private-value' })),
       ],
     );
+    await client.query('INSERT INTO github_config(id,encrypted) VALUES(1,$1)', [
+      security.encrypt(
+        JSON.stringify({
+          appId: 123,
+          privateKey: 'private-app-key',
+          clientSecret: 'private-client-secret',
+        }),
+      ),
+    ]);
+    await client.query(
+      'INSERT INTO github_connections(user_id,encrypted,login,github_id,expires_at) VALUES($1,$2,$3,42,$4)',
+      [
+        owner,
+        security.encrypt(
+          JSON.stringify({ access_token: 'expired-token', refresh_token: 'refresh-token' }),
+        ),
+        'restored-github',
+        new Date(0),
+      ],
+    );
+    await client.query(
+      "UPDATE projects SET starter_id='react-vite',starter_version=1,setup_command='npm ci',preparation=$1 WHERE id=$2",
+      [JSON.stringify({ status: 'ready', scaffolded: true, fingerprint: 'kept', error: null }), id],
+    );
     const helper = (volume: string, command: string, options: any = {}) =>
       runDocker(
         [
@@ -172,6 +196,21 @@ describe.skipIf(!enabled)('backup restoration with PostgreSQL and Docker volumes
         'SELECT u.password_hash,p.name,p.environment FROM users u JOIN projects p ON p.owner_id=u.id',
       );
       expect(rows[0].name).toBe('Restored project');
+      const github = (await restored.query('SELECT encrypted,expires_at FROM github_connections'))
+        .rows[0];
+      expect(JSON.parse(security.decrypt(github.encrypted, restoredKey))).toEqual({
+        access_token: 'expired-token',
+        refresh_token: 'refresh-token',
+      });
+      expect(github.expires_at.getTime()).toBe(0);
+      const appKey = (await restored.query('SELECT encrypted FROM github_config')).rows[0];
+      expect(JSON.parse(security.decrypt(appKey.encrypted, restoredKey)).privateKey).toBe(
+        'private-app-key',
+      );
+      const metadata = (await restored.query('SELECT starter_id,preparation FROM projects'))
+        .rows[0];
+      expect(metadata.starter_id).toBe('react-vite');
+      expect(metadata.preparation.scaffolded).toBe(true);
       expect(
         await security.verifyPassword(rows[0].password_hash, 'restore-test-password-123'),
       ).toBe(true);

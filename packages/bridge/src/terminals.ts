@@ -24,6 +24,7 @@ export function info() {
 export async function createTerminal(name = 'Terminal', command?: string, cwd = '') {
   if ([...terminals.values()].filter((t) => t.alive).length >= 12)
     throw Object.assign(new Error('Maximum of 12 terminal sessions'), { statusCode: 409 });
+  if (command) await stopTerminal('run');
   const directory = await resolvePath(cwd || '');
   const child = pty.spawn('/bin/bash', command ? ['-c', command] : ['--noprofile'], {
     name: 'xterm-256color',
@@ -78,12 +79,21 @@ export async function stopTerminal(id: string) {
       session.process.kill('SIGTERM');
     } catch {}
     const pid = session.process.pid;
-    setTimeout(() => {
-      execFile('pkill', ['-KILL', '-s', String(pid)], () => {});
-      try {
-        session.process.kill('SIGKILL');
-      } catch {}
-    }, 1500).unref();
+    const kill = () =>
+      new Promise<void>((resolve) =>
+        execFile('pkill', ['-KILL', '-s', String(pid)], () => {
+          try {
+            session.process.kill('SIGKILL');
+          } catch {}
+          resolve();
+        }),
+      );
+    const deadline = Date.now() + 1500;
+    while (session.alive && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    await kill();
+    const exitDeadline = Date.now() + 3000;
+    while (session.alive && Date.now() < exitDeadline) await new Promise((r) => setTimeout(r, 25));
+    if (session.alive) throw new Error('Previous process did not exit; retry Stop app');
   }
 }
 export function attachTerminal(ws: WebSocket, id: string) {

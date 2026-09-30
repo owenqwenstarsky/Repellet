@@ -8,6 +8,8 @@ import { workerJson, bridge } from './worker.js';
 import { emit, hasClients, closeProject } from './live.js';
 import { flushProject, closeDocuments, externalChange } from './collaboration.js';
 import type { Runtime, Limits } from '@repellet/shared';
+import { cloneGithub } from './github.js';
+import { prepareProject, cancelProjectWork, setPreparation, setAppStatus } from './preparation.js';
 const operations = new Map<string, Promise<unknown>>();
 const watchers = new Map<string, WebSocket>();
 export async function serialize<T>(id: string, fn: () => Promise<T>): Promise<T> {
@@ -59,6 +61,7 @@ export async function ensureProject(
   id: string,
   changes?: { runtimes?: Runtime[]; environment?: Record<string, string> },
 ) {
+  if (changes) await cancelProjectWork(id);
   return serialize(id, async () => {
     let [project] = await db.select().from(projects).where(eq(projects.id, id));
     if (!project) throw new Error('Project not found');
@@ -97,7 +100,12 @@ export async function ensureProject(
     emit(id, { type: 'state', state: 'building' });
     const [job] = await db
       .insert(jobs)
-      .values({ projectId: id, kind: changes?.runtimes ? 'rebuild' : 'start', state: 'running' })
+      .values({
+        projectId: id,
+        kind: changes?.runtimes ? 'rebuild' : 'start',
+        state: 'running',
+        startedAt: new Date(),
+      })
       .returning();
     try {
       if (changes && project.state === 'running') {
@@ -127,6 +135,7 @@ export async function ensureProject(
           previewTargetPort: project.runConfig.port,
         },
       );
+      await cloneGithub(project);
       const preview = await workerJson<{ port: number }>(`/projects/${id}/preview`, 'POST', {
         targetPort: project.runConfig.port,
         port: project.previewPort,
@@ -161,6 +170,7 @@ export async function ensureProject(
   });
 }
 export async function stopProject(id: string) {
+  await cancelProjectWork(id);
   return serialize(id, async () => {
     try {
       await flushProject(id);
@@ -191,6 +201,14 @@ export async function reconcile() {
     })
     .where(inArray(jobs.state, ['pending', 'running']));
   for (const p of all) {
+    if (['files', 'installing'].includes(p.preparation.status)) {
+      await cancelProjectWork(p.id);
+      await setPreparation(p.id, {
+        ...p.preparation,
+        status: 'interrupted',
+        error: 'Server restarted during preparation. Retry when ready.',
+      });
+    }
     try {
       const state = await workerJson<{ running: boolean; oomKilled: boolean }>(`/projects/${p.id}`);
       if (state.running) {
@@ -204,6 +222,12 @@ export async function reconcile() {
         });
         await db.update(projects).set({ previewPort: preview.port }).where(eq(projects.id, p.id));
         await watch(p.id);
+        if (p.appStatus.status === 'starting')
+          await setAppStatus(p.id, {
+            status: 'timeout',
+            error:
+              'Readiness checking was interrupted by a restart. Retry readiness to check the running app.',
+          });
       } else if (p.state !== 'stopped')
         await setState(
           p.id,
@@ -223,7 +247,8 @@ export async function monitor() {
     const currentLimits = await limits();
     const active = await db.select().from(projects).where(eq(projects.state, 'running'));
     for (const p of active) {
-      if (operations.has(p.id)) continue;
+      // Dependency installation holds the project operation lock, but still needs quota checks.
+      if (operations.has(p.id) && !['files', 'installing'].includes(p.preparation.status)) continue;
       try {
         const status = await workerJson<{ running: boolean; oomKilled: boolean }>(
           `/projects/${p.id}`,
@@ -239,12 +264,21 @@ export async function monitor() {
           closeProject(p.id);
           continue;
         }
+        if (['available', 'starting', 'timeout'].includes(p.appStatus.status)) {
+          const terminals = await bridge<{ isRun: boolean; alive: boolean }[]>(p.id, '/terminals');
+          if (!terminals.some((t) => t.isRun && t.alive))
+            await setAppStatus(p.id, {
+              status: 'failed',
+              error: 'The app process exited. Check the Run terminal, then click Run to retry.',
+            });
+        }
         const usage = await bridge<{ bytes: number; exceeded: boolean }>(p.id, '/usage');
         await db
           .update(projects)
           .set({ storageBytes: usage.bytes, storageExceeded: usage.exceeded })
           .where(eq(projects.id, p.id));
         emit(p.id, { type: 'storage', bytes: usage.bytes, exceeded: usage.exceeded });
+        if (operations.has(p.id)) continue;
         if (hasClients(p.id))
           await db.update(projects).set({ lastActiveAt: new Date() }).where(eq(projects.id, p.id));
         else if (Date.now() - p.lastActiveAt.getTime() > currentLimits.idleMinutes * 60000)

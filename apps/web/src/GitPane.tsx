@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, lazy, Suspense } from 'react';
 import type { GitStatus } from '@repellet/shared';
 import {
   GitBranch,
@@ -13,6 +13,7 @@ import {
 import { api, post, errorMessage } from './api';
 import { useUi, Spinner, Modal, LoadError } from './ui';
 import { gitGroups, isConflicted } from './gitState';
+const CodeDiff = lazy(() => import('./CodeDiff').then((m) => ({ default: m.CodeDiff })));
 export function GitPane({
   projectId,
   editable,
@@ -27,10 +28,24 @@ export function GitPane({
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  const [diff, setDiff] = useState<{ path: string; content: string } | null>(null);
+  const [diff, setDiff] = useState<{
+    path: string;
+    content: string;
+    original: string;
+    modified: string;
+    staged: boolean;
+  } | null>(null);
   const [error, setError] = useState('');
   const pending = useRef(false);
   const request = useRef(0);
+  const diffRequest = useRef(0);
+  useEffect(
+    () => () => {
+      request.current++;
+      diffRequest.current++;
+    },
+    [projectId],
+  );
   const ui = useUi();
   async function load() {
     const intent = ++request.current;
@@ -54,13 +69,14 @@ export function GitPane({
     if (pending.current) return;
     pending.current = true;
     setBusy(true);
+    setError('');
     try {
       const result = await post(`/projects/${projectId}/git`, { action, ...extra });
       if (result.output) ui.notify(result.output.slice(0, 500), 'success');
       await load();
       if (action === 'commit') setMessage('');
     } catch (e) {
-      ui.notify(errorMessage(e));
+      setError(errorMessage(e));
     } finally {
       pending.current = false;
       setBusy(false);
@@ -74,7 +90,16 @@ export function GitPane({
           <RefreshCw size={14} />
         </button>
       </div>
-      {error && <LoadError message={error} onRetry={load} />}
+      {error && (
+        <>
+          <LoadError message={error} onRetry={load} />
+          <p className="field-help">
+            Pull requires a fast-forward. For diverged branches or conflicts, resolve in the
+            terminal. GitHub remotes need an active connection and repository permission; protected
+            branches may reject pushes.
+          </p>
+        </>
+      )}
       {!status ? (
         error ? null : (
           <Spinner />
@@ -93,7 +118,21 @@ export function GitPane({
         <>
           <div className="git-branch">
             <GitBranch size={16} />
-            <strong title={status.branch}>{status.branch}</strong>
+            {editable ? (
+              <select
+                aria-label="Current branch"
+                value={status.branch}
+                disabled={busy}
+                onChange={(e) => action('checkout', { branch: e.target.value })}
+              >
+                {!status.branches.includes(status.branch) && <option>{status.branch}</option>}
+                {status.branches.map((b) => (
+                  <option key={b}>{b}</option>
+                ))}
+              </select>
+            ) : (
+              <strong>{status.branch}</strong>
+            )}
             {editable && (
               <button
                 className="icon-button"
@@ -115,6 +154,10 @@ export function GitPane({
               </button>
             )}
           </div>
+          <p className="field-help">
+            {status.upstream || 'No upstream; first push establishes it'} · ↑{status.ahead} ↓
+            {status.behind}
+          </p>
           {editable && (
             <>
               <div className="git-controls">
@@ -202,18 +245,27 @@ export function GitPane({
                     <button
                       title={`View ${group.staged ? 'staged' : group.conflict ? 'conflicted' : 'unstaged'} diff: ${entry.path}`}
                       onClick={async () => {
+                        const version = ++diffRequest.current;
                         try {
-                          const result = await api<{ diff: string }>(
+                          const result = await api<{
+                            diff: string;
+                            original: string;
+                            modified: string;
+                          }>(
                             `/projects/${projectId}/git/diff?path=${encodeURIComponent(entry.path)}&staged=${group.staged}`,
                           );
+                          if (version !== diffRequest.current) return;
                           setDiff({
+                            original: result.original,
+                            modified: result.modified,
+                            staged: group.staged,
                             path: `${group.staged ? 'Staged' : group.conflict ? 'Conflict' : 'Unstaged'}: ${entry.path}`,
                             content:
                               result.diff ||
                               'No tracked diff available. Open the file to inspect its contents.',
                           });
                         } catch (e) {
-                          ui.notify(errorMessage(e));
+                          if (version === diffRequest.current) setError(errorMessage(e));
                         }
                       }}
                     >
@@ -247,13 +299,26 @@ export function GitPane({
             ))}
           {!status.entries.length && <p className="pane-empty-text">Working tree is clean.</p>}
           <p className="field-help git-help">
-            Configure SSH keys or Git credentials in the terminal for private remotes.
+            Use Repository setup to connect a matching GitHub remote. Other remotes use terminal
+            credentials. Merge, rebase, and force push remain terminal workflows.
           </p>
         </>
       )}
       {diff && (
-        <Modal title={diff.path} onClose={() => setDiff(null)}>
-          <pre className="diff-view">{diff.content}</pre>
+        <Modal
+          title={diff.path}
+          onClose={() => {
+            diffRequest.current++;
+            setDiff(null);
+          }}
+        >
+          {typeof diff.original === 'string' && typeof diff.modified === 'string' ? (
+            <Suspense fallback={<Spinner />}>
+              <CodeDiff original={diff.original} modified={diff.modified} />
+            </Suspense>
+          ) : (
+            <pre className="diff-view">{diff.content}</pre>
+          )}
         </Modal>
       )}
     </div>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import type { Project, User, Runtime } from '@repellet/shared';
-import { runtimeCatalog, projectCreateSchema } from '@repellet/shared';
+import type { Project, User, Runtime, GitHubRepository, SetupSuggestion } from '@repellet/shared';
+import { runtimeCatalog, starterCatalog, projectCreateSchema } from '@repellet/shared';
 import {
   Plus,
   Search,
@@ -13,6 +13,7 @@ import {
   Box,
   Loader2,
 } from 'lucide-react';
+import { GitHubPicker } from './GitHub';
 import { api, post, patch, remove, errorMessage } from './api';
 import { Modal, Status, Spinner, useUi, Menu, LoadError } from './ui';
 export function RuntimePicker({
@@ -325,8 +326,25 @@ function CreateProject({
 }) {
   const [runtimes, setRuntimes] = useState<Runtime[]>(['node']);
   const [clone, setClone] = useState(false);
+  const [starterId, setStarterId] = useState('');
+  const [github, setGithub] = useState(false);
+  const [repo, setRepo] = useState<GitHubRepository | null>(null);
+  const [runtimeSuggestion, setRuntimeSuggestion] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const detection = useRef(0);
+  const environmentEdits = useRef(0);
+  useEffect(
+    () => () => {
+      detection.current++;
+    },
+    [],
+  );
+  function clearDetection() {
+    detection.current++;
+    setRepo(null);
+    setRuntimeSuggestion('');
+  }
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const alive = useRef(true),
     pending = useRef(false);
@@ -346,6 +364,10 @@ function CreateProject({
         onSubmit={async (e) => {
           e.preventDefault();
           if (pending.current) return;
+          if (github && !repo) {
+            setError('Choose a GitHub repository.');
+            return;
+          }
           if (!runtimes.length) {
             setError('Choose at least one runtime.');
             return;
@@ -360,6 +382,10 @@ function CreateProject({
               description: form.get('description'),
               runtimes: [...runtimes],
               ...(clone ? { cloneUrl: form.get('cloneUrl') } : {}),
+              ...(starterId ? { starterId } : {}),
+              ...(github && repo
+                ? { githubSource: { repositoryId: repo.id, installationId: repo.installationId } }
+                : {}),
             });
             if (!result.success) {
               setFieldErrors(
@@ -413,12 +439,87 @@ function CreateProject({
             </p>
           )}
         </label>
+        <label>
+          Project source
+          <select
+            aria-label="Project source"
+            value={github ? 'github' : clone ? 'clone' : starterId || 'blank'}
+            onChange={(e) => {
+              setClone(e.target.value === 'clone');
+              setGithub(e.target.value === 'github');
+              clearDetection();
+              const starter = starterCatalog.find((s) => s.id === e.target.value);
+              setStarterId(starter?.id || '');
+              if (starter) setRuntimes([...starter.runtimes]);
+            }}
+          >
+            <option value="blank">Blank</option>
+            {starterCatalog.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+            <option value="clone">Clone repository</option>
+            <option value="github">GitHub repository</option>
+          </select>
+        </label>
+        {github && (
+          <GitHubPicker
+            value={repo}
+            onSelect={(repo) => {
+              setRepo(repo);
+              setRuntimeSuggestion('');
+              const request = ++detection.current;
+              const edits = environmentEdits.current;
+              if (repo)
+                api<SetupSuggestion>(
+                  `/github/repositories/${repo.id}/suggestion?installationId=${repo.installationId}`,
+                )
+                  .then((s) => {
+                    if (request !== detection.current) return;
+                    if (s.runtimes.length) {
+                      if (edits === environmentEdits.current) setRuntimes(s.runtimes);
+                      setRuntimeSuggestion(
+                        'Detected: ' +
+                          s.runtimes.join(', ') +
+                          '. Review repository setup after import.',
+                      );
+                    }
+                  })
+                  .catch((e) => {
+                    if (request === detection.current) setRuntimeSuggestion(errorMessage(e));
+                  });
+            }}
+          />
+        )}
+        {runtimeSuggestion && <p className="field-help">{runtimeSuggestion}</p>}
+        {starterId && (
+          <p className="field-help">
+            Files and dependencies prepare automatically. Click Run when ready.
+          </p>
+        )}
         <div className="label">Environment</div>
         <p className="field-help">
           Combine runtimes. Git and common build tools are always included.
         </p>
-        <RuntimePicker value={runtimes} onChange={setRuntimes} />
-        <button type="button" className="text-button clone-toggle" onClick={() => setClone(!clone)}>
+        <RuntimePicker
+          value={runtimes}
+          onChange={(value) => {
+            environmentEdits.current++;
+            setRuntimes(value);
+          }}
+          disabled={!!starterId}
+        />
+        <button
+          type="button"
+          className="text-button clone-toggle"
+          onClick={() => {
+            setClone(!clone);
+            setStarterId('');
+            setGithub(false);
+            clearDetection();
+          }}
+        >
           <GitBranch size={16} />
           {clone ? 'Start with an empty project' : 'Clone a Git repository'}
         </button>

@@ -11,6 +11,7 @@ import { safeRelativePath } from '@repellet/shared';
 import { config, allowedOrigins } from './config.js';
 import { db, pool } from './db.js';
 import { installation, projects } from './schema.js';
+import { githubRoutes } from './github.js';
 import { routes } from './routes.js';
 import { requireUser, projectAccess, SESSION_COOKIE } from './security.js';
 import { track } from './live.js';
@@ -67,6 +68,7 @@ export async function createApp(options: { static?: boolean; logger?: boolean } 
     return { ok: true, worker, version: '0.1.0' };
   });
   await routes(app);
+  await githubRoutes(app);
   app.get('/ws/projects/:id/events', { websocket: true }, async (ws, req) => {
     try {
       const user = await requireUser(req);

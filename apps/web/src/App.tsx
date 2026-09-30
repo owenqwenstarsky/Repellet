@@ -14,13 +14,22 @@ import { api, post, errorMessage } from './api';
 import { UiProvider, useUi, Logo, Avatar, Spinner, Modal, Menu } from './ui';
 import { Auth } from './Auth';
 import { Projects } from './Projects';
+import { GitHubSettings } from './GitHub';
 import { Admin } from './Admin';
 import { Workspace } from './Workspace';
 function route() {
   const match = location.pathname.match(/^\/projects\/([a-f0-9-]+)$/);
   return match
     ? { page: 'workspace', project: match[1] }
-    : { page: location.pathname === '/admin' ? 'admin' : 'projects', project: '' };
+    : {
+        page:
+          location.pathname === '/admin'
+            ? 'admin'
+            : location.pathname === '/github'
+              ? 'github'
+              : 'projects',
+        project: '',
+      };
 }
 export default function App() {
   return (
@@ -43,7 +52,13 @@ function Application() {
     history.pushState(
       null,
       '',
-      page === 'workspace' ? `/projects/${project}` : page === 'admin' ? '/admin' : '/',
+      page === 'workspace'
+        ? `/projects/${project}`
+        : page === 'admin'
+          ? '/admin'
+          : page === 'github'
+            ? '/github'
+            : '/',
     );
     setCurrent({ page, project });
   }
@@ -70,7 +85,10 @@ function Application() {
     void health();
     const healthTimer = setInterval(health, 15000);
     const pop = () => setCurrent(route());
-    const unauthorized = () => setUser(null);
+    const unauthorized = () => {
+      setPassword(false);
+      setUser(null);
+    };
     window.addEventListener('popstate', pop);
     window.addEventListener('repellet:unauthorized', unauthorized);
     return () => {
@@ -139,6 +157,13 @@ function Application() {
           >
             <FolderCode size={18} />
             Projects
+          </button>
+          <button
+            className={current.page === 'github' ? 'active' : ''}
+            onClick={() => navigate('github')}
+          >
+            <FolderCode size={18} />
+            GitHub
           </button>
           {user.isOwner && (
             <button
@@ -242,7 +267,9 @@ function Application() {
             Private installation
           </span>
         </div>
-        {current.page === 'admin' && user.isOwner ? (
+        {current.page === 'github' ? (
+          <GitHubSettings user={user} />
+        ) : current.page === 'admin' && user.isOwner ? (
           <Admin onOpen={(id) => navigate('workspace', id)} />
         ) : (
           <Projects user={user} onOpen={(id) => navigate('workspace', id)} />

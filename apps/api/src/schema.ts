@@ -10,7 +10,16 @@ import {
   primaryKey,
   index,
 } from 'drizzle-orm/pg-core';
-import type { Runtime, Limits, ProjectState, ProjectRole } from '@repellet/shared';
+import type {
+  Runtime,
+  Limits,
+  ProjectState,
+  ProjectRole,
+  Preparation,
+  AppStatus,
+  GitHubSource,
+  WorkflowStep,
+} from '@repellet/shared';
 export const users = pgTable('users', {
   id: uuid().primaryKey().defaultRandom(),
   username: text().notNull().unique(),
@@ -54,6 +63,15 @@ export const projects = pgTable(
       .notNull(),
     environment: text(),
     cloneUrl: text('clone_url'),
+    starterId: text('starter_id'),
+    starterVersion: integer('starter_version'),
+    setupCommand: text('setup_command').notNull().default(''),
+    preparation: jsonb()
+      .$type<Preparation>()
+      .notNull()
+      .default({ status: 'none', scaffolded: false, fingerprint: null, error: null }),
+    appStatus: jsonb('app_status').$type<AppStatus>().notNull().default({ status: 'stopped' }),
+    repository: jsonb().$type<GitHubSource>(),
     previewPort: integer('preview_port'),
     storageBytes: bigint('storage_bytes', { mode: 'number' }).notNull().default(0),
     storageExceeded: boolean('storage_exceeded').notNull().default(false),
@@ -101,6 +119,34 @@ export const jobs = pgTable('jobs', {
   kind: text().notNull(),
   state: text().notNull().default('pending'),
   error: text(),
+  step: text(),
+  steps: jsonb().$type<WorkflowStep[]>().notNull().default([]),
+  log: text().notNull().default(''),
+  startedAt: timestamp('started_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
+});
+
+export const githubConfig = pgTable('github_config', {
+  id: integer().primaryKey(),
+  encrypted: text().notNull(),
+});
+export const githubConnections = pgTable('github_connections', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  encrypted: text().notNull(),
+  login: text().notNull(),
+  githubId: bigint('github_id', { mode: 'number' }).notNull(),
+  installationId: bigint('installation_id', { mode: 'number' }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  revoked: boolean().notNull().default(false),
+});
+export const githubStates = pgTable('github_states', {
+  hash: text().primaryKey(),
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  kind: text().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 });

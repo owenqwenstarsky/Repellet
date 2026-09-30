@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import pg from 'pg';
 import Docker from 'dockerode';
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, generateKeyPairSync } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 dotenv.config({ quiet: true });
 const baseUrl = process.env.DATABASE_URL;
@@ -13,7 +13,12 @@ await admin.connect();
 await admin.query(`CREATE DATABASE ${dbName}`);
 const url = new URL(baseUrl);
 url.pathname = '/' + dbName;
+const fake = await (await import('./fake-github.mjs')).fakeGitHub();
+const fakeUrl = await fake.listen({ host: '127.0.0.1', port: 3317 });
 Object.assign(process.env, {
+  NODE_ENV: 'test',
+  GITHUB_TEST_API: fakeUrl,
+  GITHUB_TEST_WEB: fakeUrl,
   DATABASE_URL: url.toString(),
   PORT: '3315',
   HOST: '127.0.0.1',
@@ -28,13 +33,30 @@ Object.assign(process.env, {
   WORKER_IN_DOCKER: 'false',
 });
 const { db, migrate, pool } = await import('../apps/api/dist/db.js');
-const { installation } = await import('../apps/api/dist/schema.js');
+const { installation, githubConfig } = await import('../apps/api/dist/schema.js');
 const { encrypt } = await import('../apps/api/dist/security.js');
 await migrate();
 await db.insert(installation).values({
   id: 1,
   setupToken: encrypt('repellet-e2e-setup-token'),
   limits: { cpu: 2, memoryMb: 2048, storageMb: 5120, maxActiveProjects: 3, idleMinutes: 30 },
+});
+const privateKey = generateKeyPairSync('rsa', {
+  modulusLength: 2048,
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+}).privateKey;
+await db.insert(githubConfig).values({
+  id: 1,
+  encrypted: encrypt(
+    JSON.stringify({
+      appId: 123,
+      slug: 'repellet-browser-test',
+      clientId: 'fake-client',
+      clientSecret: 'fake-secret',
+      privateKey,
+    }),
+  ),
 });
 await pool.end();
 await mkdir('.cache', { recursive: true });
@@ -89,6 +111,7 @@ async function shutdown() {
     await new Promise((r) => setTimeout(r, 500));
     await admin.query(`DROP DATABASE ${dbName} WITH (FORCE)`);
     await admin.end();
+    await fake.close();
     process.exit(0);
   }
 }

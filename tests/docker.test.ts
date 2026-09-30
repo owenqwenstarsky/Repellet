@@ -197,9 +197,90 @@ describe.skipIf(!enabled)('real Docker workspace integration', () => {
     expect(status.initialized).toBe(true);
     expect(status.entries.some((e: any) => e.path === 'persistent.txt')).toBe(false);
   });
+  it('keeps staged and unstaged comparisons independent and lists branches', async () => {
+    await json('/file', 'PUT', {
+      path: 'persistent.txt',
+      content: 'staged content',
+      expectedHash: undefined,
+    });
+    await json('/git', 'POST', { action: 'stage', paths: ['persistent.txt'] });
+    await json('/file', 'PUT', {
+      path: 'persistent.txt',
+      content: 'working content',
+      expectedHash: undefined,
+    });
+    const staged = await json('/git/diff?path=persistent.txt&staged=true'),
+      unstaged = await json('/git/diff?path=persistent.txt&staged=false');
+    expect(staged.modified).toBe('staged content');
+    expect(unstaged.original).toBe('staged content');
+    expect(unstaged.modified).toBe('working content');
+    const status = await json('/git/status');
+    expect(status.branches).toContain(status.branch);
+    expect(status.upstream).toBeNull();
+  });
+  it('redacts operation credentials, does not persist them, and rejects changed remotes', async () => {
+    const state = await worker.inspect(id);
+    const execute = async (script: string) => {
+      const operation = await images.docker
+        .getContainer(state!.Id)
+        .exec({ Cmd: ['sh', '-c', script], User: 'root', AttachStdout: true, AttachStderr: true });
+      const stream = await operation.start({});
+      stream.resume();
+      await new Promise<void>((resolve, reject) => {
+        stream.on('end', resolve);
+        stream.on('error', reject);
+      });
+      expect((await operation.inspect()).ExitCode).toBe(0);
+    };
+    await command(
+      "git remote add origin https://github.com/test/repository.git; printf 'REMOTE_%s\\n' ready",
+      'REMOTE_ready',
+    );
+    await execute(`cat > /usr/local/bin/git <<'SCRIPT'
+#!/bin/sh
+if [ "$1" = "-c" ]; then
+  printf '%s' "$REPELLET_GIT_TOKEN" >&2
+  exit 1
+fi
+exec /usr/bin/git "$@"
+SCRIPT
+chmod +x /usr/local/bin/git`);
+    const token = 'fake-operation-secret-do-not-persist';
+    try {
+      await expect(
+        json('/git', 'POST', {
+          action: 'push',
+          credential: { token, remote: 'https://github.com/test/repository.git' },
+        }),
+      ).rejects.toThrow('[redacted]');
+      const config = await command(
+        "git --no-pager config --local --list; printf 'CONFIG_%s\\n' done",
+        'CONFIG_done',
+      );
+      expect(config).not.toContain(token);
+      expect(config).not.toContain('credential.helper');
+      await command(
+        "git remote set-url origin https://example.com/different.git; printf 'CHANGED_%s\\n' done",
+        'CHANGED_done',
+      );
+      await expect(
+        json('/git', 'POST', {
+          action: 'push',
+          credential: { token, remote: 'https://github.com/test/repository.git' },
+        }),
+      ).rejects.toThrow('Origin remote changed');
+    } finally {
+      await execute('rm -f /usr/local/bin/git');
+    }
+  });
   it('suspends execution at monitored storage limits but permits cleanup', async () => {
+    await json('/preparation', 'POST', { id: 'quota-install', command: 'sleep 30', cwd: '' });
     await json('/limits', 'PUT', { storageMb: 0.001 });
     expect((await json('/usage')).exceeded).toBe(true);
+    expect((await json('/preparation/quota-install')).state).toBe('cancelled');
+    await expect(
+      json('/preparation', 'POST', { id: 'quota-retry', command: 'sleep 30', cwd: '' }),
+    ).rejects.toMatchObject({ statusCode: 507 });
     await expect(json('/terminals', 'POST', {})).rejects.toMatchObject({ statusCode: 507 });
     await worker.stopWorkspace(id);
     await worker.ensureWorkspace(id, {

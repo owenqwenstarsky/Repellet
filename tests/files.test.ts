@@ -120,9 +120,13 @@ describe('Git index and missing-path operations', () => {
       'Initial',
     ]);
     await fs.rm(path.join(files.root, 'tracked.txt'));
-    expect((await gitDiff('tracked.txt')).diff).toContain('-original');
+    const unstagedDeletion = await gitDiff('tracked.txt');
+    expect(unstagedDeletion.diff).toContain('-original');
+    expect(unstagedDeletion).toMatchObject({ original: 'original\n', modified: '' });
     await git(['add', '--', 'tracked.txt']);
-    expect((await gitDiff('tracked.txt', true)).diff).toContain('-original');
+    const stagedDeletion = await gitDiff('tracked.txt', true);
+    expect(stagedDeletion.diff).toContain('-original');
+    expect(stagedDeletion).toMatchObject({ original: 'original\n', modified: '' });
     await unstageFiles(['tracked.txt']);
     expect((await gitDiff('tracked.txt', true)).diff).toBe('');
     await expect(gitDiff('../outside')).rejects.toMatchObject({ statusCode: 400 });

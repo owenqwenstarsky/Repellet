@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import pg from 'pg';
 import dotenv from 'dotenv';
 import { randomBytes } from 'node:crypto';
@@ -91,7 +91,18 @@ describe.skipIf(!enabled)('accounts, project permissions, and live revocation (P
     await app?.close();
     await database?.pool.end();
     if (admin) {
-      await admin.query(`DROP DATABASE ${testDatabase} WITH (FORCE)`);
+      await vi.waitFor(async () => {
+        expect(
+          Number(
+            (
+              await admin.query('SELECT count(*) FROM pg_stat_activity WHERE datname=$1', [
+                testDatabase,
+              ])
+            ).rows[0].count,
+          ),
+        ).toBe(0);
+      });
+      await admin.query(`DROP DATABASE ${testDatabase}`);
       await admin.end();
     }
   });

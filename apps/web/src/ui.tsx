@@ -32,13 +32,27 @@ export function UiProvider({ children }: { children: ReactNode }) {
   const [dialog, setDialog] = useState<DialogRequest | null>(null);
   const [value, setValue] = useState('');
   const resolve = useRef<((value: string | null) => void) | null>(null);
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  useEffect(
+    () => () => {
+      resolve.current?.(null);
+      resolve.current = null;
+      for (const timer of timers.current) clearTimeout(timer);
+      timers.current.clear();
+    },
+    [],
+  );
   const notify = (text: string, kind = 'error') => {
     const id = Date.now() + Math.random();
     setToasts((v) => [...v.slice(-3), { id, text, kind }]);
-    setTimeout(
-      () => setToasts((v) => v.filter((t) => t.id !== id)),
+    const timer = setTimeout(
+      () => {
+        timers.current.delete(timer);
+        setToasts((v) => v.filter((t) => t.id !== id));
+      },
       kind === 'error' ? 10000 : 4000,
     );
+    timers.current.add(timer);
   };
   const finish = (result: string | null) => {
     resolve.current?.(result);
@@ -181,12 +195,20 @@ export function Menu({
   );
 }
 
-export function LoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
+export function LoadError({
+  message,
+  onRetry,
+  retryLabel = 'Retry',
+}: {
+  message: string;
+  onRetry: () => void;
+  retryLabel?: string;
+}) {
   return (
     <div className="load-error" role="alert">
       <p>{message}</p>
       <button className="button secondary small" onClick={onRetry}>
-        Retry
+        {retryLabel}
       </button>
     </div>
   );
@@ -208,16 +230,20 @@ export function Modal({
   close.current = onClose;
   const trigger = useRef(focusTrigger(document.activeElement as HTMLElement | null));
   const layer = useRef(100 + modalStack.length);
+  const initialFocus = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
     const element = ref.current!;
     modalStack.push(element);
-    const focusable = () =>
-      [
-        ...element.querySelectorAll<HTMLElement>(
-          'button,input,textarea,select,a[href],[tabindex="0"]',
-        ),
-      ].filter((el) => !el.matches(':disabled') && !el.closest('[hidden]'));
-    (element.querySelector<HTMLElement>('[data-autofocus]') || focusable()[0] || element).focus();
+    const controls = () => focusable(element);
+    if (element.contains(document.activeElement))
+      initialFocus.current = document.activeElement as HTMLElement;
+    if (!element.contains(document.activeElement))
+      (
+        initialFocus.current ||
+        element.querySelector<HTMLElement>('[data-autofocus]') ||
+        controls()[0] ||
+        element
+      ).focus();
     const handler = (e: KeyboardEvent) => {
       if (modalStack.at(-1) !== element) return;
       if (e.key === 'Escape') {
@@ -226,7 +252,7 @@ export function Modal({
         close.current();
       }
       if (e.key === 'Tab') {
-        const elements = focusable();
+        const elements = controls();
         const first = elements[0],
           last = elements.at(-1);
         if (!elements.length) {
@@ -244,7 +270,7 @@ export function Modal({
     };
     const keepFocus = (e: FocusEvent) => {
       if (modalStack.at(-1) === element && !element.contains(e.target as Node))
-        (focusable()[0] || element).focus();
+        (controls()[0] || element).focus();
     };
     document.addEventListener('keydown', handler, true);
     document.addEventListener('focusin', keepFocus);
@@ -305,6 +331,24 @@ export function Modal({
     </div>
   );
 }
+function focusable(root: HTMLElement) {
+  return [
+    ...root.querySelectorAll<HTMLElement>('button,input,textarea,select,a[href],[tabindex]'),
+  ].filter((el) => {
+    if (
+      el.tabIndex < 0 ||
+      el.matches(':disabled') ||
+      el.closest('[hidden],[inert],[aria-hidden="true"]')
+    )
+      return false;
+    for (let parent: HTMLElement | null = el; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+    }
+    return true;
+  });
+}
+export const Dropdown = Menu;
 export function Spinner({ label = 'Loading…' }: { label?: string }) {
   return (
     <div className="loading">

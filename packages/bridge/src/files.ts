@@ -182,6 +182,46 @@ export async function usage() {
     .reduce((sum, line) => sum + Number(line.split('\t')[0]), 0);
 }
 
+export async function fileIndex(limit = 20000) {
+  const paths: string[] = [];
+  let truncated = false;
+  const excluded = new Set([
+    '.git',
+    'node_modules',
+    '.venv',
+    'venv',
+    'target',
+    'vendor',
+    'dist',
+    'build',
+    '.next',
+    '__pycache__',
+    '.cache',
+    'coverage',
+  ]);
+  async function visit(dir: string) {
+    const entries = await fs.readdir(await resolvePath(dir), { withFileTypes: true });
+    for (const entry of entries) {
+      if (
+        excluded.has(entry.name) ||
+        entry.name.startsWith('.repellet-tmp-') ||
+        entry.isSymbolicLink()
+      )
+        continue;
+      if (paths.length >= limit) {
+        truncated = true;
+        return;
+      }
+      const rel = path.posix.join(dir, entry.name);
+      if (entry.isDirectory()) await visit(rel);
+      else if (entry.isFile()) paths.push(rel);
+      if (truncated) return;
+    }
+  }
+  await visit('');
+  return { paths: paths.sort(), truncated };
+}
+
 // Enumerate file names separately from the bounded search-results display.
 export async function matchingFiles(query: string): Promise<string[]> {
   return new Promise((resolve, reject) => {

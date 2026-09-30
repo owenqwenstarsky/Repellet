@@ -1,4 +1,4 @@
-import { exec, root, relative, resolvePath } from './files.js';
+import { exec, root, relative, resolvePath, readFile } from './files.js';
 export const git = (args: string[]) =>
   exec('git', args, {
     cwd: root,
@@ -14,7 +14,25 @@ export async function gitDiff(file?: string, staged = false) {
     '--',
     ...(file ? [relative(file)] : []),
   ]);
-  return { diff: stdout };
+  const rel = relative(file || '');
+  const get = async (ref: string) => {
+    try {
+      return (await git(['show', `${ref}:${rel}`])).stdout;
+    } catch (e) {
+      if (
+        /does not exist|exists on disk|invalid object name|bad revision/.test((e as Error).message)
+      )
+        return '';
+      throw e;
+    }
+  };
+  const original = rel ? await get(staged ? 'HEAD' : '') : '';
+  const modified = rel
+    ? staged
+      ? await get('')
+      : (await readFile(rel).catch(() => ({ content: '' }))).content
+    : '';
+  return { diff: stdout, original, modified };
 }
 export async function unstageFiles(paths: string[]) {
   paths.forEach(relative);
