@@ -95,7 +95,15 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
     await app?.close();
     await db?.pool.end();
     if (admin) {
-      await admin.query(`DROP DATABASE ${name} WITH (FORCE)`);
+      await vi.waitFor(async () => {
+        expect(
+          Number(
+            (await admin.query('SELECT count(*) FROM pg_stat_activity WHERE datname=$1', [name]))
+              .rows[0].count,
+          ),
+        ).toBe(0);
+      });
+      await admin.query(`DROP DATABASE ${name}`);
       await admin.end();
     }
   });
