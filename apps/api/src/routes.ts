@@ -483,7 +483,13 @@ export async function routes(app: FastifyInstance) {
       .parse(req.body);
     return serialize(p.id, async () => {
       await flushProject(p.id);
-      const result = await bridge(p.id, '/replace', 'POST', b);
+      let result;
+      try {
+        result = await bridge(p.id, '/replace', 'POST', b);
+      } catch (error) {
+        await reconcileFiles(p.id).catch((recoveryError) => req.log.error(recoveryError));
+        throw error;
+      }
       await reconcileFiles(p.id);
       return result;
     });

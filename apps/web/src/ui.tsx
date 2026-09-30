@@ -1,4 +1,13 @@
-import { createContext, useContext, useState, useRef, useEffect, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  type ReactNode,
+  type CSSProperties,
+} from 'react';
 import { X, AlertCircle, Check, Loader2, ChevronDown } from 'lucide-react';
 type DialogRequest = {
   title: string;
@@ -8,6 +17,9 @@ type DialogRequest = {
   confirm?: boolean;
   danger?: boolean;
   password?: boolean;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
 };
 type Ui = {
   notify: (message: string, kind?: 'error' | 'success') => void;
@@ -71,10 +83,13 @@ export function UiProvider({ children }: { children: ReactNode }) {
               <label>
                 {dialog.label || 'Name'}
                 <input
-                  autoFocus
+                  data-autofocus
                   type={dialog.password ? 'password' : 'text'}
                   value={value}
                   required
+                  minLength={dialog.minLength ?? (dialog.password ? 12 : 1)}
+                  maxLength={dialog.maxLength ?? (dialog.password ? 128 : undefined)}
+                  pattern={dialog.pattern}
                   onChange={(e) => setValue(e.target.value)}
                 />
               </label>
@@ -85,7 +100,7 @@ export function UiProvider({ children }: { children: ReactNode }) {
               </button>
               <button
                 className={`button ${dialog.danger ? 'danger' : 'primary'}`}
-                autoFocus={dialog.confirm}
+                data-autofocus={dialog.confirm || undefined}
               >
                 {dialog.confirm ? 'Confirm' : 'Save'}
               </button>
@@ -96,6 +111,87 @@ export function UiProvider({ children }: { children: ReactNode }) {
     </Context.Provider>
   );
 }
+const modalStack: HTMLElement[] = [];
+const menuTriggers = new WeakMap<HTMLElement, HTMLElement | null>();
+function focusTrigger(active: HTMLElement | null): HTMLElement | null {
+  const menu = active?.closest<HTMLElement>('[role="menu"]');
+  return menu && menuTriggers.has(menu) ? focusTrigger(menuTriggers.get(menu) || null) : active;
+}
+export const hasOpenDialog = () => modalStack.length > 0;
+
+export function Menu({
+  children,
+  onClose,
+  className = '',
+  style,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  const trigger = useRef(focusTrigger(document.activeElement as HTMLElement | null));
+  useLayoutEffect(() => {
+    const menu = ref.current!;
+    menuTriggers.set(menu, trigger.current);
+    const items = () => [...menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+    items().forEach((item) => {
+      item.setAttribute('role', 'menuitem');
+      item.tabIndex = -1;
+    });
+    items()[0]?.focus();
+    const handler = (e: KeyboardEvent) => {
+      if (hasOpenDialog()) return;
+      const buttons = items(),
+        index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+      if (['Escape', 'Tab'].includes(e.key)) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+        close.current();
+      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+        e.preventDefault();
+        buttons[
+          e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? buttons.length - 1
+              : (index + (e.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
+        ]?.focus();
+      }
+    };
+    document.addEventListener('keydown', handler, true);
+    return () => {
+      document.removeEventListener('keydown', handler, true);
+      if (
+        trigger.current?.isConnected &&
+        (menu.contains(document.activeElement) || document.activeElement === document.body)
+      )
+        trigger.current.focus();
+    };
+  }, []);
+  return (
+    <div ref={ref} role="menu" className={`dropdown ${className}`} style={style}>
+      {children}
+    </div>
+  );
+}
+
+export function LoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="load-error" role="alert">
+      <p>{message}</p>
+      <button className="button secondary small" onClick={onRetry}>
+        Retry
+      </button>
+    </div>
+  );
+}
+
 export function Modal({
   title,
   children,
@@ -108,47 +204,98 @@ export function Modal({
   small?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const old = document.activeElement as HTMLElement | null;
+  const close = useRef(onClose);
+  close.current = onClose;
+  const trigger = useRef(focusTrigger(document.activeElement as HTMLElement | null));
+  const layer = useRef(100 + modalStack.length);
+  useLayoutEffect(() => {
+    const element = ref.current!;
+    modalStack.push(element);
+    const focusable = () =>
+      [
+        ...element.querySelectorAll<HTMLElement>(
+          'button,input,textarea,select,a[href],[tabindex="0"]',
+        ),
+      ].filter((el) => !el.matches(':disabled') && !el.closest('[hidden]'));
+    (element.querySelector<HTMLElement>('[data-autofocus]') || focusable()[0] || element).focus();
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-      if (e.key === 'Tab' && ref.current) {
-        const elements = [
-          ...ref.current.querySelectorAll<HTMLElement>('button,input,textarea,select,a[href]'),
-        ].filter((el) => !el.hasAttribute('disabled'));
+      if (modalStack.at(-1) !== element) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        close.current();
+      }
+      if (e.key === 'Tab') {
+        const elements = focusable();
         const first = elements[0],
-          last = elements[elements.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
+          last = elements.at(-1);
+        if (!elements.length) {
           e.preventDefault();
-          last?.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
+          element.focus();
+        } else if (
+          !element.contains(document.activeElement) ||
+          (e.shiftKey && document.activeElement === first) ||
+          (!e.shiftKey && document.activeElement === last)
+        ) {
           e.preventDefault();
-          first?.focus();
+          (e.shiftKey ? last : first)?.focus();
         }
       }
     };
-    document.addEventListener('keydown', handler);
-    return () => {
-      document.removeEventListener('keydown', handler);
-      old?.focus();
+    const keepFocus = (e: FocusEvent) => {
+      if (modalStack.at(-1) === element && !element.contains(e.target as Node))
+        (focusable()[0] || element).focus();
     };
-  }, [onClose]);
+    document.addEventListener('keydown', handler, true);
+    document.addEventListener('focusin', keepFocus);
+    return () => {
+      modalStack.splice(modalStack.indexOf(element), 1);
+      document.removeEventListener('keydown', handler, true);
+      document.removeEventListener('focusin', keepFocus);
+      const old = trigger.current;
+      const restore = () => {
+        if (
+          old?.isConnected &&
+          !old.matches(':disabled') &&
+          (!modalStack.length || modalStack.at(-1)!.contains(old))
+        )
+          old.focus();
+        else modalStack.at(-1)?.focus();
+      };
+      restore();
+      // A pending action can re-enable its trigger in a later React commit.
+      if (old?.matches(':disabled')) {
+        const fallback = document.activeElement;
+        const observer = new MutationObserver(() => {
+          if (!old.matches(':disabled')) {
+            observer.disconnect();
+            if (document.activeElement === fallback || document.activeElement === document.body)
+              restore();
+          }
+        });
+        observer.observe(old, { attributes: true, attributeFilter: ['disabled'] });
+        setTimeout(() => observer.disconnect(), 1000);
+      }
+    };
+  }, []);
   return (
     <div
       className="modal-backdrop"
+      style={{ zIndex: layer.current }}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget && modalStack.at(-1) === ref.current) onClose();
       }}
     >
       <div
         ref={ref}
         className={`modal ${small ? 'small' : ''}`}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={title}
       >
         <header className="modal-header">
-          <h2>{title}</h2>
+          <h2 title={title}>{title}</h2>
           <button className="icon-button" aria-label="Close dialog" onClick={onClose}>
             <X size={20} />
           </button>

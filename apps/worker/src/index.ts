@@ -23,9 +23,11 @@ app.addHook('onRequest', async (req, reply) => {
     return reply.code(401).send({ error: 'Unauthorized' });
 });
 app.setErrorHandler((error, req, reply) => {
-  const e = error as Error & { statusCode?: number };
+  const e = error as Error & { statusCode?: number; completedFiles?: string[] };
   req.log.error(e);
-  reply.code(e.statusCode || 400).send({ error: e.message });
+  reply
+    .code(e.statusCode || 400)
+    .send({ error: e.message, ...(e.completedFiles ? { completedFiles: e.completedFiles } : {}) });
 });
 const idFrom = (req: { params: unknown }) => projectId((req.params as { id: string }).id);
 app.post('/revoke', async (req) => {

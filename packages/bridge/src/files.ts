@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 export const exec = promisify(execFile);
 export const root = process.env.WORKSPACE_ROOT || '/workspace';
@@ -180,4 +180,81 @@ export async function usage() {
     .split('\n')
     .filter(Boolean)
     .reduce((sum, line) => sum + Number(line.split('\t')[0]), 0);
+}
+
+// Enumerate file names separately from the bounded search-results display.
+export async function matchingFiles(query: string): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'rg',
+      [
+        '--files-with-matches',
+        '--null',
+        '--fixed-strings',
+        '--glob',
+        '!.git/**',
+        '--glob',
+        '!node_modules/**',
+        '--glob',
+        '!target/**',
+        '--glob',
+        '!.venv/**',
+        '--glob',
+        '!vendor/**',
+        '--',
+        query,
+        '.',
+      ],
+      { cwd: root },
+    );
+    const names: string[] = [];
+    let remainder = Buffer.alloc(0),
+      stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      remainder = Buffer.concat([remainder, chunk]);
+      let end: number;
+      while ((end = remainder.indexOf(0)) !== -1) {
+        names.push(remainder.subarray(0, end).toString('utf8').replace(/^\.\//, ''));
+        remainder = remainder.subarray(end + 1);
+      }
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr = (stderr + chunk).slice(-4096);
+    });
+    child.on('error', reject);
+    child.on('close', (code) =>
+      code === 0 || code === 1 ? resolve(names) : reject(new Error(stderr || 'File search failed')),
+    );
+  });
+}
+export async function replaceFiles(
+  query: string,
+  replacement: string,
+  checkWrite: (delta: number) => Promise<void>,
+) {
+  const completedFiles: string[] = [];
+  const skippedFiles: string[] = [];
+  try {
+    for (const name of await matchingFiles(query)) {
+      const file = await readFile(name);
+      if (file.binary) {
+        skippedFiles.push(name);
+        continue;
+      }
+      if (!file.content.includes(query)) continue;
+      const content = file.content.split(query).join(replacement);
+      await checkWrite(Buffer.byteLength(content) - file.size);
+      await writeFile(name, content, file.hash);
+      completedFiles.push(name);
+    }
+  } catch (error) {
+    const cause = error as Error & { statusCode?: number };
+    throw Object.assign(
+      new Error(
+        `Replacement stopped after updating ${completedFiles.length} file(s): ${cause.message}`,
+      ),
+      { statusCode: cause.statusCode || 500, completedFiles },
+    );
+  }
+  return { files: completedFiles.length, skippedFiles };
 }

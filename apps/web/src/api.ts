@@ -2,6 +2,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
+    public completedFiles?: string[],
   ) {
     super(message);
   }
@@ -16,11 +17,14 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
   });
   if (!response.ok) {
     let message = response.statusText;
+    let completedFiles: string[] | undefined;
     try {
-      message = (await response.json()).error || message;
+      const details = await response.json();
+      message = details.error || message;
+      completedFiles = details.completedFiles;
     } catch {}
     if (response.status === 401) window.dispatchEvent(new Event('repellet:unauthorized'));
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, completedFiles);
   }
   return response.json();
 }

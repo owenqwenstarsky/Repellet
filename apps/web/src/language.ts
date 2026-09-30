@@ -16,7 +16,9 @@ export function connectLanguage(
   model: monaco.editor.ITextModel,
   onStatus: (status: string) => void,
   onDefinition: (path: string, line: number, column: number) => void,
+  editable = true,
 ) {
+  const formatting = editable ? connectFormatting(projectId, path, model, onStatus) : () => {};
   const extension = path.split('.').pop() || '';
   const runtime =
     extension === 'py'
@@ -28,10 +30,9 @@ export function connectLanguage(
           : extension === 'rs'
             ? 'rust'
             : null;
-  if (!runtime) return () => {};
-  const socket = new WebSocket(
-    wsUrl(`/ws/projects/${projectId}/channel?path=${encodeURIComponent('/language/' + runtime)}`),
-  );
+  if (!runtime) return formatting;
+  let socket: WebSocket;
+  let reconnect: ReturnType<typeof setTimeout> | undefined;
   let sequence = 0,
     version = 1,
     ready = false,
@@ -52,7 +53,7 @@ export function connectLanguage(
   const notify = (method: string, params: unknown) => send({ jsonrpc: '2.0', method, params });
   const request = (method: string, params: unknown) =>
     new Promise<any>((resolve, reject) => {
-      if (!ready && method !== 'initialize') {
+      if (socket.readyState !== 1 || (!ready && method !== 'initialize')) {
         resolve(null);
         return;
       }
@@ -65,81 +66,116 @@ export function connectLanguage(
       send({ jsonrpc: '2.0', id, method, params });
     });
   const textDocument = () => ({ uri });
-  socket.onmessage = async (event) => {
-    let msg: any;
-    try {
-      msg = JSON.parse(event.data);
-    } catch {
-      return;
-    }
-    if (msg.method === 'repellet/ready') {
-      try {
-        await request('initialize', {
-          processId: null,
-          rootUri: 'file:///workspace',
-          workspaceFolders: [{ uri: 'file:///workspace', name: 'workspace' }],
-          capabilities: {
-            textDocument: {
-              synchronization: { didSave: true },
-              completion: { completionItem: { snippetSupport: true } },
-              hover: { contentFormat: ['markdown', 'plaintext'] },
-              definition: { linkSupport: true },
-              publishDiagnostics: { relatedInformation: true },
-            },
-          },
-        });
-        if (disposed) return;
-        ready = true;
-        notify('initialized', {});
-        notify('textDocument/didOpen', {
-          textDocument: { uri, languageId: model.getLanguageId(), version, text: model.getValue() },
-        });
-        onStatus('Language service ready');
-      } catch {
-        onStatus('Language service unavailable');
-      }
-      return;
-    }
-    if (msg.id !== undefined && waiting.has(msg.id)) {
-      const item = waiting.get(msg.id)!;
+  function clearPending() {
+    ready = false;
+    for (const item of waiting.values()) {
       clearTimeout(item.timer);
-      waiting.delete(msg.id);
-      msg.error ? item.reject(new Error(msg.error.message)) : item.resolve(msg.result);
-      return;
+      item.resolve(null);
     }
-    if (
-      msg.method === 'textDocument/publishDiagnostics' &&
-      msg.params.uri === uri &&
-      !model.isDisposed()
-    )
-      monaco.editor.setModelMarkers(
-        model,
-        'repellet-lsp',
-        (msg.params.diagnostics || []).map((d: any) => ({
-          ...toRange(d.range),
-          message: d.message,
-          severity:
-            d.severity === 1
-              ? monaco.MarkerSeverity.Error
-              : d.severity === 2
-                ? monaco.MarkerSeverity.Warning
-                : monaco.MarkerSeverity.Info,
-          source: d.source,
-          code: d.code ? String(d.code) : undefined,
-        })),
-      );
-    else if (msg.method === 'repellet/error') onStatus('Language service unavailable');
-    else if (msg.id !== undefined && msg.method) {
-      let result: any = null;
-      if (msg.method === 'workspace/configuration')
-        result = (msg.params.items || []).map(() => ({}));
-      send({ jsonrpc: '2.0', id: msg.id, result });
-    }
-  };
-  socket.onclose = () => {
-    if (!disposed) onStatus('Language service disconnected');
-  };
-  socket.onerror = () => onStatus('Language service unavailable');
+    waiting.clear();
+    if (!model.isDisposed()) monaco.editor.setModelMarkers(model, 'repellet-lsp', []);
+  }
+  function connect() {
+    if (disposed) return;
+    clearPending();
+    const connection = new WebSocket(
+      wsUrl(`/ws/projects/${projectId}/channel?path=${encodeURIComponent('/language/' + runtime)}`),
+    );
+    socket = connection;
+    connection.onmessage = async (event) => {
+      if (disposed || socket !== connection) return;
+      let msg: any;
+      try {
+        msg = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (msg.method === 'repellet/ready') {
+        try {
+          const initialized = await request('initialize', {
+            processId: null,
+            rootUri: 'file:///workspace',
+            workspaceFolders: [{ uri: 'file:///workspace', name: 'workspace' }],
+            capabilities: {
+              textDocument: {
+                synchronization: { didSave: true },
+                completion: { completionItem: { snippetSupport: true } },
+                hover: { contentFormat: ['markdown', 'plaintext'] },
+                definition: { linkSupport: true },
+                publishDiagnostics: { relatedInformation: true },
+              },
+            },
+          });
+          if (
+            disposed ||
+            socket !== connection ||
+            connection.readyState !== 1 ||
+            initialized === null
+          )
+            return;
+          ready = true;
+          notify('initialized', {});
+          notify('textDocument/didOpen', {
+            textDocument: {
+              uri,
+              languageId: model.getLanguageId(),
+              version,
+              text: model.getValue(),
+            },
+          });
+          onStatus('Language service ready');
+        } catch {
+          onStatus('Language service unavailable');
+        }
+        return;
+      }
+      if (msg.id !== undefined && waiting.has(msg.id)) {
+        const item = waiting.get(msg.id)!;
+        clearTimeout(item.timer);
+        waiting.delete(msg.id);
+        msg.error ? item.reject(new Error(msg.error.message)) : item.resolve(msg.result);
+        return;
+      }
+      if (
+        msg.method === 'textDocument/publishDiagnostics' &&
+        msg.params.uri === uri &&
+        !model.isDisposed()
+      )
+        monaco.editor.setModelMarkers(
+          model,
+          'repellet-lsp',
+          (msg.params.diagnostics || []).map((d: any) => ({
+            ...toRange(d.range),
+            message: d.message,
+            severity:
+              d.severity === 1
+                ? monaco.MarkerSeverity.Error
+                : d.severity === 2
+                  ? monaco.MarkerSeverity.Warning
+                  : monaco.MarkerSeverity.Info,
+            source: d.source,
+            code: d.code ? String(d.code) : undefined,
+          })),
+        );
+      else if (msg.method === 'repellet/error') onStatus('Language service unavailable');
+      else if (msg.id !== undefined && msg.method) {
+        let result: any = null;
+        if (msg.method === 'workspace/configuration')
+          result = (msg.params.items || []).map(() => ({}));
+        send({ jsonrpc: '2.0', id: msg.id, result });
+      }
+    };
+    connection.onclose = (event) => {
+      if (disposed || socket !== connection) return;
+      clearPending();
+      onStatus('Language service disconnected');
+      if (event.code !== 1008) reconnect = setTimeout(connect, 2000);
+    };
+    connection.onerror = () => {
+      if (!disposed) onStatus('Language service unavailable');
+    };
+  }
+  connect();
   disposables.push(
     model.onDidChangeContent(() => {
       if (ready)
@@ -224,25 +260,6 @@ export function connectLanguage(
     }),
   );
   disposables.push(
-    monaco.languages.registerDocumentFormattingEditProvider(language, {
-      provideDocumentFormattingEdits: async (m) => {
-        if (m !== model) return [];
-        const revision = m.getVersionId();
-        try {
-          const result = await post<{ content: string }>(`/projects/${projectId}/format`, {
-            path,
-            content: m.getValue(),
-          });
-          if (m.isDisposed() || m.getVersionId() !== revision) return [];
-          return [{ range: m.getFullModelRange(), text: result.content }];
-        } catch (e) {
-          onStatus(e instanceof Error ? e.message : 'Formatting failed');
-          return [];
-        }
-      },
-    }),
-  );
-  disposables.push(
     monaco.languages.registerDefinitionProvider(language, {
       provideDefinition: async (m, p) => {
         if (!active(m)) return null;
@@ -272,13 +289,11 @@ export function connectLanguage(
   onStatus('Starting language service…');
   return () => {
     disposed = true;
+    clearTimeout(reconnect);
+    formatting();
     notify('textDocument/didClose', { textDocument: textDocument() });
     socket.close();
-    for (const item of waiting.values()) {
-      clearTimeout(item.timer);
-      item.resolve(null);
-    }
-    waiting.clear();
+    clearPending();
     disposables.forEach((d) => d.dispose());
     if (!model.isDisposed()) monaco.editor.setModelMarkers(model, 'repellet-lsp', []);
   };
@@ -312,4 +327,35 @@ function completionKind(kind: number) {
     monaco.languages.CompletionItemKind.TypeParameter,
   ];
   return kinds[kind - 1] ?? monaco.languages.CompletionItemKind.Text;
+}
+
+export function connectFormatting(
+  projectId: string,
+  path: string,
+  model: monaco.editor.ITextModel,
+  onStatus: (status: string) => void,
+) {
+  const language = model.getLanguageId();
+  let disposed = false;
+  const provider = monaco.languages.registerDocumentFormattingEditProvider(language, {
+    provideDocumentFormattingEdits: async (m) => {
+      if (m !== model || disposed) return [];
+      const revision = m.getVersionId();
+      try {
+        const result = await post<{ content: string }>(`/projects/${projectId}/format`, {
+          path,
+          content: m.getValue(),
+        });
+        if (disposed || m.isDisposed() || m.getVersionId() !== revision) return [];
+        return [{ range: m.getFullModelRange(), text: result.content }];
+      } catch (e) {
+        onStatus(e instanceof Error ? e.message : 'Formatting failed');
+        return [];
+      }
+    },
+  });
+  return () => {
+    disposed = true;
+    provider.dispose();
+  };
 }

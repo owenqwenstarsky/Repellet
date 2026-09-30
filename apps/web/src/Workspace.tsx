@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, lazy, Suspense, type ReactNode } from 'react';
+import type { editor as MonacoEditor } from 'monaco-editor';
 import type { Project, User, TerminalInfo, FileContent } from '@repellet/shared';
 import {
   ArrowLeft,
@@ -22,12 +23,13 @@ import {
   Users,
 } from 'lucide-react';
 import { api, post, errorMessage, previewUrl, wsUrl, formatBytes } from './api';
-import { Logo, Avatar, Status, Spinner, useUi } from './ui';
+import { Logo, Avatar, Status, Spinner, useUi, hasOpenDialog, LoadError } from './ui';
 import { FileTree, FileIcon, SearchPane } from './Files';
 import { GitPane } from './GitPane';
 const CodeEditor = lazy(() => import('./CodeEditor').then((m) => ({ default: m.CodeEditor })));
 import { Terminal } from './Terminal';
 import { ProjectSettings } from './Settings';
+import { panelDimensions, remapPath, runEligible, type StructureChange } from './workspaceState';
 export function Workspace({
   id,
   user,
@@ -53,51 +55,84 @@ export function Workspace({
   const [showTerminal, setShowTerminal] = useState(true);
   const [previewRevision, setPreviewRevision] = useState(0);
   const [status, setStatus] = useState('Ready');
+  const [languageStatus, setLanguageStatus] = useState('');
+  const viewStates = useRef(new Map<string, MonacoEditor.ICodeEditorViewState>());
   const [buildLog, setBuildLog] = useState('');
   const [leftWidth, setLeftWidth] = useState(232);
   const [previewWidth, setPreviewWidth] = useState(420);
   const [terminalHeight, setTerminalHeight] = useState(230);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [logError, setLogError] = useState('');
+  const [terminalError, setTerminalError] = useState('');
+  const [structure, setStructure] = useState<StructureChange[]>([]);
+  const [visited, setVisited] = useState(new Set(['files']));
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [space, setSpace] = useState({ width: window.innerWidth, height: window.innerHeight - 78 });
+  const fileIntent = useRef(0);
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
   const initializedTerminal = useRef(false);
+  const terminalLoading = useRef(false);
+  const runPending = useRef(false);
+  const pollPending = useRef(false);
   const mounted = useRef(true);
   const ui = useUi();
-  const editable = project?.role !== 'viewer';
+  const editable = !!project && project.role !== 'viewer';
   const base = `/projects/${id}`;
   async function load() {
+    if (pollPending.current) return;
+    pollPending.current = true;
     try {
       const p = await api<Project>(base);
       if (!mounted.current) return;
       setProject(p);
+      setLoadError('');
       if (p.state === 'building' || p.state === 'starting') {
-        const log = await api<{ log: string }>(base + '/build-log');
-        if (mounted.current) setBuildLog(log.log);
+        try {
+          const log = await api<{ log: string }>(base + '/build-log');
+          if (mounted.current) {
+            setBuildLog(log.log);
+            setLogError('');
+          }
+        } catch (e) {
+          if (mounted.current) setLogError(errorMessage(e));
+        }
       }
     } catch (e) {
       if (mounted.current) {
         setLoadError(errorMessage(e));
       }
+    } finally {
+      pollPending.current = false;
     }
   }
   async function loadTerminals() {
+    if (terminalLoading.current) return;
+    terminalLoading.current = true;
     try {
       const list = await api<TerminalInfo[]>(base + '/terminals');
       if (!mounted.current) return;
       setTerminals(list);
+      setTerminalError('');
       setTerminal((previous) =>
         list.some((t) => t.id === previous)
           ? previous
           : list.find((t) => t.isRun && t.alive)?.id || list[0]?.id || '',
       );
       if (!list.length && editable && !initializedTerminal.current) {
-        initializedTerminal.current = true;
         const created = await post<TerminalInfo>(base + '/terminals', { name: 'Terminal 1' });
+        initializedTerminal.current = true;
         if (mounted.current) {
           setTerminals([created]);
           setTerminal(created.id);
         }
       }
-    } catch {}
+    } catch (e) {
+      if (mounted.current) setTerminalError(errorMessage(e));
+    } finally {
+      terminalLoading.current = false;
+    }
   }
   useEffect(() => {
     mounted.current = true;
@@ -128,16 +163,15 @@ export function Workspace({
           if (message.type === 'state') void load();
           if (message.type === 'structure') {
             setRevision((v) => v + 1);
-            const from = message.from,
-              to = message.to;
-            const mapped = (path: string) =>
-              path === from || path.startsWith(from + '/')
-                ? to
-                  ? to + path.slice(from.length)
-                  : null
-                : path;
-            setTabs((v) => v.map(mapped).filter((p): p is string => !!p));
-            setActive((v) => mapped(v) || '');
+            const change = { from: message.from, to: message.to };
+            fileIntent.current++;
+            setStructure((changes) => [...changes, change]);
+            const remaining = tabsRef.current
+              .map((path) => remapPath(path, change))
+              .filter((p): p is string => !!p);
+            tabsRef.current = remaining;
+            setTabs(remaining);
+            setActive((v) => remapPath(v, change) || remaining.at(-1) || '');
           }
           if (message.type === 'storage')
             setProject((p) =>
@@ -164,30 +198,42 @@ export function Workspace({
       socket?.close();
     };
   }, [id, project?.state, project?.role]);
-  async function openFile(path: string, line = 1, column = 1) {
+  async function openFile(path: string, line?: number, column = 1) {
+    const intent = ++fileIntent.current;
     try {
       const file = await api<FileContent>(base + `/file?path=${encodeURIComponent(path)}`);
+      if (!mounted.current || intent !== fileIntent.current) return;
       if (file.binary) {
         ui.notify('This file is binary or larger than 2 MiB. Use Download from its file menu.');
         return;
       }
-      setTabs((v) => (v.includes(path) ? v : [...v, path]));
+      const nextTabs = tabsRef.current.includes(path)
+        ? tabsRef.current
+        : [...tabsRef.current, path];
+      tabsRef.current = nextTabs;
+      setTabs(nextTabs);
       setActive(path);
-      setSelection({ line, column });
+      setSelection(line === undefined ? undefined : { line, column });
     } catch (e) {
-      ui.notify(errorMessage(e));
+      if (mounted.current && intent === fileIntent.current) ui.notify(errorMessage(e));
     }
   }
   function closeTab(path: string) {
-    setTabs((v) => v.filter((t) => t !== path));
-    if (active === path) setActive(tabs.filter((t) => t !== path).at(-1) || '');
+    fileIntent.current++;
+    const remaining = tabsRef.current.filter((t) => t !== path);
+    tabsRef.current = remaining;
+    setTabs(remaining);
+    if (active === path) setActive(remaining.at(-1) || '');
+    viewStates.current.delete(path);
   }
   async function run() {
+    if (!runEligible(project, busy || runPending.current, hasOpenDialog())) return;
     if (!project?.runConfig.command.trim()) {
       if (project?.role === 'owner') setSettings(true);
       else ui.notify('The project owner needs to set a run command.');
       return;
     }
+    runPending.current = true;
     setBusy(true);
     try {
       await post(base + '/run');
@@ -199,18 +245,19 @@ export function Workspace({
     } catch (e) {
       ui.notify(errorMessage(e));
     } finally {
+      runPending.current = false;
       setBusy(false);
     }
   }
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (hasOpenDialog()) return;
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && editable) {
         e.preventDefault();
         void run();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
-        setStatus('Autosave enabled');
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault();
@@ -219,13 +266,35 @@ export function Workspace({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [project, editable]);
-  if (loadError)
+  }, [project, editable, busy]);
+  useEffect(() => {
+    setVisited((old) => new Set([...old, pane]));
+  }, [pane]);
+  useEffect(() => {
+    const element = bodyRef.current;
+    if (!element) return;
+    const measure = () => setSpace({ width: element.clientWidth, height: element.clientHeight });
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    measure();
+    return () => observer.disconnect();
+  }, [project?.state]);
+  const dimensions = panelDimensions(
+    space.width,
+    space.height,
+    { explorer: leftWidth, preview: previewWidth, terminal: terminalHeight },
+    showPreview,
+    showTerminal,
+  );
+  if (loadError && !project)
     return (
       <div className="workspace-load-error">
         <AlertTriangle size={30} />
         <h2>Workspace unavailable</h2>
         <p>{loadError}</p>
+        <button className="button secondary" onClick={load}>
+          Retry
+        </button>
         <button className="button secondary" onClick={onBack}>
           <ArrowLeft size={16} />
           Back to projects
@@ -249,7 +318,9 @@ export function Workspace({
         </button>
         <Logo compact />
         <ChevronRight size={14} className="muted" />
-        <strong className="workspace-title">{project.name}</strong>
+        <strong className="workspace-title" title={project.name}>
+          {project.name}
+        </strong>
         <Status state={project.state} />
         <div className="workspace-header-spacer" />
         <div className="collaborators" title="People in this workspace">
@@ -303,6 +374,7 @@ export function Workspace({
           </>
         )}
       </header>
+      {loadError && <LoadError message={`Workspace update failed: ${loadError}`} onRetry={load} />}
       {project.storageExceeded && (
         <div className="storage-banner">
           <AlertTriangle size={15} />
@@ -344,6 +416,7 @@ export function Workspace({
               Start workspace
             </button>
           )}
+          {logError && <LoadError message={`Build log unavailable: ${logError}`} onRetry={load} />}
           {buildLog && (
             <details open={project.state === 'failed'}>
               <summary>Environment build log</summary>
@@ -353,7 +426,7 @@ export function Workspace({
         </div>
       ) : (
         <>
-          <div className="workspace-body">
+          <div className="workspace-body" ref={bodyRef}>
             <nav className="activity-bar" aria-label="Workspace tools">
               {[
                 ['files', 'Files', Files],
@@ -363,6 +436,7 @@ export function Workspace({
                 <button
                   key={name as string}
                   className={pane === name ? 'active' : ''}
+                  aria-pressed={pane === name}
                   aria-label={label as string}
                   title={label as string}
                   onClick={() => setPane(name as string)}
@@ -372,6 +446,7 @@ export function Workspace({
               ))}
               <div className="activity-spacer" />
               <button
+                aria-pressed={showTerminal}
                 aria-label="Toggle terminal"
                 title="Toggle terminal"
                 className={showTerminal ? 'active-subtle' : ''}
@@ -380,6 +455,7 @@ export function Workspace({
                 <TerminalSquare size={20} />
               </button>
               <button
+                aria-pressed={showPreview}
                 aria-label="Toggle preview"
                 title="Toggle preview"
                 className={showPreview ? 'active-subtle' : ''}
@@ -388,22 +464,41 @@ export function Workspace({
                 <PanelRight size={20} />
               </button>
             </nav>
-            <aside className="explorer" style={{ width: leftWidth }}>
-              {pane === 'files' ? (
+            <aside className="explorer" style={{ width: dimensions.explorer }}>
+              <div className="tool-pane" hidden={pane !== 'files'}>
                 <FileTree
                   projectId={id}
                   active={active}
                   onOpen={openFile}
                   editable={editable}
                   revision={revision}
+                  visible={pane === 'files'}
+                  structure={structure}
                 />
-              ) : pane === 'search' ? (
-                <SearchPane projectId={id} editable={editable} onOpen={openFile} />
-              ) : (
-                <GitPane projectId={id} editable={editable} revision={revision} />
+              </div>
+              {visited.has('search') && (
+                <div className="tool-pane" hidden={pane !== 'search'}>
+                  <SearchPane
+                    projectId={id}
+                    editable={editable}
+                    onOpen={openFile}
+                    visible={pane === 'search'}
+                  />
+                </div>
+              )}
+              {visited.has('git') && (
+                <div className="tool-pane" hidden={pane !== 'git'}>
+                  <GitPane
+                    projectId={id}
+                    editable={editable}
+                    revision={revision}
+                    visible={pane === 'git'}
+                  />
+                </div>
               )}
             </aside>
             <ResizeHandle
+              onStart={() => setLeftWidth(dimensions.explorer)}
               onDelta={(delta) => setLeftWidth((v) => Math.max(170, Math.min(480, v + delta)))}
             />
             <section className="workspace-center">
@@ -413,7 +508,9 @@ export function Workspace({
                     {tabs.map((path) => (
                       <div className={`editor-tab ${active === path ? 'active' : ''}`} key={path}>
                         <button
+                          aria-pressed={active === path}
                           onClick={() => {
+                            fileIntent.current++;
                             setActive(path);
                             setSelection(undefined);
                           }}
@@ -433,7 +530,12 @@ export function Workspace({
                   </div>
                   {active ? (
                     <>
-                      <div className="breadcrumbs">
+                      <div
+                        className="breadcrumbs"
+                        title={active}
+                        tabIndex={0}
+                        aria-label="File path"
+                      >
                         {active.split('/').map((part, i) => (
                           <span key={i}>
                             {i > 0 && <ChevronRight size={12} />} {part}
@@ -448,6 +550,8 @@ export function Workspace({
                           user={user}
                           editable={editable}
                           onStatus={setStatus}
+                          onLanguageStatus={setLanguageStatus}
+                          viewStates={viewStates.current}
                           onDefinition={openFile}
                           selection={selection}
                         />
@@ -478,11 +582,12 @@ export function Workspace({
                 {showPreview && (
                   <>
                     <ResizeHandle
+                      onStart={() => setPreviewWidth(dimensions.preview)}
                       onDelta={(delta) =>
                         setPreviewWidth((v) => Math.max(260, Math.min(720, v - delta)))
                       }
                     />
-                    <aside className="preview-pane" style={{ width: previewWidth }}>
+                    <aside className="preview-pane" style={{ width: dimensions.preview }}>
                       <div className="panel-heading">
                         <span>Preview</span>
                         <div>
@@ -511,7 +616,14 @@ export function Workspace({
                         </div>
                       </div>
                       <div className="preview-url">
-                        <span className="online-dot" />
+                        <span
+                          className="preview-availability"
+                          title={
+                            url
+                              ? 'Preview URL configured; connectivity not checked'
+                              : 'Preview unavailable'
+                          }
+                        />
                         <input aria-label="Preview URL" readOnly value={url} />
                       </div>
                       {url ? (
@@ -531,43 +643,46 @@ export function Workspace({
               {showTerminal && (
                 <>
                   <ResizeHandle
+                    onStart={() => setTerminalHeight(dimensions.terminal)}
                     horizontal
                     onDelta={(delta) =>
                       setTerminalHeight((v) => Math.max(100, Math.min(550, v - delta)))
                     }
                   />
-                  <section className="terminal-panel" style={{ height: terminalHeight }}>
-                    <div className="terminal-tabs">
-                      <span className="terminal-label">TERMINAL</span>
-                      {terminals.map((t) => (
-                        <button
-                          key={t.id}
-                          className={terminal === t.id ? 'active' : ''}
-                          onClick={() => setTerminal(t.id)}
-                        >
-                          <span className={`terminal-dot ${t.alive ? 'alive' : ''}`} />
-                          {t.name}
-                          {editable && !t.isRun && (
-                            <span
-                              className="terminal-close"
-                              role="button"
-                              aria-label={`Stop ${t.name}`}
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                try {
-                                  await removeTerminal(t.id);
-                                  await loadTerminals();
-                                } catch (error) {
-                                  ui.notify(errorMessage(error));
-                                }
-                              }}
+                  <section className="terminal-panel" style={{ height: dimensions.terminal }}>
+                    <div className="terminal-toolbar">
+                      <div className="terminal-tabs">
+                        <span className="terminal-label">TERMINAL</span>
+                        {terminals.map((t) => (
+                          <div className="terminal-tab" key={t.id}>
+                            <button
+                              aria-pressed={terminal === t.id}
+                              className={terminal === t.id ? 'active' : ''}
+                              onClick={() => setTerminal(t.id)}
+                              title={t.name}
                             >
-                              <X size={11} />
-                            </span>
-                          )}
-                        </button>
-                      ))}
-                      <div className="terminal-spacer" />
+                              <span className={`terminal-dot ${t.alive ? 'alive' : ''}`} />
+                              {t.name}
+                            </button>
+                            {editable && !t.isRun && (
+                              <button
+                                className="terminal-close"
+                                aria-label={`Stop ${t.name}`}
+                                onClick={async () => {
+                                  try {
+                                    await removeTerminal(t.id);
+                                    await loadTerminals();
+                                  } catch (e) {
+                                    ui.notify(errorMessage(e));
+                                  }
+                                }}
+                              >
+                                <X size={11} />
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                       {editable && (
                         <button
                           className="icon-button"
@@ -577,6 +692,7 @@ export function Workspace({
                               const name = await ui.ask({
                                 title: 'New terminal',
                                 label: 'Terminal name',
+                                maxLength: 80,
                                 value: `Terminal ${terminals.filter((t) => !t.isRun).length + 1}`,
                               });
                               if (!name) return;
@@ -601,6 +717,7 @@ export function Workspace({
                         <X size={15} />
                       </button>
                     </div>
+                    {terminalError && <LoadError message={terminalError} onRetry={loadTerminals} />}
                     {terminal ? (
                       <Terminal key={terminal} projectId={id} id={terminal} editable={editable} />
                     ) : (
@@ -619,6 +736,11 @@ export function Workspace({
             <span>
               <span className="online-dot" />
               {status}
+              {languageStatus && (
+                <span className="language-status" title={languageStatus}>
+                  {languageStatus}
+                </span>
+              )}
             </span>
             <span className="status-right">
               <span>
@@ -672,9 +794,11 @@ export function Workspace({
 }
 function ResizeHandle({
   horizontal = false,
+  onStart,
   onDelta,
 }: {
   horizontal?: boolean;
+  onStart: () => void;
   onDelta: (delta: number) => void;
 }) {
   return (
@@ -685,11 +809,16 @@ function ResizeHandle({
       aria-orientation={horizontal ? 'horizontal' : 'vertical'}
       tabIndex={0}
       onKeyDown={(e) => {
+        if (['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'].includes(e.key)) {
+          e.preventDefault();
+          onStart();
+        }
         if (['ArrowLeft', 'ArrowUp'].includes(e.key)) onDelta(-10);
         if (['ArrowRight', 'ArrowDown'].includes(e.key)) onDelta(10);
       }}
       onPointerDown={(e) => {
         e.preventDefault();
+        onStart();
         let previous = horizontal ? e.clientY : e.clientX;
         const move = (event: PointerEvent) => {
           const current = horizontal ? event.clientY : event.clientX;

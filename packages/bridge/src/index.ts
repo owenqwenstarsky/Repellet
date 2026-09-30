@@ -14,6 +14,7 @@ import {
   readFile,
   writeFile,
   search,
+  replaceFiles,
   usage,
   exec,
 } from './files.js';
@@ -27,6 +28,7 @@ import {
 } from './terminals.js';
 import { attachLanguage, stopLanguages } from './language.js';
 import { formatFile } from './format.js';
+import { git, gitDiff, unstageFiles } from './git.js';
 const token = process.env.BRIDGE_TOKEN || '';
 if (token.length < 32) throw new Error('BRIDGE_TOKEN must be at least 32 characters');
 const app = Fastify({ logger: true, bodyLimit: 12 * 1024 * 1024 });
@@ -38,8 +40,10 @@ app.addHook('onRequest', async (req, reply) => {
     return reply.code(401).send({ error: 'Unauthorized' });
 });
 app.setErrorHandler((error, req, reply) => {
-  const e = error as Error & { statusCode?: number; code?: string };
-  reply.code(e.statusCode || (e.code === 'ENOENT' ? 404 : 500)).send({ error: e.message });
+  const e = error as Error & { statusCode?: number; code?: string; completedFiles?: string[] };
+  reply
+    .code(e.statusCode || (e.code === 'ENOENT' ? 404 : 500))
+    .send({ error: e.message, ...(e.completedFiles ? { completedFiles: e.completedFiles } : {}) });
 });
 let storageLimit = Number(process.env.STORAGE_LIMIT_MB || 5120) * 1024 * 1024;
 let measured = 0;
@@ -131,17 +135,7 @@ app.post('/replace', async (req) => {
   const b = req.body as { query: string; replacement: string };
   if (!b.query || typeof b.replacement !== 'string')
     throw Object.assign(new Error('Search and replacement are required'), { statusCode: 400 });
-  const matches = await search(b.query, 1000);
-  let count = 0;
-  for (const name of new Set(matches.map((m) => m.path))) {
-    const file = await readFile(name);
-    if (file.binary) continue;
-    const content = file.content.split(b.query).join(b.replacement);
-    await checkWrite(Buffer.byteLength(content) - file.size);
-    await writeFile(name, content, file.hash);
-    count++;
-  }
-  return { files: count };
+  return replaceFiles(b.query, b.replacement, checkWrite);
 });
 app.get('/terminals', async () => info());
 app.post('/terminals', async (req) => {
@@ -234,13 +228,6 @@ app.get('/usage', async () => {
   }
   return { bytes: measured, exceeded };
 });
-const git = async (args: string[]) =>
-  exec('git', args, {
-    cwd: root,
-    maxBuffer: 8 * 1024 * 1024,
-    timeout: 120000,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-  });
 app.get('/git/status', async () => {
   try {
     const { stdout } = await git(['status', '--porcelain=v1', '-z']);
@@ -262,14 +249,7 @@ app.get('/git/status', async () => {
 });
 app.get('/git/diff', async (req) => {
   const b = req.query as { path?: string; staged?: string };
-  if (b.path) await resolvePath(b.path);
-  const { stdout } = await git([
-    'diff',
-    ...(b.staged === 'true' ? ['--cached'] : []),
-    '--',
-    ...(b.path ? [relative(b.path)] : []),
-  ]);
-  return { diff: stdout };
+  return gitDiff(b.path, b.staged === 'true');
 });
 app.post('/git', async (req) => {
   if (suspended) throw Object.assign(new Error('Storage limit exceeded'), { statusCode: 507 });
@@ -294,8 +274,7 @@ app.post('/git', async (req) => {
       break;
     case 'unstage':
       if (!b.paths?.length) throw new Error('Select files');
-      args = ['reset', 'HEAD', '--', ...b.paths];
-      break;
+      return { output: (await unstageFiles(b.paths)).stdout };
     case 'commit':
       if (!b.message?.trim()) throw new Error('Commit message is required');
       await git(['config', 'user.name', b.name || 'Repellet']);
