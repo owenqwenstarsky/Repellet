@@ -294,8 +294,8 @@ export function Workspace({
     return () => window.removeEventListener('resize', clamp);
   }, []);
   useEffect(() => {
-    if (restored.current && active && !tabs.includes(active)) setActive(tabs.at(-1) || '');
-  }, [tabs]);
+    if (restored.current && !tabs.includes(active)) setActive(tabs.at(-1) || '');
+  }, [tabs, active]);
   async function openFile(path: string, line = 1, column = 1) {
     const version = ++selectionVersion.current;
     try {

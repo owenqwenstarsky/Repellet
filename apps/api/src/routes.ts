@@ -353,14 +353,22 @@ export async function routes(app: FastifyInstance) {
     const p = await ready(req, 'manage');
     const b = z.object({ cwd: z.string().max(1024).default('') }).parse(req.body);
     b.cwd = safeRelativePath(b.cwd);
-    const { files } = await bridge<{ files: Record<string, string> }>(p.id, '/inspect', 'POST', b);
-    return suggestSetup(files, b.cwd, new URL(config.publicUrl).hostname);
+    return serialize(p.id, async () => {
+      await flushProject(p.id);
+      const { files } = await bridge<{ files: Record<string, string> }>(
+        p.id,
+        '/inspect',
+        'POST',
+        b,
+      );
+      return suggestSetup(files, b.cwd, new URL(config.publicUrl).hostname);
+    });
   });
   app.put('/api/projects/:id/setup', async (req) => {
     const p = await ready(req, 'manage');
     const b = z
       .object({
-        setupCommand: z.string().max(4096),
+        setupCommand: z.string().trim().max(4096),
         runConfig: runConfigSchema,
         confirmed: z.literal(true),
       })

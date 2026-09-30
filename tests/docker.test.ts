@@ -274,8 +274,13 @@ chmod +x /usr/local/bin/git`);
     }
   });
   it('suspends execution at monitored storage limits but permits cleanup', async () => {
+    await json('/preparation', 'POST', { id: 'quota-install', command: 'sleep 30', cwd: '' });
     await json('/limits', 'PUT', { storageMb: 0.001 });
     expect((await json('/usage')).exceeded).toBe(true);
+    expect((await json('/preparation/quota-install')).state).toBe('cancelled');
+    await expect(
+      json('/preparation', 'POST', { id: 'quota-retry', command: 'sleep 30', cwd: '' }),
+    ).rejects.toMatchObject({ statusCode: 507 });
     await expect(json('/terminals', 'POST', {})).rejects.toMatchObject({ statusCode: 507 });
     await worker.stopWorkspace(id);
     await worker.ensureWorkspace(id, {

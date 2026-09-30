@@ -9,6 +9,7 @@ import { ProjectSettings } from '../../apps/web/src/Settings';
 import { RepositorySetup } from '../../apps/web/src/RepositorySetup';
 import { UiProvider } from '../../apps/web/src/ui';
 import { api, post, put, patch } from '../../apps/web/src/api';
+import { registerDocumentSave } from '../../apps/web/src/documentSaves';
 import { deferred, project, repos, user, suggestion } from './helpers';
 vi.mock('../../apps/web/src/api', () => ({
   api: vi.fn(),
@@ -379,5 +380,58 @@ it('serializes repository setup actions', async () => {
     fireEvent.click(confirm);
     fireEvent.click(confirm);
   });
-  expect(put).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+});
+it.each(['Inspect manifests', 'Confirm and prepare'])(
+  'waits for editor saves before %s',
+  async (action) => {
+    const pending = deferred<void>();
+    const unregister = registerDocumentSave(project.id, 'package.json', () => pending.promise);
+    vi.mocked(post).mockResolvedValue(suggestion);
+    try {
+      render(
+        <UiProvider>
+          <RepositorySetup project={project} onChanged={vi.fn()} />
+        </UiProvider>,
+      );
+      fireEvent.click(screen.getByText(action));
+      await act(async () => {});
+      expect(post).not.toHaveBeenCalled();
+      expect(put).not.toHaveBeenCalled();
+      await act(async () => pending.resolve());
+      if (action === 'Inspect manifests') {
+        expect(post).toHaveBeenCalledWith('/projects/project/setup/suggest', { cwd: '' });
+        expect(screen.getByText('Use suggestions')).toBeTruthy();
+      } else {
+        expect(put).toHaveBeenCalledWith('/projects/project/setup', {
+          setupCommand: project.setupCommand,
+          runConfig: project.runConfig,
+          confirmed: true,
+        });
+      }
+    } finally {
+      unregister();
+    }
+  },
+);
+it('invalidates manifest inspection when cwd changes during an editor save', async () => {
+  const pending = deferred<void>();
+  const unregister = registerDocumentSave(project.id, 'package.json', () => pending.promise);
+  vi.mocked(post).mockResolvedValue(suggestion);
+  try {
+    render(
+      <UiProvider>
+        <RepositorySetup project={project} onChanged={vi.fn()} />
+      </UiProvider>,
+    );
+    fireEvent.click(screen.getByText('Inspect manifests'));
+    fireEvent.change(screen.getByLabelText('Setup working directory'), {
+      target: { value: 'other' },
+    });
+    await act(async () => pending.resolve());
+    expect(post).toHaveBeenCalledWith('/projects/project/setup/suggest', { cwd: '' });
+    expect(screen.queryByText('Use suggestions')).toBeNull();
+  } finally {
+    unregister();
+  }
 });

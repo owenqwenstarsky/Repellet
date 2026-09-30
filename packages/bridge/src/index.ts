@@ -60,7 +60,10 @@ async function checkWrite(delta = 0) {
     });
 }
 app.post('/preparation', async (req) => {
-  if (suspended) throw new Error('Storage limit exceeded');
+  if (suspended)
+    throw Object.assign(new Error('Execution suspended: storage limit exceeded'), {
+      statusCode: 507,
+    });
   const b = req.body as { id: string; command: string; cwd: string };
   return startPreparation(b.id, b.command, b.cwd);
 });
@@ -250,6 +253,7 @@ app.get('/usage', async () => {
   const exceeded = measured > storageLimit;
   if (exceeded && !suspended) {
     suspended = true;
+    await cancelPreparation();
     await stopAll();
     stopLanguages();
     emit({ type: 'storage', exceeded: true, bytes: measured });

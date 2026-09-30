@@ -398,6 +398,19 @@ for (const starter of [
       ).toBe(true);
       await expect(page.locator('.editor-tab').filter({ hasText: 'two.ts' })).toHaveCount(0);
       await expect(page.locator('.problems-pane')).not.toContainText('src/two.ts');
+      // Deleting the active file should activate a remaining tab and keep its editor connected.
+      expect(
+        (
+          await page.request.post(`/api/projects/${id}/files/delete`, {
+            headers: origin,
+            data: { path: 'src/renamed.ts' },
+          })
+        ).ok(),
+      ).toBe(true);
+      await expect(page.locator('.editor-tab.active')).toContainText('App.tsx');
+      await expect(
+        page.locator('.retained-editor:visible .connection-indicator.connected'),
+      ).toBeVisible();
     }
     expect(
       (
