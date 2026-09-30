@@ -4,6 +4,8 @@ import { Readable } from 'node:stream';
 import { and, eq, or, inArray, desc, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  starterCatalog,
+  suggestSetup,
   credentialsSchema,
   userCreateSchema,
   projectCreateSchema,
@@ -41,6 +43,16 @@ import {
   closeDocuments,
 } from './collaboration.js';
 import { revokeUser, revokeToken, emit, closeProject } from './live.js';
+import {
+  starterFor,
+  prepareProject,
+  preparationJobs,
+  assertPrepared,
+  probePreview,
+  cancelProjectWork,
+  cancelReadiness,
+} from './preparation.js';
+import { validateRepository, userToken, githubIdentity } from './github.js';
 export function idFrom(req: FastifyRequest) {
   return z
     .string()
@@ -225,9 +237,15 @@ export async function routes(app: FastifyInstance) {
       viewProject({ ...project, role: project.ownerId === user.id ? 'owner' : role!, ownerName }),
     );
   });
+  app.get('/api/starters', async (req) => {
+    await requireUser(req);
+    return starterCatalog;
+  });
   app.post('/api/projects', async (req, reply) => {
     const user = await requireUser(req);
     const b = projectCreateSchema.parse(req.body);
+    const source = b.githubSource ? await validateRepository(user.id, b.githubSource) : null;
+    const starter = starterFor(b.starterId);
     const primary = b.runtimes[0];
     const command =
       primary === 'python'
@@ -243,11 +261,38 @@ export async function routes(app: FastifyInstance) {
         ownerId: user.id,
         name: b.name,
         description: b.description,
-        runtimes: b.runtimes,
+        runtimes: starter ? [...starter.runtimes] : b.runtimes,
+        repository: source
+          ? {
+              repositoryId: source.id,
+              installationId: source.installationId,
+              fullName: source.fullName,
+              cloneUrl: source.cloneUrl,
+              userId: user.id,
+              cloned: false,
+            }
+          : null,
+        starterId: starter?.id || null,
+        starterVersion: starter?.version || null,
+        setupCommand: starter?.setupCommand || '',
+        preparation: {
+          status: starter ? 'pending' : 'none',
+          scaffolded: false,
+          fingerprint: null,
+          error: null,
+        },
         cloneUrl: b.cloneUrl || null,
-        runConfig: { command, cwd: '', port: primary === 'python' ? 8000 : 3000 },
+        runConfig: starter?.runConfig || {
+          command: source || b.cloneUrl ? '' : command,
+          cwd: '',
+          port: primary === 'python' ? 8000 : 3000,
+        },
       })
       .returning();
+    if (starter || source)
+      void ensureProject(p!.id)
+        .then(() => (starter ? prepareProject(p!.id) : undefined))
+        .catch((e) => req.log.error(e));
     return reply.code(201).send(viewProject({ ...p!, role: 'owner' }));
   });
   app.get('/api/projects/:id', async (req) => viewProject(await access(req)));
@@ -274,7 +319,9 @@ export async function routes(app: FastifyInstance) {
     const owner = await db.select().from(users).where(eq(users.id, p.ownerId));
     if (!owner[0]?.enabled)
       throw Object.assign(new Error('Project owner account is disabled'), { statusCode: 403 });
-    void ensureProject(p.id).catch((e) => req.log.error(e));
+    void ensureProject(p.id)
+      .then(() => (p.preparation.status === 'pending' ? prepareProject(p.id) : undefined))
+      .catch((e) => req.log.error(e));
     return reply.code(202).send({ ok: true });
   });
   app.post('/api/projects/:id/stop', async (req) => {
@@ -286,16 +333,71 @@ export async function routes(app: FastifyInstance) {
     const p = await ready(req, 'edit');
     await serialize(p.id, async () => {
       await flushProject(p.id);
-      await bridge(p.id, '/run', 'POST', p.runConfig);
+      const current = await assertPrepared(p.id);
+      await bridge(p.id, '/run', 'POST', current.runConfig);
+      await probePreview(p.id, current.runConfig.port);
     });
     emit(p.id, { type: 'terminals' });
     return { ok: true };
   });
   app.post('/api/projects/:id/run/stop', async (req) => {
     const p = await ready(req, 'edit');
-    await bridge(p.id, '/run/stop', 'POST');
+    await serialize(p.id, async () => {
+      await bridge(p.id, '/run/stop', 'POST');
+      await cancelReadiness(p.id);
+    });
     emit(p.id, { type: 'terminals' });
     return { ok: true };
+  });
+  app.post('/api/projects/:id/setup/suggest', async (req) => {
+    const p = await ready(req, 'manage');
+    const b = z.object({ cwd: z.string().max(1024).default('') }).parse(req.body);
+    b.cwd = safeRelativePath(b.cwd);
+    const { files } = await bridge<{ files: Record<string, string> }>(p.id, '/inspect', 'POST', b);
+    return suggestSetup(files, b.cwd, new URL(config.publicUrl).hostname);
+  });
+  app.put('/api/projects/:id/setup', async (req) => {
+    const p = await ready(req, 'manage');
+    const b = z
+      .object({
+        setupCommand: z.string().max(4096),
+        runConfig: runConfigSchema,
+        confirmed: z.literal(true),
+      })
+      .parse(req.body);
+    b.runConfig.cwd = safeRelativePath(b.runConfig.cwd);
+    if (b.runConfig.port !== p.runConfig.port) await stopProject(p.id);
+    await serialize(p.id, async () => {
+      await db
+        .update(projects)
+        .set({
+          setupCommand: b.setupCommand,
+          runConfig: b.runConfig,
+          preparation: {
+            ...p.preparation,
+            status: b.setupCommand ? 'pending' : 'none',
+            fingerprint: null,
+            error: null,
+          },
+        })
+        .where(eq(projects.id, p.id));
+    });
+    // Saving confirmation does not execute anything; preparation is a separate explicit action.
+    return { ok: true };
+  });
+  app.get('/api/projects/:id/preparation', async (req) => {
+    const p = await access(req);
+    return { preparation: p.preparation, jobs: await preparationJobs(p.id) };
+  });
+  app.post('/api/projects/:id/prepare', async (req, reply) => {
+    const p = await ready(req, 'edit');
+    void prepareProject(p.id).catch((e) => req.log.error(e));
+    return reply.code(202).send({ ok: true });
+  });
+  app.post('/api/projects/:id/readiness', async (req, reply) => {
+    const p = await ready(req, 'edit');
+    await probePreview(p.id, p.runConfig.port);
+    return reply.code(202).send({ ok: true });
   });
   app.get('/api/projects/:id/build-log', async (req) => {
     const p = await access(req);
@@ -303,6 +405,7 @@ export async function routes(app: FastifyInstance) {
   });
   app.delete('/api/projects/:id', async (req) => {
     const p = await access(req, 'manage');
+    await cancelProjectWork(p.id);
     await serialize(p.id, async () => {
       await closeDocuments(p.id);
       closeProject(p.id);
@@ -322,6 +425,14 @@ export async function routes(app: FastifyInstance) {
         description: p.description,
         runtimes: p.runtimes,
         runConfig: p.runConfig,
+        setupCommand: p.setupCommand,
+        starterId: p.starterId,
+        starterVersion: p.starterVersion,
+        preparation: {
+          ...p.preparation,
+          status: p.preparation.status === 'ready' ? 'ready' : 'none',
+          scaffolded: true,
+        },
       })
       .returning();
     try {
@@ -417,6 +528,10 @@ export async function routes(app: FastifyInstance) {
     const p = await ready(req);
     const path = safeRelativePath(String((req.query as { path?: string }).path || ''));
     return bridge(p.id, `/files?path=${encodeURIComponent(path)}`);
+  });
+  app.get('/api/projects/:id/file-index', async (req) => {
+    const p = await ready(req);
+    return bridge(p.id, '/file-index');
   });
   app.get('/api/projects/:id/file', async (req) => {
     const p = await ready(req);
@@ -557,10 +672,17 @@ export async function routes(app: FastifyInstance) {
     b.paths = b.paths?.map(safeRelativePath);
     return serialize(p.id, async () => {
       await flushProject(p.id);
+      let credential: { token: string; remote: string } | undefined;
+      if (p.repository && ['pull', 'push'].includes(b.action)) {
+        const repo = await validateRepository(user.id, p.repository, b.action === 'push');
+        credential = { token: await userToken(user.id), remote: repo.cloneUrl };
+      }
+      const identity = b.action === 'commit' ? await githubIdentity(user.id) : null;
       const result = await bridge(p.id, '/git', 'POST', {
         ...b,
-        name: user.displayName,
-        email: `${user.username}@repellet.local`,
+        credential,
+        name: identity?.name || user.displayName,
+        email: identity?.email || `${user.username}@repellet.local`,
       });
       await reconcileFiles(p.id);
       emit(p.id, { type: 'files' });

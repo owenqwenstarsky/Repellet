@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { api, put, patch, post, remove, errorMessage } from './api';
 import { Modal, useUi, Spinner, Avatar } from './ui';
+import { RepositorySetup } from './RepositorySetup';
 import { RuntimePicker } from './Projects';
 export function ProjectSettings({
   project,
@@ -28,7 +29,7 @@ export function ProjectSettings({
   onChanged: () => void;
   onDuplicate: (id: string) => void;
 }) {
-  const [tab, setTab] = useState('general');
+  const [tab, setTab] = useState(project.runConfig.command ? 'general' : 'repository');
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description);
   const [command, setCommand] = useState(project.runConfig.command);
@@ -111,8 +112,9 @@ export function ProjectSettings({
           ['general', 'General', SlidersHorizontal],
           ['environment', 'Environment', Box],
           ['members', 'People', Users],
+          ['repository', 'Repository setup', Box],
         ]
-          .filter(([id]) => manage || id !== 'environment')
+          .filter(([id]) => manage || (id !== 'environment' && id !== 'repository'))
           .map(([id, label, Icon]) => (
             <button
               key={id as string}
@@ -280,6 +282,7 @@ export function ProjectSettings({
           </button>
         </>
       )}
+      {tab === 'repository' && <RepositorySetup project={project} onChanged={onChanged} />}
       {tab === 'members' && (
         <>
           <p className="field-help">
@@ -382,7 +385,7 @@ export function ProjectSettings({
         <button className="button secondary" onClick={onClose}>
           Close
         </button>
-        {manage && tab !== 'members' && (
+        {manage && !['members', 'repository'].includes(tab) && (
           <button
             className="button primary"
             disabled={busy || (variables === null && tab === 'environment')}

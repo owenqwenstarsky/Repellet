@@ -1,5 +1,13 @@
 import { useState, useEffect, useRef, lazy, Suspense, type ReactNode } from 'react';
-import type { Project, User, TerminalInfo, FileContent } from '@repellet/shared';
+import type {
+  Project,
+  User,
+  TerminalInfo,
+  FileContent,
+  PreparationJob,
+  FileIndex,
+  WorkspacePreferences,
+} from '@repellet/shared';
 import {
   ArrowLeft,
   Play,
@@ -27,6 +35,10 @@ import { FileTree, FileIcon, SearchPane } from './Files';
 import { GitPane } from './GitPane';
 const CodeEditor = lazy(() => import('./CodeEditor').then((m) => ({ default: m.CodeEditor })));
 import { Terminal } from './Terminal';
+import { preferenceKey, readPreferences, savePreferences } from './preferences';
+import { flushOpenDocuments } from './documentSaves';
+import { QuickOpen } from './QuickOpen';
+const Problems = lazy(() => import('./Problems').then((m) => ({ default: m.Problems })));
 import { ProjectSettings } from './Settings';
 export function Workspace({
   id,
@@ -39,24 +51,33 @@ export function Workspace({
   onBack: () => void;
   onOpen: (id: string) => void;
 }) {
+  const preferencesKey = preferenceKey(user.id, id);
+  const [saved] = useState(() => readPreferences(preferencesKey));
+  const restored = useRef(false);
+  const positions = useRef(saved.positions);
+  const snapshot = useRef<WorkspacePreferences>(saved);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(saved.showSidebar);
   const [project, setProject] = useState<Project | null>(null);
-  const [pane, setPane] = useState('files');
+  const [pane, setPane] = useState(saved.pane);
   const [tabs, setTabs] = useState<string[]>([]);
   const [active, setActive] = useState('');
   const [selection, setSelection] = useState<{ line: number; column: number }>();
+  const [indexRevision, setIndexRevision] = useState(0);
   const [revision, setRevision] = useState(0);
   const [terminals, setTerminals] = useState<TerminalInfo[]>([]);
-  const [terminal, setTerminal] = useState('');
+  const [terminal, setTerminal] = useState(saved.terminal);
   const [peers, setPeers] = useState<{ id: string; name: string }[]>([]);
   const [settings, setSettings] = useState(false);
-  const [showPreview, setShowPreview] = useState(true);
-  const [showTerminal, setShowTerminal] = useState(true);
+  const [showPreview, setShowPreview] = useState(saved.showPreview);
+  const [showTerminal, setShowTerminal] = useState(saved.showTerminal);
   const [previewRevision, setPreviewRevision] = useState(0);
   const [status, setStatus] = useState('Ready');
+  const [preparationLog, setPreparationLog] = useState('');
   const [buildLog, setBuildLog] = useState('');
-  const [leftWidth, setLeftWidth] = useState(232);
-  const [previewWidth, setPreviewWidth] = useState(420);
-  const [terminalHeight, setTerminalHeight] = useState(230);
+  const [leftWidth, setLeftWidth] = useState(saved.leftWidth);
+  const [previewWidth, setPreviewWidth] = useState(saved.previewWidth);
+  const [terminalHeight, setTerminalHeight] = useState(saved.terminalHeight);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState('');
   const initializedTerminal = useRef(false);
@@ -69,6 +90,10 @@ export function Workspace({
       const p = await api<Project>(base);
       if (!mounted.current) return;
       setProject(p);
+      if (p.preparation.status !== 'none') {
+        const progress = await api<{ jobs: PreparationJob[] }>(base + '/preparation');
+        if (mounted.current) setPreparationLog(progress.jobs.find((j) => j.step)?.log || '');
+      }
       if (p.state === 'building' || p.state === 'starting') {
         const log = await api<{ log: string }>(base + '/build-log');
         if (mounted.current) setBuildLog(log.log);
@@ -124,9 +149,20 @@ export function Workspace({
           const message = JSON.parse(event.data);
           if (message.type === 'presence') setPeers(message.peers);
           if (message.type === 'file' || message.type === 'files') setRevision((v) => v + 1);
+          if (
+            message.type === 'files' ||
+            (message.type === 'file' &&
+              ['add', 'addDir', 'unlink', 'unlinkDir'].includes(message.event))
+          )
+            setIndexRevision((v) => v + 1);
+          if (message.type === 'file' && ['unlink', 'unlinkDir'].includes(message.event))
+            setTabs((v) =>
+              v.filter((path) => path !== message.path && !path.startsWith(message.path + '/')),
+            );
           if (message.type === 'terminals') void loadTerminals();
           if (message.type === 'state') void load();
           if (message.type === 'structure') {
+            setIndexRevision((v) => v + 1);
             setRevision((v) => v + 1);
             const from = message.from,
               to = message.to;
@@ -138,6 +174,12 @@ export function Workspace({
                 : path;
             setTabs((v) => v.map(mapped).filter((p): p is string => !!p));
             setActive((v) => mapped(v) || '');
+            positions.current = Object.fromEntries(
+              Object.entries(positions.current).flatMap(([path, pos]) => {
+                const next = mapped(path);
+                return next ? [[next, pos]] : [];
+              }),
+            );
           }
           if (message.type === 'storage')
             setProject((p) =>
@@ -164,6 +206,80 @@ export function Workspace({
       socket?.close();
     };
   }, [id, project?.state, project?.role]);
+  useEffect(() => {
+    if (project?.state !== 'running' || restored.current) return;
+    let disposed = false;
+    void (async () => {
+      const candidates = saved.tabs.length
+        ? saved.tabs
+        : project.starterId === 'react-vite'
+          ? ['src/App.tsx']
+          : project.starterId === 'python-fastapi'
+            ? ['main.py']
+            : [];
+      const existing: string[] = [];
+      for (const path of candidates) {
+        try {
+          const file = await api<FileContent>(base + '/file?path=' + encodeURIComponent(path));
+          if (!file.binary && file.hash) existing.push(path);
+        } catch {}
+      }
+      if (disposed) return;
+      // Starter files may not have been scaffolded yet; try again after preparation changes.
+      if (
+        !existing.length &&
+        project.starterId &&
+        ['pending', 'files'].includes(project.preparation.status)
+      )
+        return;
+      setTabs(existing);
+      setActive(existing.includes(saved.active) ? saved.active : existing[0] || '');
+      restored.current = true;
+    })().catch((e) => ui.notify(errorMessage(e)));
+    return () => {
+      disposed = true;
+    };
+  }, [project?.state, project?.preparation.status]);
+  useEffect(() => {
+    snapshot.current = {
+      version: 1,
+      tabs,
+      active,
+      positions: positions.current,
+      pane,
+      showSidebar,
+      showPreview,
+      showTerminal,
+      leftWidth,
+      previewWidth,
+      terminalHeight,
+      terminal,
+    };
+    if (restored.current) savePreferences(preferencesKey, snapshot.current);
+  }, [
+    tabs,
+    active,
+    pane,
+    showSidebar,
+    showPreview,
+    showTerminal,
+    leftWidth,
+    previewWidth,
+    terminalHeight,
+    terminal,
+  ]);
+  useEffect(() => {
+    const clamp = () => {
+      setLeftWidth((v) => Math.min(v, Math.max(150, innerWidth * 0.35)));
+      setPreviewWidth((v) => Math.min(v, Math.max(200, innerWidth * 0.45)));
+      setTerminalHeight((v) => Math.min(v, Math.max(100, innerHeight * 0.6)));
+    };
+    window.addEventListener('resize', clamp);
+    return () => window.removeEventListener('resize', clamp);
+  }, []);
+  useEffect(() => {
+    if (restored.current && active && !tabs.includes(active)) setActive(tabs.at(-1) || '');
+  }, [tabs]);
   async function openFile(path: string, line = 1, column = 1) {
     try {
       const file = await api<FileContent>(base + `/file?path=${encodeURIComponent(path)}`);
@@ -171,6 +287,7 @@ export function Workspace({
         ui.notify('This file is binary or larger than 2 MiB. Use Download from its file menu.');
         return;
       }
+      restored.current = true;
       setTabs((v) => (v.includes(path) ? v : [...v, path]));
       setActive(path);
       setSelection({ line, column });
@@ -178,7 +295,14 @@ export function Workspace({
       ui.notify(errorMessage(e));
     }
   }
-  function closeTab(path: string) {
+  async function closeTab(path: string) {
+    try {
+      await flushOpenDocuments(id);
+    } catch (e) {
+      ui.notify(errorMessage(e));
+      return;
+    }
+    delete positions.current[path];
     setTabs((v) => v.filter((t) => t !== path));
     if (active === path) setActive(tabs.filter((t) => t !== path).at(-1) || '');
   }
@@ -190,6 +314,7 @@ export function Workspace({
     }
     setBusy(true);
     try {
+      await flushOpenDocuments(id);
       await post(base + '/run');
       setShowTerminal(true);
       setTerminal('run');
@@ -204,6 +329,10 @@ export function Workspace({
   }
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        setQuickOpen(true);
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && editable) {
         e.preventDefault();
         void run();
@@ -238,6 +367,14 @@ export function Workspace({
   const url = project.previewPort ? previewUrl(project.previewPort) : '';
   return (
     <div className="workspace">
+      {quickOpen && (
+        <QuickOpen
+          projectId={id}
+          revision={indexRevision}
+          onOpen={openFile}
+          onClose={() => setQuickOpen(false)}
+        />
+      )}
       <header className="workspace-header">
         <button
           className="icon-button"
@@ -289,7 +426,12 @@ export function Workspace({
             <button
               aria-label="Run"
               className="button primary run-button"
-              disabled={!ready || busy || project.storageExceeded}
+              disabled={
+                !ready ||
+                busy ||
+                project.storageExceeded ||
+                !['none', 'ready'].includes(project.preparation.status)
+              }
               onClick={run}
             >
               {busy ? (
@@ -308,6 +450,37 @@ export function Workspace({
           <AlertTriangle size={15} />
           Storage limit reached. Execution is suspended. Delete files to free space or ask the site
           owner to increase the limit.
+        </div>
+      )}
+      {ready && project.preparation.status !== 'none' && (
+        <div className="preparation-banner" role="status">
+          <span>
+            {
+              {
+                pending: 'Preparing files',
+                files: 'Preparing files',
+                installing: 'Installing dependencies',
+                ready: 'Ready to run',
+                failed: 'Preparation failed',
+                interrupted: 'Preparation interrupted',
+              }[project.preparation.status]
+            }
+          </span>
+          {project.preparation.error && <span>{project.preparation.error}</span>}
+          {editable && ['failed', 'interrupted'].includes(project.preparation.status) && (
+            <button
+              className="button secondary"
+              onClick={() => post(base + '/prepare').catch((e) => ui.notify(errorMessage(e)))}
+            >
+              Retry preparation
+            </button>
+          )}
+          {preparationLog && (
+            <details>
+              <summary>Preparation log</summary>
+              <pre>{preparationLog}</pre>
+            </details>
+          )}
         </div>
       )}
       {!ready ? (
@@ -359,17 +532,24 @@ export function Workspace({
                 ['files', 'Files', Files],
                 ['search', 'Search', Search],
                 ['git', 'Source control', GitBranch],
+                ['problems', 'Open files', AlertTriangle],
               ].map(([name, label, Icon]) => (
                 <button
                   key={name as string}
                   className={pane === name ? 'active' : ''}
                   aria-label={label as string}
                   title={label as string}
-                  onClick={() => setPane(name as string)}
+                  onClick={() => {
+                    setPane(name as string);
+                    setShowSidebar(true);
+                  }}
                 >
                   {typeof Icon !== 'string' && <Icon size={20} />}
                 </button>
               ))}
+              <button aria-label="Toggle sidebar" onClick={() => setShowSidebar((v) => !v)}>
+                <Files size={18} />
+              </button>
               <div className="activity-spacer" />
               <button
                 aria-label="Toggle terminal"
@@ -388,24 +568,32 @@ export function Workspace({
                 <PanelRight size={20} />
               </button>
             </nav>
-            <aside className="explorer" style={{ width: leftWidth }}>
-              {pane === 'files' ? (
-                <FileTree
-                  projectId={id}
-                  active={active}
-                  onOpen={openFile}
-                  editable={editable}
-                  revision={revision}
+            {showSidebar && (
+              <>
+                <aside className="explorer" style={{ width: leftWidth }}>
+                  {pane === 'files' ? (
+                    <FileTree
+                      projectId={id}
+                      active={active}
+                      onOpen={openFile}
+                      editable={editable}
+                      revision={revision}
+                    />
+                  ) : pane === 'search' ? (
+                    <SearchPane projectId={id} editable={editable} onOpen={openFile} />
+                  ) : pane === 'problems' ? (
+                    <Suspense fallback={<Spinner />}>
+                      <Problems projectId={id} tabs={tabs} onOpen={openFile} />
+                    </Suspense>
+                  ) : (
+                    <GitPane projectId={id} editable={editable} revision={revision} />
+                  )}
+                </aside>
+                <ResizeHandle
+                  onDelta={(delta) => setLeftWidth((v) => Math.max(170, Math.min(480, v + delta)))}
                 />
-              ) : pane === 'search' ? (
-                <SearchPane projectId={id} editable={editable} onOpen={openFile} />
-              ) : (
-                <GitPane projectId={id} editable={editable} revision={revision} />
-              )}
-            </aside>
-            <ResizeHandle
-              onDelta={(delta) => setLeftWidth((v) => Math.max(170, Math.min(480, v + delta)))}
-            />
+              </>
+            )}
             <section className="workspace-center">
               <div className="workspace-upper">
                 <section className="editor-stack">
@@ -441,16 +629,33 @@ export function Workspace({
                         ))}
                       </div>
                       <Suspense fallback={<Spinner label="Opening editor…" />}>
-                        <CodeEditor
-                          key={active}
-                          projectId={id}
-                          path={active}
-                          user={user}
-                          editable={editable}
-                          onStatus={setStatus}
-                          onDefinition={openFile}
-                          selection={selection}
-                        />
+                        {tabs.map((path) => (
+                          <div
+                            className="retained-editor"
+                            key={path}
+                            style={{ display: active === path ? 'flex' : 'none' }}
+                          >
+                            <CodeEditor
+                              projectId={id}
+                              path={path}
+                              user={user}
+                              editable={editable}
+                              active={active === path}
+                              onStatus={(s) => {
+                                if (path === active) setStatus(s);
+                              }}
+                              onDefinition={openFile}
+                              selection={path === active ? selection : undefined}
+                              position={positions.current[path]}
+                              onPosition={(pos) => {
+                                positions.current[path] = pos;
+                                snapshot.current.positions = positions.current;
+                                if (restored.current)
+                                  savePreferences(preferencesKey, snapshot.current);
+                              }}
+                            />
+                          </div>
+                        ))}
                       </Suspense>
                     </>
                   ) : (
@@ -514,15 +719,36 @@ export function Workspace({
                         <span className="online-dot" />
                         <input aria-label="Preview URL" readOnly value={url} />
                       </div>
-                      {url ? (
+                      {project.appStatus.httpStatus && project.appStatus.httpStatus >= 400 && (
+                        <p className="form-error">
+                          The app responded with HTTP {project.appStatus.httpStatus}.
+                        </p>
+                      )}
+                      {url && project.appStatus.status === 'available' ? (
                         <iframe
-                          key={previewRevision}
+                          key={`${project.appStatus.generation}-${previewRevision}`}
                           src={url}
                           title="Project preview"
                           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
                         />
                       ) : (
-                        <div className="pane-empty">No preview port available.</div>
+                        <div className="pane-empty">
+                          <p>
+                            {project.appStatus.status === 'starting'
+                              ? 'Starting app…'
+                              : project.appStatus.error || 'Click Run to start your app.'}
+                          </p>
+                          {editable && project.appStatus.status === 'timeout' && (
+                            <button
+                              className="button secondary"
+                              onClick={() =>
+                                post(base + '/readiness').catch((e) => ui.notify(errorMessage(e)))
+                              }
+                            >
+                              Retry readiness
+                            </button>
+                          )}
+                        </div>
                       )}
                     </aside>
                   </>

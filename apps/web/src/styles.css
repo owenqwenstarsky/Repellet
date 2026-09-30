@@ -2422,3 +2422,82 @@ kbd {
     scroll-behavior: auto !important;
   }
 }
+
+.preparation-banner {
+  padding: 10px 16px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  background: #20252b;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.preparation-banner pre {
+  max-height: 220px;
+  max-width: 80vw;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.retained-editor {
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+.quick-open-results {
+  max-height: 55vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  margin-top: 12px;
+}
+.quick-open-results button,
+.problems-pane button {
+  padding: 10px;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  overflow-wrap: anywhere;
+}
+.quick-open-results [aria-selected='true'] {
+  background: #31444d;
+}
+.problems-pane {
+  padding: 10px;
+  overflow: auto;
+}
+.problems-pane section {
+  margin: 12px 0;
+}
+.problems-pane button {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 4px;
+}
+.problems-pane button span {
+  color: #d2ac7e;
+  font-size: 11px;
+}
+.github-settings {
+  max-width: 760px;
+  padding: 32px 40px;
+}
+.github-settings form {
+  margin: 20px 0;
+}
+.github-settings .button {
+  margin: 6px 8px 6px 0;
+}
+.github-settings textarea {
+  min-height: 160px;
+  width: 100%;
+}
+.git-diff-editor {
+  height: 55vh;
+  width: 100%;
+}
+.modal:has(.git-diff-editor) {
+  width: 90vw;
+  max-width: 1100px;
+}

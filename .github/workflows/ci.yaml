@@ -18,12 +18,15 @@ jobs:
       - run: npm run setup
       - run: docker compose -f compose.yaml -f compose.dev.yaml up -d database
       - run: npm run check
-      - run: docker build -f docker/workspace.Dockerfile -t repellet/workspace-base:0.1.0 .
+      - run: npm run format:check
+      - run: docker build -f docker/workspace.Dockerfile -t repellet/workspace-base:0.2.0 .
       - run: npm run test:docker
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
       - run: docker compose build app worker
       - run: npm audit --audit-level=high
+      - run: npm audit --audit-level=high --workspaces=false
+        working-directory: apps/api/starters/react-vite/1
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

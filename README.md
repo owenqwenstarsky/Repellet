@@ -20,10 +20,10 @@ For LAN or VPN access, set `BIND_ADDRESS=0.0.0.0` and `PUBLIC_URL=http://your-ho
 
 ## Use
 
-1. Create a blank project or clone an HTTPS/SSH Git repository. Select one or more runtimes. First use builds an environment; later projects reuse cached images.
+1. Choose a React/Vite/TypeScript or Python/FastAPI starter, a blank project, a GitHub repository, or an HTTPS/SSH clone. Starters prepare dependencies automatically and wait for Run. Select one or more runtimes. First use builds an environment; later projects reuse cached images.
 2. Create/upload files in the explorer. Edits autosave; collaborators share documents, cursors, terminals, and Git state.
 3. Set **Run command**, **Working directory**, and **Preview port** in project settings. Your server must bind to `0.0.0.0`. Run starts a managed process group; Stop app terminates it. Stop workspace stops the container.
-4. Use Source control to stage, commit, switch/create branches, and push/pull. Configure SSH keys or Git credential helpers manually in the terminal. `/home/workspace` persists.
+4. Use Source control to stage, commit, switch/create branches, and push/pull. Connect your GitHub account for matching HTTPS remotes, or configure credentials manually in the terminal for other remotes. `/home/workspace` persists.
 5. Invite existing accounts as editors or viewers in project settings. Editors can execute commands and read injected environment secrets; viewers can observe terminals and open previews.
 
 Language services provide completion, hover, diagnostics, and definition navigation for Python, JS/TS, Go, and Rust. Format Document uses Ruff, Prettier, gofmt, or rustfmt. Project dependencies and tool configuration are available to the services inside the container.
@@ -49,6 +49,8 @@ npm audit
 ```
 
 Database tests create disposable databases; Docker tests create disposable containers/volumes. Browser tests use their own database, ports, worker, and preview range. They never reset the owner account in your installation. Build before browser tests. See [verification notes](docs/verification.md) for platform coverage and limitations.
+
+See [starters, workspace preferences, GitHub setup, and recovery](docs/workflows.md).
 
 ## Operate
 

@@ -3,6 +3,7 @@ import websocket from '@fastify/websocket';
 import chokidar from 'chokidar';
 import { promises as fs, createReadStream } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 import tar from 'tar-stream';
 import type { WebSocket } from 'ws';
@@ -11,6 +12,7 @@ import {
   relative,
   resolvePath,
   listFiles,
+  fileIndex,
   readFile,
   writeFile,
   search,
@@ -27,6 +29,13 @@ import {
 } from './terminals.js';
 import { attachLanguage, stopLanguages } from './language.js';
 import { formatFile } from './format.js';
+import {
+  startPreparation,
+  processStatus,
+  cancelPreparation,
+  scaffold,
+  dependencyFingerprint,
+} from './preparation.js';
 const token = process.env.BRIDGE_TOKEN || '';
 if (token.length < 32) throw new Error('BRIDGE_TOKEN must be at least 32 characters');
 const app = Fastify({ logger: true, bodyLimit: 12 * 1024 * 1024 });
@@ -50,10 +59,26 @@ async function checkWrite(delta = 0) {
       statusCode: 507,
     });
 }
+app.post('/preparation', async (req) => {
+  if (suspended) throw new Error('Storage limit exceeded');
+  const b = req.body as { id: string; command: string; cwd: string };
+  return startPreparation(b.id, b.command, b.cwd);
+});
+app.get('/preparation/:id', async (req) => processStatus((req.params as { id: string }).id));
+app.post('/preparation/cancel', async () => cancelPreparation());
+app.post('/scaffold', async (req) => {
+  await checkWrite();
+  return scaffold((req.body as { files: { path: string; content: string }[] }).files);
+});
+app.post('/fingerprint', async (req) => {
+  const b = req.body as { cwd: string; command: string };
+  return dependencyFingerprint(b.cwd, b.command);
+});
 app.get('/health', async () => ({ ok: true }));
 app.get('/files', async (req) =>
   listFiles(String((req.query as Record<string, string>).path || '')),
 );
+app.get('/file-index', async () => fileIndex());
 app.get('/file', async (req) => readFile(String((req.query as Record<string, string>).path || '')));
 app.put('/file', async (req) => {
   const b = req.body as { path: string; content: string; expectedHash?: string | null };
@@ -241,6 +266,42 @@ const git = async (args: string[]) =>
     timeout: 120000,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
   });
+app.get('/git/remote', async () => {
+  const fetch = (await git(['remote', 'get-url', '--all', 'origin'])).stdout.trim().split('\n');
+  const push = (await git(['remote', 'get-url', '--push', '--all', 'origin'])).stdout
+    .trim()
+    .split('\n');
+  if (fetch.length !== 1 || push.length !== 1 || fetch[0] !== push[0])
+    throw new Error('Use one matching origin URL for fetch and push');
+  return { url: fetch[0] };
+});
+app.post('/inspect', async (req) => {
+  const cwd = relative((req.body as { cwd: string }).cwd);
+  const files: Record<string, string> = {};
+  for (const name of [
+    'package.json',
+    'package-lock.json',
+    'npm-shrinkwrap.json',
+    'pnpm-lock.yaml',
+    'yarn.lock',
+    'bun.lock',
+    'bun.lockb',
+    'requirements.txt',
+    'go.mod',
+    'Cargo.toml',
+    'main.py',
+    'app.py',
+    'main.go',
+  ]) {
+    try {
+      const file = await readFile(path.posix.join(cwd, name));
+      if (!file.binary && file.hash) files[name] = file.content;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+  }
+  return { files };
+});
 app.get('/git/status', async () => {
   try {
     const { stdout } = await git(['status', '--porcelain=v1', '-z']);
@@ -253,23 +314,73 @@ app.get('/git/status', async () => {
       if (item[0] === 'R' || item[0] === 'C') i++;
     }
     const { stdout: branch } = await git(['branch', '--show-current']);
-    return { initialized: true, branch: branch.trim() || '(detached)', entries };
+    const branches = (
+      await git(['for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes'])
+    ).stdout
+      .trim()
+      .split('\n')
+      .filter((name) => !!name && !name.endsWith('/HEAD'));
+    const upstream = await git(['rev-parse', '--abbrev-ref', '@{upstream}'])
+      .then((r) => r.stdout.trim())
+      .catch(() => null);
+    const counts = upstream
+      ? (await git(['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'])).stdout
+          .trim()
+          .split(/\s+/)
+          .map(Number)
+      : [0, 0];
+    return {
+      initialized: true,
+      branch: branch.trim() || '(detached)',
+      entries,
+      branches,
+      upstream,
+      ahead: counts[0],
+      behind: counts[1],
+    };
   } catch (e) {
     if (String((e as Error).message).includes('not a git repository'))
-      return { initialized: false, branch: '', entries: [] };
+      return {
+        initialized: false,
+        branch: '',
+        entries: [],
+        branches: [],
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+      };
     throw e;
   }
 });
 app.get('/git/diff', async (req) => {
   const b = req.query as { path?: string; staged?: string };
-  if (b.path) await resolvePath(b.path);
+  if (b.path) relative(b.path);
   const { stdout } = await git([
     'diff',
     ...(b.staged === 'true' ? ['--cached'] : []),
     '--',
     ...(b.path ? [relative(b.path)] : []),
   ]);
-  return { diff: stdout };
+  const rel = relative(b.path || '');
+  const staged = b.staged === 'true';
+  const get = async (ref: string) => {
+    try {
+      return (await git(['show', `${ref}:${rel}`])).stdout;
+    } catch (e) {
+      if (
+        /does not exist|exists on disk|invalid object name|bad revision/.test((e as Error).message)
+      )
+        return '';
+      throw e;
+    }
+  };
+  const original = rel ? await get(staged ? 'HEAD' : '') : '';
+  const modified = rel
+    ? staged
+      ? await get('')
+      : (await readFile(rel).catch(() => ({ content: '' }))).content
+    : '';
+  return { diff: stdout, original, modified };
 });
 app.post('/git', async (req) => {
   if (suspended) throw Object.assign(new Error('Storage limit exceeded'), { statusCode: 507 });
@@ -281,6 +392,7 @@ app.post('/git', async (req) => {
     name?: string;
     email?: string;
     url?: string;
+    credential?: { token: string; remote: string };
   };
   for (const p of b.paths || []) relative(p);
   let args: string[];
@@ -306,13 +418,30 @@ app.post('/git', async (req) => {
       args = ['pull', '--ff-only'];
       break;
     case 'push':
-      args = ['push'];
+      const upstream = await git(['rev-parse', '--abbrev-ref', '@{upstream}'])
+        .then(() => true)
+        .catch(() => false);
+      const branch = (await git(['branch', '--show-current'])).stdout.trim();
+      if (!branch) throw new Error('Switch to a branch before pushing');
+      args = upstream ? ['push'] : ['push', '--set-upstream', 'origin', branch];
       break;
     case 'branch':
     case 'checkout':
       if (!b.branch || !/^[a-zA-Z0-9][a-zA-Z0-9_./-]*$/.test(b.branch) || b.branch.includes('..'))
         throw new Error('Invalid branch name');
       args = b.action === 'branch' ? ['switch', '-c', b.branch] : ['switch', b.branch];
+      if (b.action === 'checkout') {
+        const remote = await git(['show-ref', '--verify', `refs/remotes/${b.branch}`])
+          .then(() => true)
+          .catch(() => false);
+        if (remote) {
+          const local = b.branch.slice(b.branch.indexOf('/') + 1);
+          const exists = await git(['show-ref', '--verify', `refs/heads/${local}`])
+            .then(() => true)
+            .catch(() => false);
+          args = exists ? ['switch', local] : ['switch', '--track', '-c', local, b.branch];
+        }
+      }
       break;
     case 'clone':
       if (
@@ -325,7 +454,104 @@ app.post('/git', async (req) => {
     default:
       throw Object.assign(new Error('Unknown Git action'), { statusCode: 400 });
   }
-  const result = await git(args);
+  let result;
+  if (b.credential && ['clone', 'pull', 'push'].includes(b.action)) {
+    const remote = b.credential.remote;
+    const url = new URL(remote);
+    if (
+      url.protocol !== 'https:' ||
+      url.hostname !== 'github.com' ||
+      url.port ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      !/^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git$/.test(url.pathname)
+    )
+      throw new Error('Invalid credential target');
+    if (b.action === 'clone') {
+      if (b.url !== remote) throw new Error('Clone target changed');
+      const status = await git(['rev-parse', '--is-inside-work-tree'])
+        .then(() => true)
+        .catch(() => false);
+      if (status) {
+        const existing = (await git(['remote', 'get-url', 'origin'])).stdout.trim();
+        if (existing === remote) return { output: 'Repository already cloned' };
+        throw new Error('Workspace already has a different repository');
+      }
+    } else {
+      for (const push of [false, true]) {
+        const actual = (
+          await git(['remote', 'get-url', ...(push ? ['--push'] : []), '--all', 'origin'])
+        ).stdout.trim();
+        if (actual !== remote)
+          throw new Error(
+            'Origin remote changed. Reconnect the matching repository in settings before using credentials.',
+          );
+      }
+      if (b.action === 'pull') args = ['pull', '--ff-only', 'origin'];
+      else {
+        const branch = (await git(['branch', '--show-current'])).stdout.trim();
+        if (!branch) throw new Error('Switch to a branch before pushing');
+        args = ['push', '--set-upstream', 'origin', branch];
+      }
+    }
+    const quote = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
+    const helper =
+      '!' +
+      quote(process.execPath) +
+      ' ' +
+      quote(fileURLToPath(new URL('./credentials.js', import.meta.url)));
+    const env = {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_ASKPASS: '/bin/false',
+      REPELLET_GIT_TOKEN: b.credential.token,
+      REPELLET_GIT_REMOTE: remote,
+    };
+    for (const key of Object.keys(env))
+      if (/^GIT_TRACE|^GIT_CURL_VERBOSE|^GIT_CONFIG/.test(key))
+        delete (env as Record<string, string | undefined>)[key];
+    const redact = (value: string) =>
+      value
+        .replaceAll(b.credential!.token, '[redacted]')
+        .replaceAll(encodeURIComponent(b.credential!.token), '[redacted]');
+    try {
+      result = await exec(
+        'git',
+        [
+          '-c',
+          'credential.helper=',
+          '-c',
+          `credential.helper=${helper}`,
+          '-c',
+          'credential.useHttpPath=true',
+          '-c',
+          'http.followRedirects=false',
+          '-c',
+          'http.extraHeader=',
+          '-c',
+          `credential.${remote}.helper=`,
+          '-c',
+          `credential.${remote}.helper=${helper}`,
+          '-c',
+          `http.${remote}.followRedirects=false`,
+          '-c',
+          `http.${remote}.extraHeader=`,
+          '-c',
+          `http.${remote}.sslVerify=true`,
+          '-c',
+          'core.hooksPath=/dev/null',
+          ...args,
+        ],
+        { cwd: root, env, maxBuffer: 8 * 1024 * 1024, timeout: 120000 },
+      );
+    } catch (e) {
+      throw new Error(redact((e as Error).message));
+    }
+    return { output: redact(result.stdout + result.stderr) };
+  }
+  result = await git(args);
   return { output: result.stdout + result.stderr };
 });
 function archive(directory = '') {
@@ -374,6 +600,7 @@ app.get('/export', async (_req, reply) =>
   reply.header('content-type', 'application/x-tar').send(archive()),
 );
 app.post('/shutdown', async () => {
+  await cancelPreparation();
   await stopAll();
   stopLanguages();
   return { ok: true };
@@ -382,6 +609,7 @@ await fs.mkdir(root, { recursive: true });
 await app.listen({ host: '0.0.0.0', port: Number(process.env.BRIDGE_PORT || 8787) });
 async function shutdown() {
   await watcher.close();
+  await cancelPreparation();
   await stopAll();
   stopLanguages();
   await app.close();
