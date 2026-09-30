@@ -26,7 +26,7 @@ export async function createApp(options: { static?: boolean; logger?: boolean } 
   await app.register(rateLimit, { global: false });
   await app.register(websocket, { options: { maxPayload: 4 * 1024 * 1024 } });
   app.setErrorHandler((error, req, reply) => {
-    const e = error as Error & { statusCode?: number; code?: string };
+    const e = error as Error & { statusCode?: number; code?: string; completedFiles?: string[] };
     if (e instanceof ZodError)
       return reply
         .code(400)
@@ -34,7 +34,10 @@ export async function createApp(options: { static?: boolean; logger?: boolean } 
     if (e.code === '23505')
       return reply.code(409).send({ error: 'That name or item already exists' });
     if (!e.statusCode || e.statusCode >= 500) req.log.error(e);
-    return reply.code(e.statusCode || 500).send({ error: e.message || 'Request failed' });
+    return reply.code(e.statusCode || 500).send({
+      error: e.message || 'Request failed',
+      ...(e.completedFiles ? { completedFiles: e.completedFiles } : {}),
+    });
   });
   app.addHook('onRequest', async (req, reply) => {
     reply.header('x-content-type-options', 'nosniff').header('referrer-policy', 'same-origin');

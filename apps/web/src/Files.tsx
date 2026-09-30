@@ -19,43 +19,89 @@ import {
   Braces,
 } from 'lucide-react';
 import { api, post, errorMessage } from './api';
-import { useUi, Spinner } from './ui';
+import { useUi, Spinner, Menu, LoadError } from './ui';
+import { remapPath, type StructureChange } from './workspaceState';
 export function FileTree({
   projectId,
   active,
   onOpen,
   editable,
   revision,
+  visible = true,
+  structure,
 }: {
   projectId: string;
   active: string;
   onOpen: (path: string, line?: number) => void;
   editable: boolean;
   revision: number;
+  visible?: boolean;
+  structure?: StructureChange | StructureChange[];
 }) {
   const [children, setChildren] = useState<Record<string, FileEntry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']));
   const [selected, setSelected] = useState('');
   const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const epoch = useRef(0);
+  const requests = useRef(new Map<string, number>());
+  const lastStructure = useRef<StructureChange | StructureChange[] | undefined>(undefined);
+  const structureCount = useRef(0);
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
   const upload = useRef<HTMLInputElement>(null);
   const uploadFolder = useRef<HTMLInputElement>(null);
   const ui = useUi();
   async function load(path = '') {
+    const generation = epoch.current;
+    const request = (requests.current.get(path) || 0) + 1;
+    requests.current.set(path, request);
+    const current = () => generation === epoch.current && requests.current.get(path) === request;
     try {
       const list = await api<FileEntry[]>(
         `/projects/${projectId}/files?path=${encodeURIComponent(path)}`,
       );
+      if (!current()) return;
+      setErrors((old) => {
+        const next = { ...old };
+        delete next[path];
+        return next;
+      });
       setChildren((old) => ({ ...old, [path]: list }));
     } catch (e) {
-      ui.notify(errorMessage(e));
+      if (current()) setErrors((old) => ({ ...old, [path]: errorMessage(e) }));
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
   }
   useEffect(() => {
-    for (const p of expanded) void load(p);
-  }, [projectId, revision]);
+    epoch.current++;
+    let paths = expandedRef.current;
+    if (structure && structure !== lastStructure.current) {
+      lastStructure.current = structure;
+      const changes = Array.isArray(structure)
+        ? structure.slice(structureCount.current)
+        : [structure];
+      if (Array.isArray(structure)) structureCount.current = structure.length;
+      for (const change of changes) {
+        paths = new Set(
+          [...paths].map((p) => remapPath(p, change)).filter((p): p is string => p !== null),
+        );
+        setSelected((p) => remapPath(p, change) || '');
+      }
+      paths.add('');
+      expandedRef.current = paths;
+      setExpanded(paths);
+      setChildren({});
+      setErrors({});
+      setMenu(null);
+    }
+    if (visible) for (const p of paths) void load(p);
+    return () => {
+      epoch.current++;
+    };
+  }, [projectId, revision, visible, structure]);
   const directory = selected
     ? Object.values(children)
         .flat()
@@ -105,7 +151,10 @@ export function FileTree({
       <div key={entry.path}>
         <button
           className={`file-row ${active === entry.path ? 'active' : ''} ${selected === entry.path ? 'selected' : ''}`}
-          style={{ paddingLeft: 12 + depth * 14 }}
+          style={{ paddingLeft: `min(${12 + depth * 14}px, max(12px, calc(100% - 120px)))` }}
+          title={entry.path}
+          aria-expanded={entry.kind === 'directory' ? expanded.has(entry.path) : undefined}
+          aria-current={active === entry.path ? 'true' : undefined}
           onClick={() => {
             setSelected(entry.path);
             if (entry.kind === 'directory') {
@@ -117,8 +166,17 @@ export function FileTree({
               if (!expanded.has(entry.path)) void load(entry.path);
             } else onOpen(entry.path);
           }}
+          onKeyDown={(e) => {
+            if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+              e.preventDefault();
+              const bounds = e.currentTarget.getBoundingClientRect();
+              setSelected(entry.path);
+              setMenu({ path: entry.path, x: bounds.left + 20, y: bounds.bottom });
+            }
+          }}
           onContextMenu={(e) => {
             e.preventDefault();
+            e.currentTarget.focus();
             setSelected(entry.path);
             setMenu({ path: entry.path, x: e.clientX, y: e.clientY });
           }}
@@ -137,7 +195,13 @@ export function FileTree({
           <span>{entry.name}</span>
           {entry.kind === 'symlink' && <small>↗</small>}
         </button>
-        {entry.kind === 'directory' && expanded.has(entry.path) && rows(entry.path, depth + 1)}
+        {entry.kind === 'directory' &&
+          expanded.has(entry.path) &&
+          (errors[entry.path] ? (
+            <LoadError message={errors[entry.path]!} onRetry={() => load(entry.path)} />
+          ) : (
+            rows(entry.path, depth + 1)
+          ))}
       </div>
     ));
   }
@@ -202,7 +266,9 @@ export function FileTree({
           }
         }}
       >
-        {loading ? (
+        {errors[''] ? (
+          <LoadError message={errors['']!} onRetry={() => load()} />
+        ) : loading ? (
           <Spinner />
         ) : children['']?.length ? (
           rows('')
@@ -229,8 +295,9 @@ export function FileTree({
       {menu && (
         <>
           <div className="menu-dismiss" onClick={() => setMenu(null)} />
-          <div
-            className="dropdown context-menu"
+          <Menu
+            onClose={() => setMenu(null)}
+            className="context-menu"
             style={{
               left: Math.min(menu.x, window.innerWidth - 200),
               top: Math.min(menu.y, window.innerHeight - 160),
@@ -261,7 +328,6 @@ export function FileTree({
                     if (to && to !== menu.path)
                       try {
                         await post(`/projects/${projectId}/files/move`, { from: menu.path, to });
-                        for (const p of expanded) void load(p);
                       } catch (e) {
                         ui.notify(errorMessage(e));
                       }
@@ -283,7 +349,6 @@ export function FileTree({
                     )
                       try {
                         await post(`/projects/${projectId}/files/delete`, { path: menu.path });
-                        for (const p of expanded) void load(p);
                       } catch (e) {
                         ui.notify(errorMessage(e));
                       }
@@ -293,7 +358,7 @@ export function FileTree({
                 </button>
               </>
             )}
-          </div>
+          </Menu>
         </>
       )}
     </>
@@ -307,36 +372,88 @@ export function SearchPane({
   projectId,
   editable,
   onOpen,
+  visible = true,
 }: {
   projectId: string;
+  visible?: boolean;
   editable: boolean;
   onOpen: (p: string, line: number) => void;
 }) {
   const [query, setQuery] = useState('');
   const [replacement, setReplacement] = useState('');
   const [matches, setMatches] = useState<SearchMatch[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [searched, setSearched] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [replacing, setReplacing] = useState(false);
+  const [submitted, setSubmitted] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const intent = useRef(0);
+  const mutation = useRef(false);
+  const queryRef = useRef(query);
+  queryRef.current = query;
   const ui = useUi();
-  async function search() {
-    if (!query) return;
-    setBusy(true);
+  useEffect(
+    () => () => {
+      intent.current++;
+    },
+    [],
+  );
+  async function search(value = query) {
+    if (!value) return;
+    const request = ++intent.current;
+    setSearching(true);
+    setError('');
     try {
-      setMatches(await api(`/projects/${projectId}/search?query=${encodeURIComponent(query)}`));
-      setSearched(true);
+      const results = await api<SearchMatch[]>(
+        `/projects/${projectId}/search?query=${encodeURIComponent(value)}`,
+      );
+      if (request !== intent.current || value !== queryRef.current) return;
+      setMatches(results);
+      setSubmitted(value);
     } catch (e) {
-      ui.notify(errorMessage(e));
+      if (request === intent.current) setError(errorMessage(e));
     } finally {
-      setBusy(false);
+      if (request === intent.current) setSearching(false);
     }
   }
+  async function replaceAll() {
+    if (mutation.current || !query) return;
+    mutation.current = true;
+    setReplacing(true);
+    const values = { query, replacement };
+    try {
+      if (
+        !(await ui.ask({
+          title: 'Replace in project?',
+          description: `Replace every occurrence of “${values.query}” in matching text files?`,
+          confirm: true,
+        }))
+      )
+        return;
+      const result = await post(`/projects/${projectId}/replace`, values);
+      ui.notify(
+        `Updated ${result.files} files.${result.skippedFiles?.length ? ` Skipped ${result.skippedFiles.length} binary or oversized files.` : ''}`,
+        'success',
+      );
+      await search(queryRef.current);
+    } catch (e) {
+      ui.notify(errorMessage(e));
+      await search(queryRef.current);
+    } finally {
+      mutation.current = false;
+      setReplacing(false);
+    }
+  }
+  useEffect(() => {
+    if (visible && submitted === query && query && !mutation.current) void search();
+  }, [visible, projectId]);
+  const busy = searching || replacing;
   return (
     <div className="search-pane">
       <div className="pane-heading">SEARCH</div>
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          void search();
+          if (!replacing) void search();
         }}
       >
         <label className="sr-only" htmlFor="file-search">
@@ -344,15 +461,22 @@ export function SearchPane({
         </label>
         <input
           id="file-search"
-          autoFocus
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          maxLength={1000}
+          onChange={(e) => {
+            intent.current++;
+            setSearching(false);
+            setSubmitted(null);
+            setError('');
+            setQuery(e.target.value);
+          }}
           placeholder="Find in project…"
         />
         {editable && (
           <input
             aria-label="Replacement"
             value={replacement}
+            maxLength={10000}
             onChange={(e) => setReplacement(e.target.value)}
             placeholder="Replace with…"
           />
@@ -367,29 +491,7 @@ export function SearchPane({
               type="button"
               className="button secondary small"
               disabled={!query || busy}
-              onClick={async () => {
-                if (
-                  !(await ui.ask({
-                    title: 'Replace in project?',
-                    description: `Replace every occurrence of “${query}” in matching text files?`,
-                    confirm: true,
-                  }))
-                )
-                  return;
-                setBusy(true);
-                try {
-                  const result = await post(`/projects/${projectId}/replace`, {
-                    query,
-                    replacement,
-                  });
-                  ui.notify(`Updated ${result.files} files.`, 'success');
-                  void search();
-                } catch (e) {
-                  ui.notify(errorMessage(e));
-                } finally {
-                  setBusy(false);
-                }
-              }}
+              onClick={replaceAll}
             >
               <Replace size={14} />
               Replace all
@@ -397,17 +499,19 @@ export function SearchPane({
           )}
         </div>
       </form>
+      {error && <LoadError message={error} onRetry={() => search()} />}
       {busy ? (
         <Spinner />
       ) : (
-        searched && (
+        submitted === query && (
           <div className="search-results">
             <p className="field-help">
-              {matches.length} matches{matches.length >= 300 ? ' (showing first 300)' : ''}
+              {matches.length} matches{matches.length >= 300 ? ' (showing first 300)' : ''} for “
+              {submitted}”
             </p>
             {matches.map((m, i) => (
               <button key={i} onClick={() => onOpen(m.path, m.line)}>
-                <span>
+                <span title={`${m.path}:${m.line}`}>
                   {m.path}:{m.line}
                 </span>
                 <code>{m.text}</code>

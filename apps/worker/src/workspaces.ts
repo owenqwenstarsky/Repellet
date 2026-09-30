@@ -44,10 +44,13 @@ export async function bridgeRequest(id: string, route: string, method = 'GET', b
   });
   if (!response.ok) {
     let message = await response.text();
+    let completedFiles: string[] | undefined;
     try {
-      message = JSON.parse(message).error || message;
+      const details = JSON.parse(message);
+      message = details.error || message;
+      if (Array.isArray(details.completedFiles)) completedFiles = details.completedFiles;
     } catch {}
-    throw Object.assign(new Error(message), { statusCode: response.status });
+    throw Object.assign(new Error(message), { statusCode: response.status, completedFiles });
   }
   return response;
 }

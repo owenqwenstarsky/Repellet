@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { userCreateSchema } from '@repellet/shared';
 import type { User, Project, Limits } from '@repellet/shared';
 import {
   UserPlus,
@@ -13,7 +14,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { api, post, patch, put, errorMessage, formatBytes } from './api';
-import { useUi, Modal, Avatar, Status, Spinner } from './ui';
+import { useUi, Modal, Avatar, Status, Spinner, LoadError } from './ui';
 export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
   const [tab, setTab] = useState('people');
   const [users, setUsers] = useState<User[]>([]);
@@ -21,6 +22,15 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [createErrors, setCreateErrors] = useState<Record<string, string>>({});
+  const dialogVersion = useRef(0);
+  const pending = useRef(false);
+  const closeCreate = () => {
+    dialogVersion.current++;
+    setCreating(false);
+  };
   const ui = useUi();
   async function load() {
     try {
@@ -32,8 +42,11 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
       setUsers(u);
       setLimits(s.limits);
       setProjects(p);
+      setLoadError('');
     } catch (e) {
-      ui.notify(errorMessage(e));
+      setLoadError(errorMessage(e));
+    } finally {
+      setLoading(false);
     }
   }
   useEffect(() => {
@@ -48,7 +61,14 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
           <p className="muted">Manage the people and resources on your server.</p>
         </div>
         {tab === 'people' && (
-          <button className="button primary" onClick={() => setCreating(true)}>
+          <button
+            className="button primary"
+            onClick={() => {
+              dialogVersion.current++;
+              setCreateErrors({});
+              setCreating(true);
+            }}
+          >
             <UserPlus size={16} />
             Add person
           </button>
@@ -61,6 +81,7 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
           ['projects', 'All projects', Box],
         ].map(([id, label, Icon]) => (
           <button
+            aria-pressed={tab === id}
             key={id as string}
             className={tab === id ? 'active' : ''}
             onClick={() => setTab(id as string)}
@@ -69,14 +90,16 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
           </button>
         ))}
       </div>
-      {tab === 'people' && (
+      {loadError && <LoadError message={loadError} onRetry={load} />}
+      {loading && <Spinner />}
+      {!loading && tab === 'people' && (
         <div className="admin-list">
           {users.map((user) => (
             <div className="admin-user" key={user.id}>
               <Avatar name={user.displayName} size={36} />
               <div>
-                <strong>{user.displayName}</strong>
-                <small>@{user.username}</small>
+                <strong title={user.displayName}>{user.displayName}</strong>
+                <small title={user.username}>@{user.username}</small>
               </div>
               <span className="role-label">
                 {user.isOwner ? 'Owner' : user.enabled ? 'Member' : 'Disabled'}
@@ -84,6 +107,7 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
               <div className="admin-user-actions">
                 <button
                   className="button secondary small"
+                  aria-label={`Reset password for ${user.displayName}`}
                   onClick={async () => {
                     const password = await ui.ask({
                       title: 'Reset password',
@@ -134,19 +158,24 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
           ))}
         </div>
       )}
-      {tab === 'resources' &&
+      {!loading &&
+        tab === 'resources' &&
         (limits ? (
           <form
             className="resource-form"
             onSubmit={async (e) => {
               e.preventDefault();
+              if (pending.current) return;
+              const submittedLimits = { ...limits };
+              pending.current = true;
               setBusy(true);
               try {
-                await put('/admin/settings', { limits });
+                await put('/admin/settings', { limits: submittedLimits });
                 ui.notify('Resource limits updated.', 'success');
               } catch (e) {
                 ui.notify(errorMessage(e));
               } finally {
+                pending.current = false;
                 setBusy(false);
               }
             }}
@@ -186,7 +215,7 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
               {busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}Save limits
             </button>
           </form>
-        ) : (
+        ) : loadError ? null : (
           <Spinner />
         ))}
       {tab === 'projects' && (
@@ -196,8 +225,8 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
               <button className="project-name" onClick={() => onOpen(p.id)}>
                 <Box size={19} />
                 <span>
-                  <strong>{p.name}</strong>
-                  <small>{p.ownerName}</small>
+                  <strong title={p.name}>{p.name}</strong>
+                  <small title={p.ownerName}>{p.ownerName}</small>
                 </span>
               </button>
               <Status state={p.state} />
@@ -223,51 +252,94 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
         </div>
       )}
       {creating && (
-        <Modal title="Add a person" onClose={() => setCreating(false)} small>
+        <Modal title="Add a person" onClose={closeCreate} small>
           <form
             onSubmit={async (e) => {
               e.preventDefault();
+              if (pending.current) return;
+              const version = dialogVersion.current;
+              const result = userCreateSchema.safeParse(
+                Object.fromEntries(new FormData(e.currentTarget)),
+              );
+              if (!result.success) {
+                setCreateErrors(
+                  Object.fromEntries(
+                    result.error.issues.map((issue) => [String(issue.path[0]), issue.message]),
+                  ),
+                );
+                return;
+              }
+              setCreateErrors({});
+              const values = result.data;
+              pending.current = true;
               setBusy(true);
               try {
-                await post('/admin/users', Object.fromEntries(new FormData(e.currentTarget)));
-                setCreating(false);
+                await post('/admin/users', values);
+                if (dialogVersion.current === version) closeCreate();
                 await load();
                 ui.notify('Account created. Share the credentials with the new member.', 'success');
               } catch (e) {
                 ui.notify(errorMessage(e));
               } finally {
+                pending.current = false;
                 setBusy(false);
               }
             }}
           >
             <label>
               Display name
-              <input name="displayName" autoFocus required maxLength={80} />
+              <input
+                name="displayName"
+                aria-invalid={!!createErrors.displayName}
+                aria-describedby={createErrors.displayName ? 'person-displayName-error' : undefined}
+                data-autofocus
+                required
+                maxLength={80}
+              />
+              {createErrors.displayName && (
+                <p className="form-error" role="alert" id="person-displayName-error">
+                  {createErrors.displayName}
+                </p>
+              )}
             </label>
             <label>
               Username
               <input
                 name="username"
+                aria-invalid={!!createErrors.username}
+                aria-describedby={createErrors.username ? 'person-username-error' : undefined}
                 required
                 minLength={3}
                 maxLength={40}
                 pattern="[a-zA-Z0-9_.\-]+"
               />
+              {createErrors.username && (
+                <p className="form-error" role="alert" id="person-username-error">
+                  {createErrors.username}
+                </p>
+              )}
             </label>
             <label>
               Initial password
               <input
                 type="password"
                 name="password"
+                aria-invalid={!!createErrors.password}
+                aria-describedby={createErrors.password ? 'person-password-error' : undefined}
                 required
                 minLength={12}
                 maxLength={128}
                 autoComplete="new-password"
               />
+              {createErrors.password && (
+                <p className="form-error" role="alert" id="person-password-error">
+                  {createErrors.password}
+                </p>
+              )}
             </label>
             <p className="field-help">There’s no public registration or email invitation.</p>
             <div className="modal-actions">
-              <button type="button" className="button secondary" onClick={() => setCreating(false)}>
+              <button type="button" className="button secondary" onClick={closeCreate}>
                 Cancel
               </button>
               <button className="button primary" disabled={busy}>
