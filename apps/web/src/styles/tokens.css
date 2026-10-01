@@ -1,0 +1,109 @@
+/* Design tokens. Palette values mirror src/theme.ts (checked by tests/layout.test.ts). */
+:root {
+  /* Surfaces, darkest to lightest */
+  --color-bg: #141619;
+  --color-bg-inset: #111417;
+  --color-panel: #17191d;
+  --color-surface: #1b1e23;
+  --color-raised: #20232a;
+  --color-statusbar: #152029;
+  --color-hover: #ffffff08;
+  --color-backdrop: #080b10c4;
+
+  /* Borders */
+  --color-border: #292d34;
+  --color-border-strong: #353a43;
+
+  /* Text */
+  --color-text-strong: #e0e4eb;
+  --color-text: #d6dae2;
+  --color-text-secondary: #b9c0cc;
+  --color-text-muted: #9aa3b0;
+  --color-text-subtle: #8a94a1;
+
+  /* Accent */
+  --color-accent: #88bbc4;
+  --color-accent-hover: #a0cad1;
+  --color-accent-text: #a3c4cc;
+  --color-on-accent: #122529;
+  --color-accent-tint: #88bbc410;
+  --color-accent-border: #88bbc430;
+  --color-selection: #31444d;
+
+  /* Status */
+  --color-success: #86b19a;
+  --color-success-bg: #86b19a14;
+  --color-success-border: #86b19a40;
+  --color-warning: #c9ad7b;
+  --color-warning-bg: #c9ad7b14;
+  --color-warning-border: #c9ad7b40;
+  --color-danger: #d09595;
+  --color-danger-solid: #b05a5a;
+  --color-danger-bg: #bd646414;
+  --color-danger-border: #bd646440;
+
+  /* Syntax colors used by file icons and runtime glyphs */
+  --syntax-keyword: #baa2d2;
+  --syntax-string: #a1be8d;
+  --syntax-number: #d2ac7e;
+  --syntax-type: #8abec9;
+  --syntax-blue: #8eb0d4;
+  --syntax-red: #d58c8c;
+
+  /* Type */
+  --font-sans: 'DM Sans Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 15px;
+  --text-xl: 18px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.7;
+
+  /* Spacing (4px base with half steps for dense IDE chrome) */
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Radius */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 999px;
+
+  /* Sizing. The activity bar width and handle size are mirrored in workspaceState.ts. */
+  --control-h-sm: 28px;
+  --control-h: 34px;
+  --pane-header-h: 36px;
+  --workspace-header-h: 48px;
+  --statusbar-h: 24px;
+  --activity-bar-w: 45px;
+  --resize-handle: 4px;
+
+  /* Elevation, layers, motion */
+  --shadow-sm: 0 1px 3px #0003;
+  --shadow-md: 0 10px 30px #0005;
+  --shadow-lg: 0 24px 80px #0007;
+  --z-pane: 5;
+  --z-menu-dismiss: 35;
+  --z-menu: 40;
+  --z-modal: 100;
+  --z-toast: 200;
+  --duration-fast: 0.15s;
+}

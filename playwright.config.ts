@@ -6,6 +6,7 @@ export default defineConfig({
   timeout: 600000,
   expect: { timeout: 30000 },
   use: {
+    actionTimeout: 30000,
     baseURL: 'http://localhost:3315',
     viewport: { width: 1440, height: 900 },
     trace: 'retain-on-failure',

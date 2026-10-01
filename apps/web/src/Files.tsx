@@ -5,21 +5,33 @@ import {
   ChevronDown,
   File,
   Folder,
-  FolderOpen,
   FilePlus2,
   FolderPlus,
   Upload,
   FolderUp,
-  MoreHorizontal,
   Search,
   Replace,
   RefreshCw,
   Download,
   FileCode2,
-  Braces,
+  FileJson,
+  FileText,
+  FileImage,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 import { api, post, errorMessage } from './api';
-import { useUi, Spinner, Menu, LoadError } from './ui';
+import {
+  useUi,
+  Spinner,
+  Menu,
+  MenuButton,
+  MenuItem,
+  LoadError,
+  PaneHeader,
+  IconButton,
+  Button,
+} from './ui';
 import { remapPath, type StructureChange } from './workspaceState';
 export function FileTree({
   projectId,
@@ -207,56 +219,48 @@ export function FileTree({
   }
   return (
     <>
-      <div className="pane-heading">
-        <span>FILES</span>
-        <div>
-          {editable && (
-            <>
-              <button
-                className="icon-button"
-                aria-label="New file"
-                title="New file"
-                onClick={() => create('file')}
-              >
-                <FilePlus2 size={15} />
-              </button>
-              <button
-                className="icon-button"
-                aria-label="New folder"
-                title="New folder"
-                onClick={() => create('directory')}
-              >
-                <FolderPlus size={15} />
-              </button>
-              <button
-                className="icon-button"
-                aria-label="Upload files"
-                title="Upload files"
-                onClick={() => upload.current?.click()}
-              >
-                <Upload size={14} />
-              </button>
-              <button
-                className="icon-button"
-                aria-label="Upload folder"
-                title="Upload folder"
-                onClick={() => uploadFolder.current?.click()}
-              >
-                <FolderUp size={14} />
-              </button>
-            </>
-          )}
-          <button
-            className="icon-button"
-            aria-label="Refresh files"
-            onClick={() => {
-              for (const p of expanded) void load(p);
-            }}
-          >
-            <RefreshCw size={14} />
-          </button>
-        </div>
-      </div>
+      <PaneHeader
+        title="Files"
+        actions={
+          <>
+            {editable && (
+              <>
+                <IconButton
+                  size="sm"
+                  label="New file"
+                  icon={<FilePlus2 size={14} />}
+                  onClick={() => create('file')}
+                />
+                <IconButton
+                  size="sm"
+                  label="New folder"
+                  icon={<FolderPlus size={14} />}
+                  onClick={() => create('directory')}
+                />
+                <MenuButton label="Upload" icon={<Upload size={14} />} className="pane-menu">
+                  <MenuItem icon={<Upload size={14} />} onSelect={() => upload.current?.click()}>
+                    Upload files…
+                  </MenuItem>
+                  <MenuItem
+                    icon={<FolderUp size={14} />}
+                    onSelect={() => uploadFolder.current?.click()}
+                  >
+                    Upload folder…
+                  </MenuItem>
+                </MenuButton>
+              </>
+            )}
+            <IconButton
+              size="sm"
+              label="Refresh files"
+              icon={<RefreshCw size={13} />}
+              onClick={() => {
+                for (const p of expanded) void load(p);
+              }}
+            />
+          </>
+        }
+      />
       <div
         className="file-tree"
         onContextMenu={(e) => {
@@ -276,9 +280,9 @@ export function FileTree({
           <div className="tree-empty">
             No files yet.
             {editable && (
-              <button className="text-button" onClick={() => create('file')}>
+              <Button variant="link" size="sm" onClick={() => create('file')}>
                 Create a file
-              </button>
+              </Button>
             )}
           </div>
         )}
@@ -294,7 +298,6 @@ export function FileTree({
       />
       {menu && (
         <>
-          <div className="menu-dismiss" onClick={() => setMenu(null)} />
           <Menu
             onClose={() => setMenu(null)}
             className="context-menu"
@@ -313,6 +316,7 @@ export function FileTree({
                 setMenu(null);
               }}
             >
+              <Download size={14} />
               Download
             </button>
             {editable && (
@@ -333,6 +337,7 @@ export function FileTree({
                       }
                   }}
                 >
+                  <Pencil size={14} />
                   Rename / move
                 </button>
                 <button
@@ -354,6 +359,7 @@ export function FileTree({
                       }
                   }}
                 >
+                  <Trash2 size={14} />
                   Delete
                 </button>
               </>
@@ -364,9 +370,20 @@ export function FileTree({
     </>
   );
 }
+const code =
+  /^(c|cc|cpp|cs|css|go|h|html|java|js|jsx|kt|mjs|php|py|rb|rs|scss|sh|sql|svelte|swift|ts|tsx|vue)$/;
 export function FileIcon({ name }: { name: string }) {
-  const extension = name.split('.').pop();
-  return <FileCode2 size={15} className={`file-icon ext-${extension}`} />;
+  const extension = (name.includes('.') ? name.split('.').pop() || '' : '').toLowerCase();
+  const Icon = code.test(extension)
+    ? FileCode2
+    : ['json', 'jsonc', 'yaml', 'yml', 'toml'].includes(extension)
+      ? FileJson
+      : ['md', 'mdx', 'txt', 'rst'].includes(extension)
+        ? FileText
+        : ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico'].includes(extension)
+          ? FileImage
+          : File;
+  return <Icon size={14} className={`file-icon ext-${extension}`} aria-hidden="true" />;
 }
 export function SearchPane({
   projectId,
@@ -449,7 +466,7 @@ export function SearchPane({
   const busy = searching || replacing;
   return (
     <div className="search-pane">
-      <div className="pane-heading">SEARCH</div>
+      <PaneHeader title="Search" />
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -482,20 +499,18 @@ export function SearchPane({
           />
         )}
         <div className="search-actions">
-          <button className="button secondary small" disabled={!query || busy}>
-            <Search size={14} />
+          <Button type="submit" size="sm" disabled={!query || busy} icon={<Search size={13} />}>
             Search
-          </button>
+          </Button>
           {editable && (
-            <button
-              type="button"
-              className="button secondary small"
+            <Button
+              size="sm"
               disabled={!query || busy}
               onClick={replaceAll}
+              icon={<Replace size={13} />}
             >
-              <Replace size={14} />
               Replace all
-            </button>
+            </Button>
           )}
         </div>
       </form>

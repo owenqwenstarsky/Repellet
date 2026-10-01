@@ -1,21 +1,24 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Project, User, Runtime, GitHubRepository, SetupSuggestion } from '@repellet/shared';
 import { runtimeCatalog, starterCatalog, projectCreateSchema } from '@repellet/shared';
-import {
-  Plus,
-  Search,
-  ArrowUpRight,
-  Code2,
-  FolderOpen,
-  MoreHorizontal,
-  GitBranch,
-  Check,
-  Box,
-  Loader2,
-} from 'lucide-react';
+import { Plus, Search, Code2, MoreHorizontal, Check, Pencil, Trash2 } from 'lucide-react';
 import { GitHubPicker } from './GitHub';
 import { api, post, patch, remove, errorMessage } from './api';
-import { Modal, Status, Spinner, useUi, Menu, LoadError } from './ui';
+import {
+  Modal,
+  Status,
+  Spinner,
+  useUi,
+  LoadError,
+  MenuButton,
+  MenuItem,
+  Button,
+  Field,
+  FormError,
+  PageHeader,
+  SegmentedControl,
+} from './ui';
+import { useAsyncAction } from './components/useAsyncAction';
 export function RuntimePicker({
   value,
   onChange,
@@ -47,18 +50,18 @@ export function RuntimePicker({
               {r.version} · {r.tools}
             </small>
           </span>
-          <span className="runtime-check">{value.includes(r.id) && <Check size={14} />}</span>
+          <span className="runtime-check">{value.includes(r.id) && <Check size={13} />}</span>
         </button>
       ))}
     </div>
   );
 }
+type Filter = 'all' | 'mine' | 'shared';
 export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) => void }) {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useState<Filter>('all');
   const [creating, setCreating] = useState(false);
-  const [menu, setMenu] = useState<string | null>(null);
   const [loadError, setLoadError] = useState('');
   const ui = useUi();
   async function load() {
@@ -81,39 +84,68 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
         (filter === 'mine' && p.ownerId === user.id) ||
         (filter === 'shared' && p.ownerId !== user.id)),
   );
+  const running = projects?.filter((p) => p.state === 'running').length || 0;
+  async function rename(p: Project) {
+    const name = await ui.ask({
+      title: 'Rename project',
+      value: p.name,
+      label: 'Project name',
+      maxLength: 80,
+      pattern: '.*\\S.*',
+    });
+    if (name)
+      try {
+        await patch(`/projects/${p.id}`, { name });
+        await load();
+      } catch (e) {
+        ui.notify(errorMessage(e));
+      }
+  }
+  async function destroy(p: Project) {
+    if (
+      await ui.ask({
+        title: 'Delete project?',
+        description: `This permanently removes ${p.name}, its files, and its environment.`,
+        confirm: true,
+        danger: true,
+      })
+    )
+      try {
+        await remove(`/projects/${p.id}`);
+        await load();
+      } catch (e) {
+        ui.notify(errorMessage(e));
+      }
+  }
   return (
     <main className="dashboard">
-      <header className="page-heading">
-        <div>
-          <div className="eyebrow">YOUR WORKSPACE</div>
-          <h1>
-            Projects<span className="count">{projects?.length ?? '—'}</span>
-          </h1>
-          <p className="muted">Pick up where you left off, or start something new.</p>
-        </div>
-        <button className="button primary" onClick={() => setCreating(true)}>
-          <Plus size={17} /> Create project
-        </button>
-      </header>
+      <PageHeader
+        title="Projects"
+        count={projects?.length ?? '—'}
+        description={
+          projects?.length
+            ? `${running} running · Projects are private until you share them.`
+            : 'Pick up where you left off, or start something new.'
+        }
+        actions={
+          <Button variant="primary" icon={<Plus size={16} />} onClick={() => setCreating(true)}>
+            Create project
+          </Button>
+        }
+      />
       <div className="project-toolbar">
-        <div className="segment">
-          {[
+        <SegmentedControl
+          label="Filter projects"
+          value={filter}
+          onChange={setFilter}
+          options={[
             ['all', 'All projects'],
             ['mine', 'Owned by me'],
             ['shared', 'Shared with me'],
-          ].map(([id, label]) => (
-            <button
-              key={id}
-              aria-pressed={filter === id}
-              className={filter === id ? 'active' : ''}
-              onClick={() => setFilter(id!)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+          ]}
+        />
         <div className="search-field">
-          <Search size={16} />
+          <Search size={15} />
           <input
             aria-label="Search projects"
             value={query}
@@ -129,24 +161,32 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
         )
       ) : filtered?.length ? (
         <div className="project-list">
-          <div className="project-list-heading">
-            <span>PROJECT</span>
-            <span>ENVIRONMENT</span>
-            <span>STATUS</span>
-            <span>LAST UPDATED</span>
+          <div className="project-list-heading" aria-hidden="true">
+            <span>Project</span>
+            <span>Environment</span>
+            <span>Status</span>
+            <span>Updated</span>
             <span />
           </div>
           {filtered.map((p) => (
             <div className="project-row" key={p.id}>
-              <button className="project-name" onClick={() => onOpen(p.id)}>
-                <div className="project-icon">
-                  <Code2 size={23} />
-                </div>
-                <span>
-                  <strong title={p.name}>{p.name}</strong>
-                  <small title={p.description || `Shared by ${p.ownerName || 'a teammate'}`}>
+              <button
+                className="project-name"
+                aria-label={`Open ${p.name}`}
+                onClick={() => onOpen(p.id)}
+              >
+                <span className="project-icon">
+                  <Code2 size={19} />
+                </span>
+                <span className="project-text">
+                  <strong className="truncate" title={p.name}>
+                    {p.name}
+                  </strong>
+                  <small className="truncate" title={p.description || undefined}>
                     {p.description ||
-                      `${p.ownerId === user.id ? 'Your project' : `Shared by ${p.ownerName || 'a teammate'}`}`}
+                      (p.ownerId === user.id
+                        ? 'Your project'
+                        : `Shared by ${p.ownerName || 'a teammate'}`)}
                   </small>
                 </span>
               </button>
@@ -165,84 +205,15 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
                 })}
               </span>
               <div className="row-actions">
-                <button
-                  className="icon-button"
-                  title="Open workspace"
-                  aria-label={`Open ${p.name}`}
-                  onClick={() => onOpen(p.id)}
-                >
-                  <ArrowUpRight size={18} />
-                </button>
-                <button
-                  className="icon-button"
-                  aria-haspopup="menu"
-                  aria-expanded={menu === p.id}
-                  aria-label={`Actions for ${p.name}`}
-                  onClick={() => setMenu(menu === p.id ? null : p.id)}
-                >
-                  <MoreHorizontal size={19} />
-                </button>
-                {menu === p.id && (
-                  <>
-                    <div className="menu-dismiss" onClick={() => setMenu(null)} />
-                    <Menu onClose={() => setMenu(null)}>
-                      <button
-                        onClick={() => {
-                          setMenu(null);
-                          onOpen(p.id);
-                        }}
-                      >
-                        Open workspace
-                      </button>
-                      {p.role === 'owner' && (
-                        <>
-                          <button
-                            onClick={async () => {
-                              setMenu(null);
-                              const name = await ui.ask({
-                                title: 'Rename project',
-                                value: p.name,
-                                label: 'Project name',
-                                maxLength: 80,
-                                pattern: '.*\\S.*',
-                              });
-                              if (name)
-                                try {
-                                  await patch(`/projects/${p.id}`, { name });
-                                  await load();
-                                } catch (e) {
-                                  ui.notify(errorMessage(e));
-                                }
-                            }}
-                          >
-                            Rename
-                          </button>
-                          <button
-                            className="danger-text"
-                            onClick={async () => {
-                              setMenu(null);
-                              if (
-                                await ui.ask({
-                                  title: 'Delete project?',
-                                  description: `This permanently removes ${p.name}, its files, and its environment.`,
-                                  confirm: true,
-                                  danger: true,
-                                })
-                              )
-                                try {
-                                  await remove(`/projects/${p.id}`);
-                                  await load();
-                                } catch (e) {
-                                  ui.notify(errorMessage(e));
-                                }
-                            }}
-                          >
-                            Delete project
-                          </button>
-                        </>
-                      )}
-                    </Menu>
-                  </>
+                {p.role === 'owner' && (
+                  <MenuButton label={`Actions for ${p.name}`} icon={<MoreHorizontal size={18} />}>
+                    <MenuItem icon={<Pencil size={14} />} onSelect={() => rename(p)}>
+                      Rename
+                    </MenuItem>
+                    <MenuItem danger icon={<Trash2 size={14} />} onSelect={() => destroy(p)}>
+                      Delete project
+                    </MenuItem>
+                  </MenuButton>
                 )}
               </div>
             </div>
@@ -290,21 +261,12 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
                 : 'Create a project, choose your tools, and make it yours.'}
           </p>
           {!query && filter !== 'shared' && (
-            <button className="button primary" onClick={() => setCreating(true)}>
-              <Plus size={17} /> Create your first project
-            </button>
+            <Button variant="primary" icon={<Plus size={16} />} onClick={() => setCreating(true)}>
+              Create your first project
+            </Button>
           )}
         </div>
       )}
-      <footer className="dashboard-footer">
-        <span>
-          <Box size={14} /> Containers run on your server
-        </span>
-        <span>
-          {projects?.filter((p) => p.state === 'running').length || 0} running · Projects are
-          private by default
-        </span>
-      </footer>
       {creating && (
         <CreateProject
           onClose={() => setCreating(false)}
@@ -325,45 +287,44 @@ function CreateProject({
   onCreated: (p: Project) => void;
 }) {
   const [runtimes, setRuntimes] = useState<Runtime[]>(['node']);
-  const [clone, setClone] = useState(false);
-  const [starterId, setStarterId] = useState('');
-  const [github, setGithub] = useState(false);
+  // One source of truth: 'blank', a starter id, 'clone' or 'github'.
+  const [source, setSource] = useState('blank');
   const [repo, setRepo] = useState<GitHubRepository | null>(null);
   const [runtimeSuggestion, setRuntimeSuggestion] = useState('');
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const detection = useRef(0);
   const environmentEdits = useRef(0);
+  const { busy, run, alive, dispose } = useAsyncAction((e) => {
+    if (alive.current) setError(errorMessage(e));
+  });
+  const starter = starterCatalog.find((s) => s.id === source);
+  const github = source === 'github';
+  const clone = source === 'clone';
   useEffect(
     () => () => {
       detection.current++;
     },
     [],
   );
-  function clearDetection() {
+  function changeSource(value: string) {
     detection.current++;
     setRepo(null);
     setRuntimeSuggestion('');
+    setSource(value);
+    const next = starterCatalog.find((s) => s.id === value);
+    if (next) setRuntimes([...next.runtimes]);
   }
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const alive = useRef(true),
-    pending = useRef(false);
-  useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
-  }, []);
   const dismiss = () => {
-    alive.current = false;
+    dispose();
     onClose();
   };
   return (
     <Modal title="Create a project" onClose={dismiss}>
       <form
-        onSubmit={async (e) => {
+        onSubmit={(e) => {
           e.preventDefault();
-          if (pending.current) return;
+          if (busy) return;
           if (github && !repo) {
             setError('Choose a GitHub repository.');
             return;
@@ -372,17 +333,15 @@ function CreateProject({
             setError('Choose at least one runtime.');
             return;
           }
-          pending.current = true;
-          setBusy(true);
-          setError('');
           const form = new FormData(e.currentTarget);
-          try {
+          void run(async () => {
+            setError('');
             const result = projectCreateSchema.safeParse({
               name: form.get('name'),
               description: form.get('description'),
               runtimes: [...runtimes],
               ...(clone ? { cloneUrl: form.get('cloneUrl') } : {}),
-              ...(starterId ? { starterId } : {}),
+              ...(starter ? { starterId: starter.id } : {}),
               ...(github && repo
                 ? { githubSource: { repositoryId: repo.id, installationId: repo.installationId } }
                 : {}),
@@ -399,165 +358,115 @@ function CreateProject({
             setFieldErrors({});
             const created = await post<Project>('/projects', result.data);
             if (alive.current) onCreated(created);
-          } catch (e) {
-            if (alive.current) setError(errorMessage(e));
-          } finally {
-            pending.current = false;
-            if (alive.current) setBusy(false);
-          }
+          });
         }}
       >
-        <label>
-          Project name
-          <input
-            data-autofocus
-            name="name"
-            aria-invalid={!!fieldErrors.name}
-            aria-describedby={fieldErrors.name ? 'create-name-error' : undefined}
-            required
-            maxLength={80}
-            placeholder="my-next-project"
-          />
-          {fieldErrors.name && (
-            <p className="form-error" role="alert" id="create-name-error">
-              {fieldErrors.name}
-            </p>
-          )}
-        </label>
-        <label>
-          Description <span className="optional">optional</span>
-          <input
-            name="description"
-            aria-invalid={!!fieldErrors.description}
-            aria-describedby={fieldErrors.description ? 'create-description-error' : undefined}
-            maxLength={500}
-            placeholder="What are you building?"
-          />
-          {fieldErrors.description && (
-            <p className="form-error" role="alert" id="create-description-error">
-              {fieldErrors.description}
-            </p>
-          )}
-        </label>
-        <label>
-          Project source
-          <select
-            aria-label="Project source"
-            value={github ? 'github' : clone ? 'clone' : starterId || 'blank'}
-            onChange={(e) => {
-              setClone(e.target.value === 'clone');
-              setGithub(e.target.value === 'github');
-              clearDetection();
-              const starter = starterCatalog.find((s) => s.id === e.target.value);
-              setStarterId(starter?.id || '');
-              if (starter) setRuntimes([...starter.runtimes]);
-            }}
-          >
-            <option value="blank">Blank</option>
-            {starterCatalog.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-            <option value="clone">Clone repository</option>
-            <option value="github">GitHub repository</option>
-          </select>
-        </label>
-        {github && (
-          <GitHubPicker
-            value={repo}
-            onSelect={(repo) => {
-              setRepo(repo);
-              setRuntimeSuggestion('');
-              const request = ++detection.current;
-              const edits = environmentEdits.current;
-              if (repo)
-                api<SetupSuggestion>(
-                  `/github/repositories/${repo.id}/suggestion?installationId=${repo.installationId}`,
-                )
-                  .then((s) => {
-                    if (request !== detection.current) return;
-                    if (s.runtimes.length) {
-                      if (edits === environmentEdits.current) setRuntimes(s.runtimes);
-                      setRuntimeSuggestion(
-                        'Detected: ' +
-                          s.runtimes.join(', ') +
-                          '. Review repository setup after import.',
-                      );
-                    }
-                  })
-                  .catch((e) => {
-                    if (request === detection.current) setRuntimeSuggestion(errorMessage(e));
-                  });
-            }}
-          />
-        )}
-        {runtimeSuggestion && <p className="field-help">{runtimeSuggestion}</p>}
-        {starterId && (
-          <p className="field-help">
-            Files and dependencies prepare automatically. Click Run when ready.
-          </p>
-        )}
-        <div className="label">Environment</div>
-        <p className="field-help">
-          Combine runtimes. Git and common build tools are always included.
-        </p>
-        <RuntimePicker
-          value={runtimes}
-          onChange={(value) => {
-            environmentEdits.current++;
-            setRuntimes(value);
-          }}
-          disabled={!!starterId}
-        />
-        <button
-          type="button"
-          className="text-button clone-toggle"
-          onClick={() => {
-            setClone(!clone);
-            setStarterId('');
-            setGithub(false);
-            clearDetection();
-          }}
+        <Field id="create-name" label="Project name" error={fieldErrors.name}>
+          <input data-autofocus name="name" required maxLength={80} placeholder="my-next-project" />
+        </Field>
+        <Field id="create-description" label="Description" optional error={fieldErrors.description}>
+          <input name="description" maxLength={500} placeholder="What are you building?" />
+        </Field>
+        <Field
+          id="create-source"
+          label="Project source"
+          help={
+            starter
+              ? 'Files and dependencies prepare automatically. Click Run when ready.'
+              : clone
+                ? undefined
+                : github
+                  ? undefined
+                  : 'An empty workspace with the runtimes you choose below.'
+          }
         >
-          <GitBranch size={16} />
-          {clone ? 'Start with an empty project' : 'Clone a Git repository'}
-        </button>
+          <select value={source} onChange={(e) => changeSource(e.target.value)}>
+            <optgroup label="Start from">
+              <option value="blank">Blank</option>
+              {starterCatalog.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </optgroup>
+            <optgroup label="Import">
+              <option value="clone">Clone repository</option>
+              <option value="github">GitHub repository</option>
+            </optgroup>
+          </select>
+        </Field>
         {clone && (
-          <label>
-            Repository URL
+          <Field
+            id="create-cloneUrl"
+            label="Repository URL"
+            error={fieldErrors.cloneUrl}
+            help="For private repositories, configure credentials in an empty project’s terminal and clone there."
+          >
             <input
               name="cloneUrl"
-              aria-invalid={!!fieldErrors.cloneUrl}
-              aria-describedby={fieldErrors.cloneUrl ? 'create-cloneUrl-error' : undefined}
               maxLength={2048}
               pattern="(https://[^\s]+|git@[a-zA-Z0-9.\-]+:[^\s]+)"
               required
               placeholder="https://github.com/you/repository.git"
             />
-            {fieldErrors.cloneUrl && (
-              <p className="form-error" role="alert" id="create-cloneUrl-error">
-                {fieldErrors.cloneUrl}
-              </p>
-            )}
-            <span className="field-help">
-              For private repositories, configure credentials in an empty project’s terminal and
-              clone there.
-            </span>
-          </label>
+          </Field>
         )}
-        {error && (
-          <p className="form-error" role="alert">
-            {error}
+        {github && (
+          <div className="source-details">
+            <GitHubPicker
+              value={repo}
+              onSelect={(repo) => {
+                setRepo(repo);
+                setRuntimeSuggestion('');
+                const request = ++detection.current;
+                const edits = environmentEdits.current;
+                if (repo)
+                  api<SetupSuggestion>(
+                    `/github/repositories/${repo.id}/suggestion?installationId=${repo.installationId}`,
+                  )
+                    .then((s) => {
+                      if (request !== detection.current) return;
+                      if (s.runtimes.length) {
+                        if (edits === environmentEdits.current) setRuntimes(s.runtimes);
+                        setRuntimeSuggestion(
+                          'Detected: ' +
+                            s.runtimes.join(', ') +
+                            '. Review Run & setup after import.',
+                        );
+                      }
+                    })
+                    .catch((e) => {
+                      if (request === detection.current) setRuntimeSuggestion(errorMessage(e));
+                    });
+              }}
+            />
+            {runtimeSuggestion && <p className="field-help">{runtimeSuggestion}</p>}
+          </div>
+        )}
+        <div className="field">
+          <div className="field-label">
+            <span className="label">Environment</span>
+          </div>
+          <p className="field-help field-help-top">
+            {starter
+              ? `Set by the ${starter.name} starter.`
+              : 'Combine runtimes. Git and common build tools are always included.'}
           </p>
-        )}
+          <RuntimePicker
+            value={runtimes}
+            onChange={(value) => {
+              environmentEdits.current++;
+              setRuntimes(value);
+            }}
+            disabled={!!starter}
+          />
+        </div>
+        {error && <FormError>{error}</FormError>}
         <div className="modal-actions">
-          <button type="button" className="button secondary" onClick={dismiss}>
-            Cancel
-          </button>
-          <button className="button primary" disabled={busy}>
-            {busy ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}Create project
-          </button>
+          <Button onClick={dismiss}>Cancel</Button>
+          <Button type="submit" variant="primary" busy={busy} icon={<Plus size={15} />}>
+            Create project
+          </Button>
         </div>
       </form>
     </Modal>

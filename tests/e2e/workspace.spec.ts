@@ -11,7 +11,8 @@ async function login(page: Page, username = 'e2e-owner') {
   await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
 }
 async function newFile(page: Page, path: string, content: string) {
-  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  const files = page.getByRole('button', { name: 'Files', exact: true });
+  if ((await files.getAttribute('aria-pressed')) !== 'true') await files.click();
   await page.getByRole('button', { name: 'New file', exact: true }).click();
   await page.getByLabel('Workspace path').fill(path);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -100,9 +101,10 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
   await unpacked;
   expect(entries.get('nested/note.txt')).toBe('Nested folders survive upload.\n');
   await page.getByRole('button', { name: 'Project settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Run & setup' }).click();
   await page.getByLabel('Run command').fill('node server.mjs');
   await page.getByRole('button', { name: 'Save changes' }).click();
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await page.locator('.workspace-header').getByRole('button', { name: 'Run', exact: true }).click();
   await expect
     .poll(
@@ -369,7 +371,7 @@ for (const starter of [
         await page.getByLabel('Search file paths').press('Enter');
         await expect(page.locator('.editor-tab.active')).toContainText(path.split('/').pop()!);
       }
-      await page.getByRole('button', { name: 'Open files', exact: true }).click();
+      await page.getByRole('button', { name: 'Problems', exact: true }).click();
       await expect(page.locator('.problems-pane')).toContainText('src/one.ts');
       await expect(page.locator('.problems-pane')).toContainText('src/two.ts');
       await page
@@ -436,7 +438,7 @@ test('GitHub redirects complete with Strict cookies and member repository permis
     const { url } = await response.json();
     await page.goto(url + '&identity=' + identity);
     await expect(
-      page.getByText(`Connected as ${identity === 'readonly' ? 'reader' : 'writer'}`, {
+      page.getByText(`@${identity === 'readonly' ? 'reader' : 'writer'}`, {
         exact: true,
       }),
     ).toBeVisible();

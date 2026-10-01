@@ -159,7 +159,7 @@ it('prevents editing or saving environment variables until loading succeeds, and
     }),
   );
 });
-it('refreshes untouched settings from polling while keeping edits, including after repository confirmation', async () => {
+it('refreshes untouched settings from polling while keeping edits', async () => {
   const props = { onClose: vi.fn(), onChanged: vi.fn(), onDuplicate: vi.fn() };
   const view = render(
     <UiProvider>
@@ -182,7 +182,6 @@ it('refreshes untouched settings from polling while keeping edits, including aft
     expect(patch).toHaveBeenCalledWith('/projects/project', {
       name: 'Unsaved',
       description: 'Updated',
-      runConfig: suggestion.runConfig,
     }),
   );
 });
@@ -195,7 +194,7 @@ it('invalidates pending manifest suggestions when cwd changes and applies the fu
     </UiProvider>,
   );
   fireEvent.click(screen.getByText('Inspect manifests'));
-  fireEvent.change(screen.getByLabelText('Setup working directory'), {
+  fireEvent.change(screen.getByLabelText('Working directory'), {
     target: { value: 'other' },
   });
   await act(async () => pending.resolve(suggestion));
@@ -203,9 +202,7 @@ it('invalidates pending manifest suggestions when cwd changes and applies the fu
   fireEvent.click(screen.getByText('Inspect manifests'));
   await screen.findByText('Use suggestions');
   fireEvent.click(screen.getByText('Use suggestions'));
-  expect((screen.getByLabelText('Setup working directory') as HTMLInputElement).value).toBe(
-    'server',
-  );
+  expect((screen.getByLabelText('Working directory') as HTMLInputElement).value).toBe('server');
   fireEvent.click(screen.getByText('Confirm and prepare'));
   await waitFor(() =>
     expect(put).toHaveBeenCalledWith('/projects/project/setup', {
@@ -243,7 +240,7 @@ it('ignores runtime detection after a source change and after unmount', async ()
   await act(async () => late.reject(new Error('Late detection')));
   expect(screen.queryByText('Late detection')).toBeNull();
 });
-it('does not overwrite newly confirmed setup with stale General fields before polling returns', async () => {
+it('edits run settings in one place and keeps General saves to project details', async () => {
   render(
     <UiProvider>
       <ProjectSettings
@@ -254,23 +251,26 @@ it('does not overwrite newly confirmed setup with stale General fields before po
       />
     </UiProvider>,
   );
-  fireEvent.change(screen.getByLabelText('Run command'), { target: { value: 'stale edit' } });
-  fireEvent.click(screen.getByText('Repository setup'));
-  fireEvent.change(screen.getByLabelText('Confirmed run command'), {
+  expect(screen.queryByLabelText('Run command')).toBeNull();
+  fireEvent.click(screen.getByText('Run & setup'));
+  fireEvent.change(screen.getByLabelText('Run command'), {
     target: { value: 'new command' },
   });
-  fireEvent.change(screen.getByLabelText('Setup working directory'), {
+  fireEvent.change(screen.getByLabelText('Working directory'), {
     target: { value: 'server' },
   });
-  fireEvent.click(screen.getByText('Confirm and prepare'));
-  await waitFor(() => expect(put).toHaveBeenCalled());
-  fireEvent.click(screen.getByText('General'));
   fireEvent.click(screen.getByText('Save changes'));
   await waitFor(() =>
     expect(patch).toHaveBeenCalledWith('/projects/project', {
+      runConfig: { command: 'new command', cwd: 'server', port: 3000 },
+    }),
+  );
+  fireEvent.click(screen.getByText('General'));
+  fireEvent.click(screen.getByText('Save changes'));
+  await waitFor(() =>
+    expect(patch).toHaveBeenLastCalledWith('/projects/project', {
       name: project.name,
       description: project.description,
-      runConfig: { command: 'new command', cwd: 'server', port: 3000 },
     }),
   );
 });
@@ -281,6 +281,7 @@ it('keeps dirty run fields stable during polling and refreshes them after a conf
       <ProjectSettings project={project} {...props} />
     </UiProvider>,
   );
+  fireEvent.click(screen.getByText('Run & setup'));
   fireEvent.change(screen.getByLabelText('Run command'), { target: { value: 'manual' } });
   view.rerender(
     <UiProvider>
@@ -363,7 +364,7 @@ it('refreshes untouched repository fields during polling without losing edits', 
     </UiProvider>,
   );
   expect((screen.getByLabelText('Setup command') as HTMLInputElement).value).toBe('manual install');
-  expect((screen.getByLabelText('Confirmed run command') as HTMLInputElement).value).toBe(
+  expect((screen.getByLabelText('Run command') as HTMLInputElement).value).toBe(
     suggestion.runConfig.command,
   );
 });
@@ -425,7 +426,7 @@ it('invalidates manifest inspection when cwd changes during an editor save', asy
       </UiProvider>,
     );
     fireEvent.click(screen.getByText('Inspect manifests'));
-    fireEvent.change(screen.getByLabelText('Setup working directory'), {
+    fireEvent.change(screen.getByLabelText('Working directory'), {
       target: { value: 'other' },
     });
     await act(async () => pending.resolve());

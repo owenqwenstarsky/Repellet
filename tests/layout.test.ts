@@ -61,16 +61,55 @@ function luminance(hex: string) {
     .map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
   return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
 }
-it('keeps subdued active text above 4.5:1 on its surface', () => {
-  const css = readFileSync('apps/web/src/styles.css', 'utf8');
-  for (const [selector, background] of [
-    ['textarea::placeholder', '141619'],
-    ['.breadcrumbs', '17191d'],
-    ['.dashboard-footer', '1b1e23'],
-    ['.editor-welcome > small', '17191d'],
-  ]) {
-    const body = css.slice(css.indexOf(selector));
-    const color = /color: #([0-9a-f]{6})/.exec(body)![1];
-    expect((luminance(color) + 0.05) / (luminance(background) + 0.05)).toBeGreaterThanOrEqual(4.5);
-  }
+const tokens = Object.fromEntries(
+  [
+    ...readFileSync('apps/web/src/styles/tokens.css', 'utf8').matchAll(
+      /--([\w-]+):\s*(#[0-9a-f]{6})\b/g,
+    ),
+  ].map((m) => [m[1]!, m[2]!.slice(1)]),
+);
+const contrast = (a: string, b: string) => {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi! + 0.05) / (lo! + 0.05);
+};
+// Resolves the first color declared in a selector's rule body, following var() references.
+function colorOf(css: string, selector: string) {
+  const body = css.slice(css.indexOf(selector + ' {'));
+  const value = /\bcolor:\s*([^;]+);/.exec(body.slice(0, body.indexOf('}')))![1]!.trim();
+  const token = /var\(--([\w-]+)\)/.exec(value)?.[1];
+  return token ? tokens[token]! : value.slice(1);
+}
+describe('color tokens', () => {
+  const text = ['text-strong', 'text', 'text-secondary', 'text-muted', 'text-subtle'];
+  const surfaces = ['bg', 'bg-inset', 'panel', 'surface', 'raised', 'statusbar'];
+  it('keeps every text token above 4.5:1 on every surface', () => {
+    for (const t of text)
+      for (const s of surfaces)
+        expect(
+          contrast(tokens['color-' + t]!, tokens['color-' + s]!),
+          `${t} on ${s}`,
+        ).toBeGreaterThanOrEqual(4.5);
+  });
+  it('keeps subdued text rules above 4.5:1 on their surface', () => {
+    const css = ['base', 'workspace']
+      .map((n) => readFileSync(`apps/web/src/styles/${n}.css`, 'utf8'))
+      .join('\n');
+    for (const [selector, surface] of [
+      ['textarea::placeholder', 'bg'],
+      ['.breadcrumbs', 'panel'],
+      ['.editor-welcome > small', 'panel'],
+      ['.workspace-status', 'statusbar'],
+    ])
+      expect(
+        contrast(colorOf(css, selector!), tokens['color-' + surface]!),
+        selector,
+      ).toBeGreaterThanOrEqual(4.5);
+  });
+  it('matches the palette shared with Monaco and xterm', async () => {
+    const { palette } = await import('../apps/web/src/theme');
+    for (const [key, value] of Object.entries(palette)) {
+      const name = 'color-' + key.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase());
+      expect('#' + tokens[name], name).toBe(value);
+    }
+  });
 });

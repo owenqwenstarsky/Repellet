@@ -1,0 +1,182 @@
+.boot-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-5);
+}
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+.sidebar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 220px;
+  height: 100vh;
+  padding: var(--space-6) var(--space-3) var(--space-3);
+  border-right: 1px solid var(--color-border);
+  background: var(--color-bg-inset);
+}
+.sidebar > .brand-button {
+  align-self: flex-start;
+  margin: 0 var(--space-2) var(--space-8);
+}
+.sidebar nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+}
+.sidebar nav button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  text-align: left;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-muted);
+  transition:
+    background var(--duration-fast),
+    color var(--duration-fast);
+}
+.sidebar nav button svg {
+  flex-shrink: 0;
+  color: var(--color-text-subtle);
+}
+.sidebar nav button:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+.sidebar nav button.active {
+  background: var(--color-accent-tint);
+  color: var(--color-accent-text);
+}
+.sidebar nav button.active svg {
+  color: var(--color-accent);
+}
+.sidebar-bottom {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.server-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+.account-wrap {
+  display: flex;
+}
+.menu-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  text-align: left;
+}
+.menu-trigger:hover,
+.menu-trigger[aria-expanded='true'] {
+  background: var(--color-hover);
+}
+.account-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.account-text strong {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+}
+.account-text small {
+  font-size: var(--text-2xs);
+  color: var(--color-text-subtle);
+}
+.account-chevron {
+  flex-shrink: 0;
+  color: var(--color-text-subtle);
+}
+.account-menu {
+  top: auto;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  right: 0;
+}
+.app-content {
+  flex: 1;
+  min-width: 0;
+}
+.dashboard {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: var(--space-10) var(--space-10) var(--space-8);
+}
+@media (max-width: 1100px) {
+  .sidebar {
+    width: 196px;
+  }
+  .dashboard {
+    padding: var(--space-8) var(--space-6);
+  }
+}
+@media (max-width: 800px) {
+  .sidebar {
+    width: 64px;
+    padding: var(--space-5) var(--space-2) var(--space-3);
+    align-items: center;
+  }
+  .sidebar > .brand-button {
+    margin: 0 0 var(--space-6);
+    align-self: center;
+  }
+  .sidebar .brand > span,
+  .sidebar nav button > span,
+  .server-status > span:last-child,
+  .account-text,
+  .account-chevron {
+    display: none;
+  }
+  .sidebar nav button {
+    justify-content: center;
+    padding: var(--space-2);
+  }
+  .server-status {
+    justify-content: center;
+    padding: var(--space-2) 0;
+  }
+  .menu-trigger {
+    justify-content: center;
+  }
+  .account-menu {
+    left: 0;
+    right: auto;
+    min-width: 180px;
+  }
+  .dashboard {
+    padding: var(--space-6) var(--space-4);
+  }
+  .page-heading {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-4);
+  }
+  .page-heading h1 {
+    font-size: var(--text-2xl);
+  }
+}

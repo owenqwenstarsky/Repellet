@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import * as monaco from 'monaco-editor';
 import { modelUri, languageStates } from './language';
 import type { OpenFileDiagnostic } from '@repellet/shared';
+import { PaneHeader } from './ui';
+const severity = (s: number) => (s === 8 ? 'error' : s === 4 ? 'warning' : 'info');
 export function Problems({
   projectId,
   tabs,
@@ -44,25 +46,30 @@ export function Problems({
   }, [projectId, tabs]);
   return (
     <div className="problems-pane">
-      <div className="pane-heading">Open files</div>
-      {services.map((s) => (
-        <p className="field-help" key={s.runtime}>
-          {s.runtime}: {s.status}
-        </p>
-      ))}
-      {!services.length && (
-        <p className="field-help">Open a supported source file to start its language service.</p>
-      )}
+      <PaneHeader title="Problems" />
+      <div className="problems-services">
+        {services.map((s) => (
+          <span key={s.runtime}>
+            {s.runtime}: {s.status}
+          </span>
+        ))}
+        {!services.length && <span>Open a source file to start its language service.</span>}
+      </div>
       {tabs.map((path) => {
         const items = diagnostics.filter((d) => d.path === path);
         return items.length ? (
           <section key={path}>
-            <strong>{path}</strong>
+            <strong className="truncate" title={path}>
+              {path}
+            </strong>
             {items.map((d, i) => (
-              <button key={i} onClick={() => onOpen(d.path, d.line, d.column)}>
+              <button
+                key={i}
+                className={severity(d.severity)}
+                onClick={() => onOpen(d.path, d.line, d.column)}
+              >
                 <span>
-                  {d.severity === 8 ? 'Error' : d.severity === 4 ? 'Warning' : 'Info'} · {d.line}:
-                  {d.column}
+                  {severity(d.severity)} · {d.line}:{d.column}
                 </span>
                 {d.message}
               </button>
@@ -70,10 +77,10 @@ export function Problems({
           </section>
         ) : null;
       })}
-      {!diagnostics.length && (
-        <p className="pane-empty-text">No problems reported in open files.</p>
-      )}
-      <p className="field-help">Use the terminal for full-project lint and type checks.</p>
+      {!diagnostics.length && <p className="pane-empty-text">No problems in open files.</p>}
+      <p className="pane-footnote">
+        Only open files are checked. Use the terminal for full-project lint and type checks.
+      </p>
     </div>
   );
 }

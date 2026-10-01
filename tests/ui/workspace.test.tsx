@@ -101,8 +101,10 @@ it('shares in-flight guards between Run button and shortcut, and permits retry a
 });
 it('suppresses workspace shortcuts behind dialogs and reveals the sidebar for Find', async () => {
   mount();
-  await screen.findByLabelText('Toggle sidebar');
-  fireEvent.click(screen.getByLabelText('Toggle sidebar'));
+  // Clicking the active tool hides the sidebar; Find must bring it back.
+  await screen.findByLabelText('Files');
+  fireEvent.click(screen.getByLabelText('Files'));
+  expect(document.querySelector('aside.explorer')?.hasAttribute('hidden')).toBe(true);
   fireEvent.keyDown(window, { key: 'F', ctrlKey: true, shiftKey: true });
   expect(screen.getByLabelText('Find in project')).toBeTruthy();
   fireEvent.click(screen.getByLabelText('Project settings'));

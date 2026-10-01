@@ -1,0 +1,51 @@
+.modal-tabs {
+  margin: 0 calc(var(--space-6) * -1);
+  padding: 0 var(--space-6);
+}
+.env-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.env-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) var(--control-h-sm);
+  align-items: center;
+  gap: var(--space-2);
+}
+.env-row > .field-error {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+.role-select {
+  width: 110px;
+  min-height: var(--control-h-sm);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+}
+.invite-form {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+.invite-form > select:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.invite-form > .role-select {
+  min-height: var(--control-h);
+}
+@media (max-width: 800px) {
+  .modal-tabs {
+    margin: 0 calc(var(--space-5) * -1);
+    padding: 0 var(--space-5);
+  }
+  .modal {
+    padding: var(--space-5);
+  }
+  .form-row.columns-2,
+  .form-row.columns-3 {
+    grid-template-columns: 1fr;
+  }
+}

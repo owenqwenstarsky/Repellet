@@ -1,36 +1,27 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import type { User } from '@repellet/shared';
-import {
-  FolderCode,
-  Users,
-  Settings2,
-  LogOut,
-  ChevronDown,
-  Server,
-  ArrowUpRight,
-  KeyRound,
-} from 'lucide-react';
+import { FolderCode, Github, Settings2, LogOut, ChevronsUpDown, KeyRound } from 'lucide-react';
 import { api, post, errorMessage } from './api';
-import { UiProvider, useUi, Logo, Avatar, Spinner, Modal, Menu } from './ui';
+import {
+  UiProvider,
+  useUi,
+  Logo,
+  Avatar,
+  Spinner,
+  Modal,
+  MenuButton,
+  MenuItem,
+  Button,
+  Field,
+  EmptyState,
+} from './ui';
+import { useAsyncAction } from './components/useAsyncAction';
+import { parseRoute, pathFor, type Page } from './routes';
 import { Auth } from './Auth';
 import { Projects } from './Projects';
 import { GitHubSettings } from './GitHub';
 import { Admin } from './Admin';
 import { Workspace } from './Workspace';
-function route() {
-  const match = location.pathname.match(/^\/projects\/([a-f0-9-]+)$/);
-  return match
-    ? { page: 'workspace', project: match[1] }
-    : {
-        page:
-          location.pathname === '/admin'
-            ? 'admin'
-            : location.pathname === '/github'
-              ? 'github'
-              : 'projects',
-        project: '',
-      };
-}
 export default function App() {
   return (
     <UiProvider>
@@ -42,24 +33,13 @@ function Application() {
   const [user, setUser] = useState<User | null>(null);
   const [setup, setSetup] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [current, setCurrent] = useState(route);
-  const [userMenu, setUserMenu] = useState(false);
+  const [current, setCurrent] = useState(() => parseRoute());
   const [password, setPassword] = useState(false);
   const [workerHealthy, setWorkerHealthy] = useState<boolean | null>(null);
   const [bootError, setBootError] = useState('');
   const ui = useUi();
-  function navigate(page: string, project = '') {
-    history.pushState(
-      null,
-      '',
-      page === 'workspace'
-        ? `/projects/${project}`
-        : page === 'admin'
-          ? '/admin'
-          : page === 'github'
-            ? '/github'
-            : '/',
-    );
+  function navigate(page: Page, project = '') {
+    history.pushState(null, '', pathFor(page, project));
     setCurrent({ page, project });
   }
   useEffect(() => {
@@ -84,7 +64,7 @@ function Application() {
     };
     void health();
     const healthTimer = setInterval(health, 15000);
-    const pop = () => setCurrent(route());
+    const pop = () => setCurrent(parseRoute());
     const unauthorized = () => {
       setPassword(false);
       setUser(null);
@@ -108,12 +88,12 @@ function Application() {
   if (bootError)
     return (
       <div className="boot-screen">
-        <Logo />
-        <h2>Unable to connect</h2>
-        <p className="muted">{bootError}</p>
-        <button className="button secondary" onClick={() => location.reload()}>
-          Try again
-        </button>
+        <EmptyState
+          icon={<Logo />}
+          title="Unable to connect"
+          description={bootError}
+          action={<Button onClick={() => location.reload()}>Try again</Button>}
+        />
       </div>
     );
   if (!user)
@@ -137,6 +117,16 @@ function Application() {
         onOpen={(id) => navigate('workspace', id)}
       />
     );
+  const server =
+    workerHealthy === null
+      ? { label: 'Checking server…', detail: 'Checking server connection', dot: 'unknown' }
+      : workerHealthy
+        ? { label: 'Server connected', detail: 'Containers run on your server', dot: '' }
+        : {
+            label: 'Container worker unavailable',
+            detail: 'Workspaces cannot start until the worker reconnects',
+            dot: 'offline',
+          };
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -147,126 +137,70 @@ function Application() {
         >
           <Logo />
         </button>
-        <div className="sidebar-section-label">WORKSPACE</div>
-        <nav>
-          <button
-            aria-label="Projects"
-            aria-current={current.page === 'projects' ? 'page' : undefined}
-            className={current.page === 'projects' ? 'active' : ''}
+        <nav aria-label="Main">
+          <NavItem
+            label="Projects"
+            icon={<FolderCode size={17} />}
+            active={current.page === 'projects'}
             onClick={() => navigate('projects')}
-          >
-            <FolderCode size={18} />
-            Projects
-          </button>
-          <button
-            className={current.page === 'github' ? 'active' : ''}
+          />
+          <NavItem
+            label="GitHub"
+            icon={<Github size={17} />}
+            active={current.page === 'github'}
             onClick={() => navigate('github')}
-          >
-            <FolderCode size={18} />
-            GitHub
-          </button>
+          />
           {user.isOwner && (
-            <button
-              aria-label="Administration"
-              aria-current={current.page === 'admin' ? 'page' : undefined}
-              className={current.page === 'admin' ? 'active' : ''}
+            <NavItem
+              label="Administration"
+              icon={<Settings2 size={17} />}
+              active={current.page === 'admin'}
               onClick={() => navigate('admin')}
-            >
-              <Settings2 size={18} />
-              Administration
-            </button>
+            />
           )}
         </nav>
         <div className="sidebar-bottom">
-          <div
-            className="server-status"
-            role="status"
-            title={
-              workerHealthy === null
-                ? 'Checking server connection'
-                : workerHealthy
-                  ? 'Server connected'
-                  : 'Container worker unavailable'
+          <div className="server-status" role="status" title={server.detail}>
+            <span className={`online-dot ${server.dot}`} aria-hidden="true" />
+            <span>{server.label}</span>
+          </div>
+          <MenuButton
+            label={`Account for ${user.displayName}`}
+            className="account-wrap"
+            menuClassName="account-menu"
+            trigger={
+              <>
+                <Avatar name={user.displayName} size={30} />
+                <span className="account-text">
+                  <strong className="truncate" title={user.displayName}>
+                    {user.displayName}
+                  </strong>
+                  <small>{user.isOwner ? 'Site owner' : 'Member'}</small>
+                </span>
+                <ChevronsUpDown size={14} className="account-chevron" />
+              </>
             }
           >
-            <Server size={15} />
-            <span>
-              {workerHealthy === null
-                ? 'Checking server connection…'
-                : workerHealthy
-                  ? 'Your server is connected'
-                  : 'Container worker unavailable'}
-            </span>
-            <span
-              className={`online-dot ${workerHealthy === null ? 'unknown' : workerHealthy ? '' : 'offline'}`}
-              title={
-                workerHealthy === null
-                  ? 'Checking server connection'
-                  : workerHealthy
-                    ? 'Server connected'
-                    : 'Worker unavailable'
-              }
-            />
-          </div>
-          <div className="account-wrap">
-            <button
-              aria-label={`Account for ${user.displayName}`}
-              aria-haspopup="menu"
-              aria-expanded={userMenu}
-              className="account-button"
-              onClick={() => setUserMenu(!userMenu)}
+            <MenuItem icon={<KeyRound size={15} />} onSelect={() => setPassword(true)}>
+              Change password
+            </MenuItem>
+            <MenuItem
+              icon={<LogOut size={15} />}
+              onSelect={async () => {
+                try {
+                  await post('/auth/logout');
+                  setUser(null);
+                } catch (e) {
+                  ui.notify(errorMessage(e));
+                }
+              }}
             >
-              <Avatar name={user.displayName} size={32} />
-              <span>
-                <strong title={user.displayName}>{user.displayName}</strong>
-                <small>{user.isOwner ? 'Site owner' : 'Member'}</small>
-              </span>
-              <ChevronDown size={14} />
-            </button>
-            {userMenu && (
-              <>
-                <div className="menu-dismiss" onClick={() => setUserMenu(false)} />
-                <Menu className="account-menu" onClose={() => setUserMenu(false)}>
-                  <button
-                    onClick={() => {
-                      setUserMenu(false);
-                      setPassword(true);
-                    }}
-                  >
-                    <KeyRound size={15} />
-                    Change password
-                  </button>
-                  <button
-                    onClick={async () => {
-                      try {
-                        await post('/auth/logout');
-                        setUser(null);
-                      } catch (e) {
-                        ui.notify(errorMessage(e));
-                      }
-                      setUserMenu(false);
-                    }}
-                  >
-                    <LogOut size={15} />
-                    Sign out
-                  </button>
-                </Menu>
-              </>
-            )}
-          </div>
+              Sign out
+            </MenuItem>
+          </MenuButton>
         </div>
       </aside>
       <section className="app-content">
-        <div className="app-topbar">
-          <span>
-            {current.page === 'admin' ? 'Administration' : 'Workspace'} <span>/</span>{' '}
-            {current.page === 'admin' ? 'Overview' : 'Projects'}
-          </span>
-          <span className="private-label">
-            <span className="online-dot" />
-            Private installation
-          </span>
-        </div>
         {current.page === 'github' ? (
           <GitHubSettings user={user} />
         ) : current.page === 'admin' && user.isOwner ? (
@@ -279,7 +213,29 @@ function Application() {
     </div>
   );
 }
-
+function NavItem({
+  label,
+  icon,
+  active,
+  onClick,
+}: {
+  label: string;
+  icon: ReactNode;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      aria-current={active ? 'page' : undefined}
+      className={active ? 'active' : ''}
+      title={label}
+      onClick={onClick}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+}
 function ChangePassword({
   onClose,
   onChanged,
@@ -287,44 +243,27 @@ function ChangePassword({
   onClose: () => void;
   onChanged: (user: User) => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const alive = useRef(true),
-    pending = useRef(false);
+  const { busy, run, alive, dispose } = useAsyncAction();
   const ui = useUi();
-  useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
-  }, []);
   const dismiss = () => {
-    alive.current = false;
+    dispose();
     onClose();
   };
   return (
     <Modal title="Change password" onClose={dismiss} small>
       <form
-        onSubmit={async (e) => {
+        onSubmit={(e) => {
           e.preventDefault();
-          if (pending.current) return;
           const values = Object.fromEntries(new FormData(e.currentTarget));
-          pending.current = true;
-          setBusy(true);
-          try {
+          void run(async () => {
             const result = await post<{ user: User }>('/auth/password', values);
             onChanged(result.user);
             if (alive.current) dismiss();
             ui.notify('Password changed. Other sessions were signed out.', 'success');
-          } catch (e) {
-            ui.notify(errorMessage(e));
-          } finally {
-            pending.current = false;
-            if (alive.current) setBusy(false);
-          }
+          });
         }}
       >
-        <label>
-          Current password
+        <Field label="Current password">
           <input
             type="password"
             name="currentPassword"
@@ -333,9 +272,8 @@ function ChangePassword({
             data-autofocus
             disabled={busy}
           />
-        </label>
-        <label>
-          New password
+        </Field>
+        <Field label="New password" help="At least 12 characters.">
           <input
             type="password"
             name="password"
@@ -345,14 +283,12 @@ function ChangePassword({
             autoComplete="new-password"
             disabled={busy}
           />
-        </label>
+        </Field>
         <div className="modal-actions">
-          <button type="button" className="button secondary" onClick={dismiss}>
-            Cancel
-          </button>
-          <button className="button primary" disabled={busy}>
+          <Button onClick={dismiss}>Cancel</Button>
+          <Button type="submit" variant="primary" busy={busy}>
             Change password
-          </button>
+          </Button>
         </div>
       </form>
     </Modal>
