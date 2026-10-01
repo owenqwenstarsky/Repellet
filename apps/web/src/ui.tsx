@@ -8,7 +8,22 @@ import {
   type ReactNode,
   type CSSProperties,
 } from 'react';
-import { X, AlertCircle, Check, Loader2, ChevronDown } from 'lucide-react';
+import { X, AlertCircle, Check, Loader2 } from 'lucide-react';
+import { Banner } from './components/Layout';
+import { Button, IconButton } from './components/Button';
+export { Button, IconButton } from './components/Button';
+export { Field, FormRow, FormError } from './components/Field';
+export { Tabs, TabPanel, SegmentedControl } from './components/Tabs';
+export {
+  PageHeader,
+  Section,
+  Card,
+  PaneHeader,
+  Banner,
+  EmptyState,
+  Shortcut,
+  shortcutText,
+} from './components/Layout';
 type DialogRequest = {
   title: string;
   description?: string;
@@ -26,6 +41,7 @@ type Ui = {
   ask: (request: DialogRequest) => Promise<string | null>;
 };
 const Context = createContext<Ui>(null!);
+const MenuContext = createContext<() => void>(() => {});
 export const useUi = () => useContext(Context);
 export function UiProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: string }[]>([]);
@@ -74,13 +90,12 @@ export function UiProvider({ children }: { children: ReactNode }) {
           <div className={`toast ${t.kind}`} key={t.id}>
             {t.kind === 'error' ? <AlertCircle size={18} /> : <Check size={18} />}
             <span>{t.text}</span>
-            <button
-              className="icon-button"
-              aria-label="Dismiss notification"
+            <IconButton
+              size="sm"
+              label="Dismiss notification"
+              icon={<X size={15} />}
               onClick={() => setToasts((v) => v.filter((x) => x.id !== t.id))}
-            >
-              <X size={16} />
-            </button>
+            />
           </div>
         ))}
       </div>
@@ -109,15 +124,14 @@ export function UiProvider({ children }: { children: ReactNode }) {
               </label>
             )}
             <div className="modal-actions">
-              <button type="button" className="button secondary" onClick={() => finish(null)}>
-                Cancel
-              </button>
-              <button
-                className={`button ${dialog.danger ? 'danger' : 'primary'}`}
+              <Button onClick={() => finish(null)}>Cancel</Button>
+              <Button
+                type="submit"
+                variant={dialog.danger ? 'danger' : 'primary'}
                 data-autofocus={dialog.confirm || undefined}
               >
                 {dialog.confirm ? 'Confirm' : 'Save'}
-              </button>
+              </Button>
             </div>
           </form>
         </Modal>
@@ -189,9 +203,83 @@ export function Menu({
     };
   }, []);
   return (
-    <div ref={ref} role="menu" className={`dropdown ${className}`} style={style}>
-      {children}
+    <>
+      <div className="menu-dismiss" aria-hidden="true" onClick={() => close.current()} />
+      <div ref={ref} role="menu" className={`dropdown ${className}`} style={style}>
+        {children}
+      </div>
+    </>
+  );
+}
+
+// Trigger button plus menu with open state, aria wiring and outside-click dismissal.
+export function MenuButton({
+  label,
+  icon,
+  children,
+  className = '',
+  menuClassName = '',
+  trigger,
+}: {
+  label: string;
+  icon?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  menuClassName?: string;
+  trigger?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const close = () => setOpen(false);
+  return (
+    <div className={`menu-wrap ${className}`}>
+      <button
+        type="button"
+        className={trigger ? 'menu-trigger' : 'icon-button'}
+        aria-label={label}
+        title={trigger ? undefined : label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {trigger ?? icon}
+      </button>
+      {open && (
+        <MenuContext.Provider value={close}>
+          <Menu className={menuClassName} onClose={close}>
+            {children}
+          </Menu>
+        </MenuContext.Provider>
+      )}
     </div>
+  );
+}
+export function MenuItem({
+  onSelect,
+  icon,
+  danger = false,
+  disabled,
+  children,
+}: {
+  onSelect: () => void;
+  icon?: ReactNode;
+  danger?: boolean;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  const close = useContext(MenuContext);
+  return (
+    <button
+      type="button"
+      className={danger ? 'danger-text' : ''}
+      disabled={disabled}
+      onClick={() => {
+        close();
+        onSelect();
+      }}
+    >
+      {icon}
+      {children}
+    </button>
   );
 }
 
@@ -205,12 +293,18 @@ export function LoadError({
   retryLabel?: string;
 }) {
   return (
-    <div className="load-error" role="alert">
+    <Banner
+      tone="danger"
+      compact
+      className="load-error"
+      actions={
+        <Button size="sm" onClick={onRetry}>
+          {retryLabel}
+        </Button>
+      }
+    >
       <p>{message}</p>
-      <button className="button secondary small" onClick={onRetry}>
-        {retryLabel}
-      </button>
-    </div>
+    </Banner>
   );
 }
 
@@ -219,11 +313,13 @@ export function Modal({
   children,
   onClose,
   small = false,
+  wide = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   small?: boolean;
+  wide?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
@@ -314,7 +410,7 @@ export function Modal({
     >
       <div
         ref={ref}
-        className={`modal ${small ? 'small' : ''}`}
+        className={`modal ${small ? 'small' : ''} ${wide ? 'wide' : ''}`}
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
@@ -322,9 +418,7 @@ export function Modal({
       >
         <header className="modal-header">
           <h2 title={title}>{title}</h2>
-          <button className="icon-button" aria-label="Close dialog" onClick={onClose}>
-            <X size={20} />
-          </button>
+          <IconButton label="Close dialog" icon={<X size={18} />} onClick={onClose} />
         </header>
         {children}
       </div>
@@ -348,7 +442,6 @@ function focusable(root: HTMLElement) {
     return true;
   });
 }
-export const Dropdown = Menu;
 export function Spinner({ label = 'Loading…' }: { label?: string }) {
   return (
     <div className="loading">

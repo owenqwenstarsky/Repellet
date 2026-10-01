@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import type { User } from '@repellet/shared';
-import { ArrowRight, TerminalSquare, FolderCode, Users, LockKeyhole, Loader2 } from 'lucide-react';
+import { ArrowRight, TerminalSquare, FolderCode, Users, LockKeyhole } from 'lucide-react';
 import { post, errorMessage } from './api';
-import { Logo } from './ui';
+import { Logo, Field, Button, FormError } from './ui';
 export function Auth({ setup, onAuth }: { setup: boolean; onAuth: (user: User) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -78,8 +78,14 @@ export function Auth({ setup, onAuth }: { setup: boolean; onAuth: (user: User) =
           </p>
           {setup && (
             <>
-              <label>
-                Setup token
+              <Field
+                label="Setup token"
+                help={
+                  <>
+                    Find it with <code>docker compose logs app</code>.
+                  </>
+                }
+              >
                 <input
                   name="token"
                   autoFocus
@@ -87,12 +93,8 @@ export function Auth({ setup, onAuth }: { setup: boolean; onAuth: (user: User) =
                   autoComplete="off"
                   placeholder="Token from the server logs"
                 />
-              </label>
-              <p className="field-help">
-                Find it with <code>docker compose logs app</code>.
-              </p>
-              <label>
-                Display name
+              </Field>
+              <Field label="Display name">
                 <input
                   name="displayName"
                   required
@@ -100,11 +102,10 @@ export function Auth({ setup, onAuth }: { setup: boolean; onAuth: (user: User) =
                   autoComplete="name"
                   placeholder="Your name"
                 />
-              </label>
+              </Field>
             </>
           )}
-          <label>
-            Username
+          <Field label="Username">
             <input
               name="username"
               autoFocus={!setup}
@@ -115,9 +116,8 @@ export function Auth({ setup, onAuth }: { setup: boolean; onAuth: (user: User) =
               autoComplete="username"
               placeholder="Your username"
             />
-          </label>
-          <label>
-            Password
+          </Field>
+          <Field label="Password">
             <input
               type="password"
               name="password"
@@ -127,16 +127,17 @@ export function Auth({ setup, onAuth }: { setup: boolean; onAuth: (user: User) =
               autoComplete={setup ? 'new-password' : 'current-password'}
               placeholder={setup ? 'At least 12 characters' : 'Your password'}
             />
-          </label>
-          {error && (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
-          )}
-          <button className="button primary auth-submit" disabled={busy}>
-            {busy ? <Loader2 size={17} className="spin" /> : <ArrowRight size={17} />}{' '}
+          </Field>
+          {error && <FormError>{error}</FormError>}
+          <Button
+            type="submit"
+            variant="primary"
+            className="auth-submit"
+            busy={busy}
+            icon={<ArrowRight size={16} />}
+          >
             {setup ? 'Create owner account' : 'Sign in'}
-          </button>
+          </Button>
           <p className="auth-note">
             {setup
               ? 'You can add more people after setup.'

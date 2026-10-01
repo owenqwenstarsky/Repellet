@@ -1,0 +1,99 @@
+.github-settings {
+  max-width: 860px;
+  margin: 0;
+}
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.settings-stack > .section {
+  padding: var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+.settings-stack > .section + .section {
+  margin-top: 0;
+}
+.connection-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+}
+.connection-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  background: var(--color-raised);
+  color: var(--color-text-secondary);
+}
+.installation-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+}
+.installation-row > .field {
+  flex: 1;
+  max-width: 360px;
+}
+.installation-row > .button {
+  margin-top: 26px;
+}
+.field-help a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.manual-config {
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+.manual-config > .field-help {
+  margin-top: var(--space-3);
+}
+.code-block {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-inset);
+  font: var(--text-xs) var(--font-mono);
+  color: var(--color-text-secondary);
+}
+.manual-config textarea {
+  min-height: 140px;
+}
+.field.spaced {
+  margin-top: var(--space-4);
+}
+.repo-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.repo-picker > .field {
+  margin-top: 0;
+}
+.repo-filter {
+  max-width: none;
+}
+@media (max-width: 800px) {
+  .connection-row,
+  .installation-row {
+    flex-wrap: wrap;
+  }
+  .installation-row > .button {
+    margin-top: 0;
+  }
+}

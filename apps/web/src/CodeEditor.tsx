@@ -15,6 +15,7 @@ import { wsUrl, post } from './api';
 import { connectLanguage, modelUri } from './language';
 import { useUi, Spinner } from './ui';
 import { AlertTriangle } from 'lucide-react';
+import { fonts, monacoTheme } from './theme';
 (self as any).MonacoEnvironment = {
   getWorker(_: unknown, label: string) {
     return label === 'json'
@@ -29,30 +30,7 @@ import { AlertTriangle } from 'lucide-react';
   },
 };
 loader.config({ monaco });
-monaco.editor.defineTheme('repellet', {
-  base: 'vs-dark',
-  inherit: true,
-  rules: [
-    { token: 'comment', foreground: '8992A0' },
-    { token: 'keyword', foreground: 'BAA2D2' },
-    { token: 'string', foreground: 'A1BE8D' },
-    { token: 'number', foreground: 'D2AC7E' },
-    { token: 'type', foreground: '8ABEC9' },
-  ],
-  colors: {
-    'editor.background': '#17191d',
-    'editor.foreground': '#cbd0d9',
-    'editorLineNumber.foreground': '#8992a0',
-    'editorLineNumber.activeForeground': '#abb3bf',
-    'editor.selectionBackground': '#31444d',
-    'editor.inactiveSelectionBackground': '#2b343d',
-    'editor.lineHighlightBackground': '#1d2026',
-    'editorCursor.foreground': '#83bcc5',
-    'editorIndentGuide.background1': '#282c33',
-    'editorWidget.background': '#20232a',
-    'editorWidget.border': '#343941',
-  },
-});
+monaco.editor.defineTheme('repellet', monacoTheme);
 const fromB64 = (value: string) => Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
 const toB64 = (value: Uint8Array) => {
   let s = '';
@@ -411,7 +389,7 @@ export function CodeEditor({
         options={{
           editContext: false,
           fontSize: 13,
-          fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+          fontFamily: fonts.mono,
           lineHeight: 22,
           minimap: { enabled: false },
           padding: { top: 18, bottom: 18 },

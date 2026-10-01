@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, lazy, Suspense } from 'react';
 import type { GitStatus } from '@repellet/shared';
 import {
   GitBranch,
+  GitBranchPlus,
   Plus,
   Minus,
   RefreshCw,
@@ -11,7 +12,8 @@ import {
   FileDiff,
 } from 'lucide-react';
 import { api, post, errorMessage } from './api';
-import { useUi, Spinner, Modal, LoadError } from './ui';
+import { useUi, Spinner, Modal, LoadError, PaneHeader, IconButton, Button, EmptyState } from './ui';
+const otherBranch = '\u0000other';
 import { gitGroups, isConflicted } from './gitState';
 const CodeDiff = lazy(() => import('./CodeDiff').then((m) => ({ default: m.CodeDiff })));
 export function GitPane({
@@ -84,114 +86,113 @@ export function GitPane({
   }
   return (
     <div className="git-pane">
-      <div className="pane-heading">
-        <span>SOURCE CONTROL</span>
-        <button className="icon-button" aria-label="Refresh Git status" onClick={load}>
-          <RefreshCw size={14} />
-        </button>
-      </div>
-      {error && (
-        <>
-          <LoadError message={error} onRetry={load} />
-          <p className="field-help">
-            Pull requires a fast-forward. For diverged branches or conflicts, resolve in the
-            terminal. GitHub remotes need an active connection and repository permission; protected
-            branches may reject pushes.
-          </p>
-        </>
-      )}
+      <PaneHeader
+        title="Source control"
+        actions={
+          <>
+            {editable && status?.initialized && (
+              <IconButton
+                size="sm"
+                label="Create branch"
+                icon={<GitBranchPlus size={14} />}
+                disabled={busy}
+                onClick={async () => {
+                  const name = await ui.ask({
+                    title: 'Create branch',
+                    label: 'Branch name',
+                    maxLength: 250,
+                  });
+                  if (name) void action('branch', { branch: name });
+                }}
+              />
+            )}
+            <IconButton
+              size="sm"
+              label="Refresh Git status"
+              icon={<RefreshCw size={13} />}
+              onClick={load}
+            />
+          </>
+        }
+      />
+      {error && <LoadError message={error} onRetry={load} />}
       {!status ? (
         error ? null : (
           <Spinner />
         )
       ) : !status.initialized ? (
-        <div className="pane-empty">
-          <GitBranch size={30} />
-          <p>This project isn’t a Git repository yet.</p>
-          {editable && (
-            <button className="button secondary" disabled={busy} onClick={() => action('init')}>
-              Initialize repository
-            </button>
-          )}
-        </div>
+        <EmptyState
+          className="pane-empty"
+          icon={<GitBranch size={26} />}
+          title="Not a Git repository"
+          description="Initialize one to track changes, commit and push."
+          action={
+            editable && (
+              <Button disabled={busy} onClick={() => action('init')}>
+                Initialize repository
+              </Button>
+            )
+          }
+        />
       ) : (
         <>
           <div className="git-branch">
-            <GitBranch size={16} />
+            <GitBranch size={15} />
             {editable ? (
               <select
                 aria-label="Current branch"
                 value={status.branch}
                 disabled={busy}
-                onChange={(e) => action('checkout', { branch: e.target.value })}
+                onChange={async (e) => {
+                  if (e.target.value !== otherBranch) {
+                    void action('checkout', { branch: e.target.value });
+                    return;
+                  }
+                  const name = await ui.ask({
+                    title: 'Switch branch',
+                    label: 'Branch name',
+                    maxLength: 250,
+                    description: 'Enter the name of an existing local or remote branch.',
+                  });
+                  if (name) void action('checkout', { branch: name });
+                }}
               >
                 {!status.branches.includes(status.branch) && <option>{status.branch}</option>}
                 {status.branches.map((b) => (
                   <option key={b}>{b}</option>
                 ))}
+                <option value={otherBranch}>Switch to another branch…</option>
               </select>
             ) : (
-              <strong>{status.branch}</strong>
-            )}
-            {editable && (
-              <button
-                className="icon-button"
-                title="Switch or create branch"
-                disabled={busy}
-                aria-label="Manage branches"
-                onClick={async () => {
-                  const name = await ui.ask({
-                    title: 'Switch branch',
-                    label: 'Branch name',
-                    maxLength: 250,
-                    description:
-                      'Enter an existing branch name. To create one, use the + button below.',
-                  });
-                  if (name) void action('checkout', { branch: name });
-                }}
-              >
-                <RefreshCw size={14} />
-              </button>
+              <strong className="truncate">{status.branch}</strong>
             )}
           </div>
-          <p className="field-help">
-            {status.upstream || 'No upstream; first push establishes it'} · ↑{status.ahead} ↓
-            {status.behind}
+          <p className="git-upstream truncate" title={status.upstream || undefined}>
+            {status.upstream
+              ? `Tracking ${status.upstream}`
+              : 'No upstream yet. Push to create one.'}
           </p>
           {editable && (
             <>
               <div className="git-controls">
-                <button
-                  className="button secondary small"
+                <Button
+                  size="sm"
                   disabled={busy}
+                  icon={<ArrowDown size={13} />}
                   onClick={() => action('pull')}
                 >
-                  <ArrowDown size={14} />
                   Pull
-                </button>
-                <button
-                  className="button secondary small"
+                  {status.behind > 0 && <span className="badge">{status.behind}</span>}
+                </Button>
+                <Button
+                  size="sm"
                   disabled={busy}
+                  icon={<ArrowUp size={13} />}
                   onClick={() => action('push')}
                 >
-                  <ArrowUp size={14} />
                   Push
-                </button>
-                <button
-                  className="icon-button"
-                  disabled={busy}
-                  aria-label="Create branch"
-                  onClick={async () => {
-                    const name = await ui.ask({
-                      title: 'Create branch',
-                      label: 'Branch name',
-                      maxLength: 250,
-                    });
-                    if (name) void action('branch', { branch: name });
-                  }}
-                >
-                  <Plus size={16} />
-                </button>
+                  {status.ahead > 0 && <span className="badge">{status.ahead}</span>}
+                </Button>
               </div>
               <textarea
                 maxLength={10000}
@@ -201,8 +202,11 @@ export function GitPane({
                 onChange={(e) => setMessage(e.target.value)}
                 placeholder="Commit message…"
               />
-              <button
-                className="button primary commit-button"
+              <Button
+                variant="primary"
+                size="sm"
+                className="commit-button"
+                icon={<Check size={14} />}
                 disabled={
                   busy ||
                   !message.trim() ||
@@ -211,13 +215,12 @@ export function GitPane({
                 }
                 onClick={() => action('commit', { message })}
               >
-                <Check size={15} />
                 Commit staged changes
-              </button>
+              </Button>
             </>
           )}
           {status.entries.some(isConflicted) && (
-            <p className="form-error" role="alert">
+            <p className="form-error git-conflict" role="alert">
               Resolve and stage conflicts before committing.
             </p>
           )}
@@ -298,14 +301,20 @@ export function GitPane({
               </section>
             ))}
           {!status.entries.length && <p className="pane-empty-text">Working tree is clean.</p>}
-          <p className="field-help git-help">
-            Use Repository setup to connect a matching GitHub remote. Other remotes use terminal
-            credentials. Merge, rebase, and force push remain terminal workflows.
-          </p>
+          <details className="git-help">
+            <summary>How Git works here</summary>
+            <p>
+              Pull requires a fast-forward; resolve diverged branches and conflicts in the terminal.
+              Connect a matching GitHub remote under Project settings → General to push with your
+              GitHub account. Other remotes use terminal credentials. Merge, rebase and force push
+              stay terminal workflows.
+            </p>
+          </details>
         </>
       )}
       {diff && (
         <Modal
+          wide
           title={diff.path}
           onClose={() => {
             diffRequest.current++;

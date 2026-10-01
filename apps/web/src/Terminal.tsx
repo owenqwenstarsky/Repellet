@@ -3,6 +3,7 @@ import { Terminal as XTerminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { wsUrl } from './api';
+import { fonts, xtermTheme } from './theme';
 export function Terminal({
   projectId,
   id,
@@ -16,26 +17,13 @@ export function Terminal({
   useEffect(() => {
     if (!element.current) return;
     const terminal = new XTerminal({
-      fontFamily: '"SFMono-Regular", Consolas, monospace',
+      fontFamily: fonts.mono,
       fontSize: 12,
       lineHeight: 1.4,
       cursorBlink: editable,
       disableStdin: !editable,
       scrollback: 5000,
-      theme: {
-        background: '#141619',
-        foreground: '#bdc3cf',
-        cursor: '#83bcc5',
-        selectionBackground: '#31434d',
-        black: '#181b20',
-        red: '#d58c8c',
-        green: '#a1be8d',
-        yellow: '#d2ac7e',
-        blue: '#8eb0d4',
-        magenta: '#baa2d2',
-        cyan: '#83bcc5',
-        white: '#cbd0d9',
-      },
+      theme: xtermTheme,
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);

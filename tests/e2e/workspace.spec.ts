@@ -100,9 +100,10 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
   await unpacked;
   expect(entries.get('nested/note.txt')).toBe('Nested folders survive upload.\n');
   await page.getByRole('button', { name: 'Project settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Run & setup' }).click();
   await page.getByLabel('Run command').fill('node server.mjs');
   await page.getByRole('button', { name: 'Save changes' }).click();
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await page.getByRole('button', { name: 'Run', exact: true }).click();
   await expect
     .poll(
@@ -367,7 +368,7 @@ for (const starter of [
         await page.getByLabel('Search file paths').press('Enter');
         await expect(page.locator('.editor-tab.active')).toContainText(path.split('/').pop()!);
       }
-      await page.getByRole('button', { name: 'Open files', exact: true }).click();
+      await page.getByRole('button', { name: 'Problems', exact: true }).click();
       await expect(page.locator('.problems-pane')).toContainText('src/one.ts');
       await expect(page.locator('.problems-pane')).toContainText('src/two.ts');
       await page

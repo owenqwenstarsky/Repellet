@@ -112,6 +112,7 @@ describe('environment snapshots and validation', () => {
   it('validates reserved variable names and port constraints before making a request', async () => {
     settings();
     await flush();
+    fireEvent.click(screen.getByText('Run & setup'));
     fireEvent.change(screen.getByLabelText('Preview port'), { target: { value: '80' } });
     fireEvent.click(screen.getByText('Save changes'));
     expect(patch).not.toHaveBeenCalled();
@@ -140,7 +141,7 @@ describe('environment snapshots and validation', () => {
     );
     await flush();
     fireEvent.click(screen.getByText('Duplicate'));
-    fireEvent.click(screen.getByText('Close'));
+    fireEvent.click(screen.getByLabelText('Close dialog'));
     await act(async () => result.resolve({ id: 'copy' }));
     expect(onClose).toHaveBeenCalled();
     expect(onDuplicate).not.toHaveBeenCalled();
@@ -509,7 +510,8 @@ describe('pane loading feedback and deferred mutations', () => {
     );
     await flush();
     fireEvent.click(screen.getByLabelText('Stage file.ts'));
-    expect((screen.getByLabelText('Manage branches') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Current branch') as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Create branch') as HTMLButtonElement).disabled).toBe(true);
     const all = screen.getByLabelText(
       'Stage all unstaged / untracked changes',
     ) as HTMLButtonElement;
@@ -591,7 +593,7 @@ describe('account mutations and health freshness', () => {
     mockedApi.mockImplementation(applicationApi);
     render(<App />);
     await flush();
-    expect(screen.getByText('Your server is connected')).toBeTruthy();
+    expect(screen.getByText('Server connected')).toBeTruthy();
     mockedApi.mockImplementation((path) =>
       path === '/health' ? Promise.reject(new Error('Offline')) : applicationApi(path),
     );
@@ -599,7 +601,7 @@ describe('account mutations and health freshness', () => {
     expect(screen.getByText('Container worker unavailable')).toBeTruthy();
     mockedApi.mockImplementation(applicationApi);
     await act(async () => vi.advanceTimersByTimeAsync(15000));
-    expect(screen.getByText('Your server is connected')).toBeTruthy();
+    expect(screen.getByText('Server connected')).toBeTruthy();
   });
   it('guards password submission and leaves a newer dialog open when an obsolete request completes', async () => {
     history.replaceState(null, '', '/');

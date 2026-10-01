@@ -1,0 +1,31 @@
+.resource-form {
+  max-width: 640px;
+}
+.form-actions.start {
+  justify-content: flex-start;
+}
+.admin-storage {
+  width: 72px;
+  text-align: right;
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+.admin-stop {
+  width: 130px;
+  justify-content: flex-end;
+}
+.list-row > .project-name {
+  padding: 0;
+}
+.list-row .status {
+  width: 80px;
+}
+@media (max-width: 800px) {
+  .admin-storage,
+  .admin-stop {
+    width: auto;
+  }
+  .list-row .status {
+    width: auto;
+  }
+}
