@@ -9,6 +9,16 @@ type Connection = {
   displayName: string;
 };
 const connections = new Set<Connection>();
+const deferredFiles = new Map<string, unknown[]>();
+/** Publish watcher events after the structural change that explains their paths. */
+export function deferFileEvents(projectId: string) {
+  const events: unknown[] = [];
+  deferredFiles.set(projectId, events);
+  return () => {
+    deferredFiles.delete(projectId);
+    for (const event of events) emit(projectId, event);
+  };
+}
 export function track(ws: WebSocket, data: Omit<Connection, 'ws'>) {
   const connection = { ws, ...data };
   connections.add(connection);
@@ -20,6 +30,11 @@ export function track(ws: WebSocket, data: Omit<Connection, 'ws'>) {
   return connection;
 }
 export function emit(projectId: string, event: unknown) {
+  const deferred = deferredFiles.get(projectId);
+  if (deferred && (event as { type?: string } | null)?.type === 'file') {
+    deferred.push(event);
+    return;
+  }
   for (const c of connections)
     if (c.projectId === projectId && c.events && c.ws.readyState === 1)
       c.ws.send(JSON.stringify(event));

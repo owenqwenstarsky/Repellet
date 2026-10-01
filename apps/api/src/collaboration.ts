@@ -11,7 +11,7 @@ import type { WebSocket } from 'ws';
 import { db } from './db.js';
 import { documents } from './schema.js';
 import { bridge } from './worker.js';
-import { emit } from './live.js';
+import { emit, deferFileEvents } from './live.js';
 import type { FileContent } from '@repellet/shared';
 type Document = {
   id: string;
@@ -366,6 +366,7 @@ export async function structure<T>(
   to: string | undefined,
   operation: () => Promise<T>,
 ) {
+  const releaseFileEvents = deferFileEvents(projectId);
   structuralChanges.add(projectId);
   try {
     await flushProject(projectId);
@@ -394,6 +395,7 @@ export async function structure<T>(
     emit(projectId, { type: 'structure', from, to: to || null });
     return result;
   } finally {
+    releaseFileEvents();
     structuralChanges.delete(projectId);
     for (const [k, d] of opened) if (k.startsWith(projectId + ':')) (await d).closing = false;
   }

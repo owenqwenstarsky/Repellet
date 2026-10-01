@@ -11,7 +11,8 @@ async function login(page: Page, username = 'e2e-owner') {
   await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
 }
 async function newFile(page: Page, path: string, content: string) {
-  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  const files = page.getByRole('button', { name: 'Files', exact: true });
+  if ((await files.getAttribute('aria-pressed')) !== 'true') await files.click();
   await page.getByRole('button', { name: 'New file', exact: true }).click();
   await page.getByLabel('Workspace path').fill(path);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -58,9 +59,9 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
     .getByRole('dialog')
     .getByRole('button', { name: 'Create project', exact: true })
     .click();
-  await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeEnabled({
-    timeout: 300000,
-  });
+  await expect(
+    page.locator('.workspace-header').getByRole('button', { name: 'Run', exact: true }),
+  ).toBeEnabled({ timeout: 300000 });
   const id = page.url().split('/').pop()!;
   await newFile(
     page,
@@ -104,7 +105,7 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
   await page.getByLabel('Run command').fill('node server.mjs');
   await page.getByRole('button', { name: 'Save changes' }).click();
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
-  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await page.locator('.workspace-header').getByRole('button', { name: 'Run', exact: true }).click();
   await expect
     .poll(
       async () => {
@@ -149,7 +150,9 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
   const other = await collaborator.newPage();
   await login(other, 'e2e-editor');
   await other.getByRole('button', { name: 'Open Browser workspace', exact: true }).click();
-  await expect(other.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
+  await expect(
+    other.locator('.workspace-header').getByRole('button', { name: 'Run', exact: true }),
+  ).toBeEnabled();
   await other.locator('.file-row').filter({ hasText: 'notes.txt' }).click();
   await expect(
     other.locator('.retained-editor:visible .connection-indicator.connected'),
@@ -435,7 +438,7 @@ test('GitHub redirects complete with Strict cookies and member repository permis
     const { url } = await response.json();
     await page.goto(url + '&identity=' + identity);
     await expect(
-      page.getByText(`Connected as ${identity === 'readonly' ? 'reader' : 'writer'}`, {
+      page.getByText(`@${identity === 'readonly' ? 'reader' : 'writer'}`, {
         exact: true,
       }),
     ).toBeVisible();
