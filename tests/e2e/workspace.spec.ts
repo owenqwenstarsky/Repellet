@@ -58,9 +58,9 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
     .getByRole('dialog')
     .getByRole('button', { name: 'Create project', exact: true })
     .click();
-  await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeEnabled({
-    timeout: 300000,
-  });
+  await expect(
+    page.locator('.workspace-header').getByRole('button', { name: 'Run', exact: true }),
+  ).toBeEnabled({ timeout: 300000 });
   const id = page.url().split('/').pop()!;
   await newFile(
     page,
@@ -103,7 +103,7 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
   await page.getByLabel('Run command').fill('node server.mjs');
   await page.getByRole('button', { name: 'Save changes' }).click();
   await page.getByRole('button', { name: 'Close', exact: true }).click();
-  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await page.locator('.workspace-header').getByRole('button', { name: 'Run', exact: true }).click();
   await expect
     .poll(
       async () => {
@@ -148,7 +148,9 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
   const other = await collaborator.newPage();
   await login(other, 'e2e-editor');
   await other.getByRole('button', { name: 'Open Browser workspace', exact: true }).click();
-  await expect(other.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
+  await expect(
+    other.locator('.workspace-header').getByRole('button', { name: 'Run', exact: true }),
+  ).toBeEnabled();
   await other.locator('.file-row').filter({ hasText: 'notes.txt' }).click();
   await expect(
     other.locator('.retained-editor:visible .connection-indicator.connected'),
