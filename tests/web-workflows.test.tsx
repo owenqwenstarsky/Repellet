@@ -739,3 +739,88 @@ it('resizes from effective panel dimensions when requested sizes are constrained
   fireEvent.keyDown(resize, { key: 'ArrowDown' });
   expect(terminal.style.height).toBe('325px');
 });
+
+describe('run settings drafts', () => {
+  it('keeps every unsaved run field when switching tabs and receiving server updates', async () => {
+    const view = settings();
+    await flush();
+    fireEvent.click(screen.getByRole('tab', { name: 'Run & setup' }));
+    for (const [label, value] of [
+      ['Run command', 'node custom.mjs'],
+      ['Working directory', 'src'],
+      ['Preview port', '4000'],
+      ['Setup command', 'npm install'],
+    ]) {
+      fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    }
+    fireEvent.click(screen.getByRole('tab', { name: 'General' }));
+    view.rerender(
+      <UiProvider>
+        <ProjectSettings
+          project={{ ...project, description: 'Updated by another editor' }}
+          onClose={vi.fn()}
+          onChanged={vi.fn()}
+          onDuplicate={vi.fn()}
+        />
+      </UiProvider>,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'Run & setup' }));
+    for (const [label, value] of [
+      ['Run command', 'node custom.mjs'],
+      ['Working directory', 'src'],
+      ['Preview port', '4000'],
+      ['Setup command', 'npm install'],
+    ]) {
+      expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(value);
+    }
+    fireEvent.click(screen.getByText('Save changes'));
+    await flush();
+    expect(patch).toHaveBeenCalledWith('/projects/project', {
+      runConfig: { command: 'node custom.mjs', cwd: 'src', port: 4000 },
+    });
+  });
+  it('disables tab switching during a pending run settings save', async () => {
+    const pending = deferred<any>();
+    vi.mocked(patch).mockReturnValueOnce(pending.promise);
+    settings();
+    await flush();
+    fireEvent.click(screen.getByRole('tab', { name: 'Run & setup' }));
+    fireEvent.click(screen.getByText('Save changes'));
+    expect((screen.getByRole('tab', { name: 'General' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => pending.resolve({}));
+    expect((screen.getByRole('tab', { name: 'General' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+});
+
+it.each(['a.ts', 'src'])(
+  'does not reopen a deleted %s from a delayed file response',
+  async (removed) => {
+    const pending = deferred<any>();
+    const path = removed === 'src' ? 'src/a.ts' : 'a.ts';
+    mockedApi.mockImplementation((url) =>
+      url.includes('/files?')
+        ? Promise.resolve([path, 'b.ts'].map((name) => ({ name, path: name, kind: 'file' })))
+        : url.includes('path=' + encodeURIComponent(path))
+          ? pending.promise
+          : baseApi(url),
+    );
+    workspace();
+    await flush();
+    fireEvent.click(screen.getByText('b.ts'));
+    await screen.findByText('Editing b.ts');
+    fireEvent.click(screen.getByText(path));
+    const events = FakeSocket.instances.find((s) => s.url.endsWith('/events'))!;
+    await act(async () =>
+      events.message({
+        type: 'file',
+        event: removed === 'src' ? 'unlinkDir' : 'unlink',
+        path: removed,
+      }),
+    );
+    await act(async () => pending.resolve({ binary: false, hash: 'hash' }));
+    expect(screen.queryByText('Editing ' + path)).toBeNull();
+    expect(screen.getByText('Editing b.ts')).toBeTruthy();
+  },
+);

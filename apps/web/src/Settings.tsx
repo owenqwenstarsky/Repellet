@@ -34,7 +34,7 @@ import {
 } from './ui';
 import { useAsyncAction } from './components/useAsyncAction';
 import { RuntimePicker } from './Projects';
-import { RepositorySetup } from './RepositorySetup';
+import { RepositorySetupForm, useRunSettings } from './RepositorySetup';
 import { GitHubPicker } from './GitHub';
 import { usePollingField } from './usePollingField';
 type Tab = 'general' | 'run' | 'environment' | 'members';
@@ -51,8 +51,11 @@ export function ProjectSettings({
 }) {
   const manage = project.role === 'owner';
   const [tab, setTab] = useState<Tab>(manage && !project.runConfig.command ? 'run' : 'general');
-  const { busy, run, alive, dispose } = useAsyncAction();
+  const { busy: actionBusy, run, alive, dispose } = useAsyncAction();
+  const runSettings = useRunSettings(project);
+  const busy = actionBusy || runSettings.busy;
   const dismiss = () => {
+    runSettings.dispose();
     dispose();
     onClose();
   };
@@ -90,7 +93,9 @@ export function ProjectSettings({
             onDuplicate={onDuplicate}
           />
         )}
-        {tab === 'run' && <RepositorySetup project={project} onChanged={onChanged} />}
+        {tab === 'run' && (
+          <RepositorySetupForm project={project} onChanged={onChanged} settings={runSettings} />
+        )}
         {manage && tab === 'environment' && (
           <Environment
             environment={environment}

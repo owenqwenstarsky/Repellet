@@ -104,7 +104,7 @@ export function useEditorTabs(
     setSelection(undefined);
   }
   function dropPath(path: string) {
-    setTabs((v) => v.filter((p) => p !== path && !p.startsWith(path + '/')));
+    applyStructure({ from: path });
   }
   function applyStructure(change: StructureChange) {
     fileIntent.current++;

@@ -7,22 +7,30 @@ import { useUi, Button, Field, FormRow, Section, Banner } from './ui';
 import { useAsyncAction } from './components/useAsyncAction';
 import { flushOpenDocuments } from './documentSaves';
 import { usePollingField } from './usePollingField';
-// The single place to edit how a project runs: command, working directory, port and setup.
-export function RepositorySetup({
-  project,
-  onChanged,
-}: {
-  project: Project;
-  onChanged: () => void;
-}) {
-  const ui = useUi();
+export function useRunSettings(project: Project) {
   const [cwd, setCwd] = usePollingField(project.runConfig.cwd),
     [setup, setSetup] = usePollingField(project.setupCommand),
     [command, setCommand] = usePollingField(project.runConfig.command),
     [port, setPort] = usePollingField(project.runConfig.port);
+  const action = useAsyncAction();
+  return { cwd, setCwd, setup, setSetup, command, setCommand, port, setPort, ...action };
+}
+type SetupProps = { project: Project; onChanged: () => void };
+// The single place to edit how a project runs: command, working directory, port and setup.
+export function RepositorySetup(props: SetupProps) {
+  const settings = useRunSettings(props.project);
+  return <RepositorySetupForm {...props} settings={settings} />;
+}
+export function RepositorySetupForm({
+  project,
+  onChanged,
+  settings,
+}: SetupProps & { settings: ReturnType<typeof useRunSettings> }) {
+  const ui = useUi();
+  const { cwd, setCwd, setup, setSetup, command, setCommand, port, setPort, busy, run, alive } =
+    settings;
   const [suggestion, setSuggestion] = useState<SetupSuggestion>();
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const { busy, run } = useAsyncAction();
   const form = useRef<HTMLFormElement>(null);
   const inspection = useRef(0);
   const manage = project.role === 'owner';
@@ -58,7 +66,7 @@ export function RepositorySetup({
     if (!runConfig) return;
     void run(async () => {
       await patch(base, { runConfig });
-      onChanged();
+      if (alive.current) onChanged();
       ui.notify('Run settings saved.', 'success');
     });
   }
@@ -68,11 +76,12 @@ export function RepositorySetup({
     if (!runConfig) return;
     void run(async () => {
       await flushOpenDocuments(project.id);
+      if (!alive.current) return;
       await put(base + '/setup', { setupCommand: setup, runConfig, confirmed: true });
       await post(base + '/open');
       // If changing the port required a container restart, preparation is resumed after it opens.
       if (port === project.runConfig.port && setup.trim()) await post(base + '/prepare');
-      onChanged();
+      if (alive.current) onChanged();
       ui.notify(
         'Setup confirmed. Dependencies are preparing; Run remains an explicit action.',
         'success',
@@ -152,6 +161,7 @@ export function RepositorySetup({
                   const request = ++inspection.current;
                   setSuggestion(undefined);
                   await flushOpenDocuments(project.id);
+                  if (!alive.current) return;
                   const result = await post<SetupSuggestion>(base + '/setup/suggest', { cwd });
                   if (request === inspection.current) setSuggestion(result);
                 })
