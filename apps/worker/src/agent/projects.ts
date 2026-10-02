@@ -12,7 +12,7 @@ import type { ServerRequest, ServerNotification, Thread } from '@repellet/codex-
 import { CodexConnection } from './connection.js';
 import { withAccount, privateSettings, accessTokens } from './accounts.js';
 import { startProjectProcess, killProjectAgent, projectAgentBytes } from './process.js';
-import { bridgeRequest } from '../workspaces.js';
+import { bridgeRequest, locked } from '../workspaces.js';
 import { hydrateLegacyTools } from './legacy-history.js';
 type Session = {
   userId: string;
@@ -205,16 +205,18 @@ export async function closeUserAgents(userId: string, projectId?: string) {
       await stopAgent(session.projectId);
 }
 export async function stopAgent(projectId: string) {
-  const pending = starts.get(projectId);
-  if (pending) await pending.catch(() => {});
-  const session = sessions.get(projectId);
-  if (session) {
-    if (session.snapshot.active && !session.connection.closed)
-      await session.connection.call('turn/interrupt', session.snapshot.active).catch(() => {});
-    await session.connection.close();
-    for (const client of session.clients) client.close(1012, 'Agent stopped');
-    sessions.delete(projectId);
-  } else await killProjectAgent(projectId);
+  await locked(projectId, async () => {
+    const pending = starts.get(projectId);
+    if (pending) await pending.catch(() => {});
+    const session = sessions.get(projectId);
+    if (session) {
+      if (session.snapshot.active && !session.connection.closed)
+        await session.connection.call('turn/interrupt', session.snapshot.active).catch(() => {});
+      await session.connection.close();
+      for (const client of session.clients) client.close(1012, 'Agent stopped');
+      sessions.delete(projectId);
+    } else await killProjectAgent(projectId);
+  });
 }
 export async function attachAgent(client: WebSocket, projectId: string, userId: string) {
   const session = await withAccount(userId, () => getSession(projectId, userId));
