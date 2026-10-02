@@ -191,7 +191,11 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
       }
       return originalBridge(...args);
     });
-    fake.workerJson.mockResolvedValue({ running: true, oomKilled: false });
+    fake.workerJson.mockImplementation(async (path: string) => {
+      if (path.endsWith('/agent/usage')) return fake.bridge(id, '/usage');
+      if (path.endsWith('/agent/activity')) return { executing: false };
+      return { running: true, oomKilled: false };
+    });
     const running = preparation.prepareProject(id).catch((error: Error) => error);
     try {
       await vi.waitFor(() => expect(installCalls).toBe(1));

@@ -17,6 +17,7 @@ let environment: Record<string, string> = {};
 export function setEnvironment(value: Record<string, string>) {
   environment = { ...value };
 }
+export const projectEnvironment = () => ({ ...environment });
 export const getEnvironment = () => ({ ...process.env, ...environment }) as Record<string, string>;
 export function info() {
   return [...terminals.values()].map(({ id, name, isRun, alive }) => ({ id, name, isRun, alive }));

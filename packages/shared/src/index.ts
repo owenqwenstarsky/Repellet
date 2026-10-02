@@ -267,6 +267,8 @@ export type WorkspacePreferences = {
   pane: string;
   showSidebar: boolean;
   showPreview: boolean;
+  rightPanel?: 'preview' | 'agent';
+  agentThread?: string;
   showTerminal: boolean;
   leftWidth: number;
   previewWidth: number;
@@ -420,3 +422,6 @@ export function suggestSetup(
     result.warnings.push('Multiple runtimes detected. Confirm commands and working directory.');
   return result;
 }
+
+export * from './agent.js';
+export * from './agentProjection.js';

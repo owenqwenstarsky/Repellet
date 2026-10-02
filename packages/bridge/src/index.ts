@@ -27,6 +27,7 @@ import {
   attachTerminal,
   info,
   setEnvironment,
+  projectEnvironment,
 } from './terminals.js';
 import { attachLanguage, stopLanguages } from './language.js';
 import { formatFile } from './format.js';
@@ -56,6 +57,8 @@ app.setErrorHandler((error, req, reply) => {
 });
 let storageLimit = Number(process.env.STORAGE_LIMIT_MB || 5120) * 1024 * 1024;
 let measured = 0;
+let agentBytes = 0;
+process.umask(0o002);
 let suspended = false;
 async function checkWrite(delta = 0) {
   if (measured + delta > storageLimit)
@@ -104,7 +107,7 @@ app.post('/files/create', async (req) => {
   const p = await resolvePath(b.path, true);
   if (!relative(b.path)) throw Object.assign(new Error('A path is required'), { statusCode: 400 });
   if (b.kind === 'directory') await fs.mkdir(p, { recursive: false });
-  else await fs.writeFile(p, '', { flag: 'wx' });
+  else await fs.writeFile(p, '', { flag: 'wx', mode: 0o664 });
   return { ok: true };
 });
 app.post('/files/move', async (req) => {
@@ -128,7 +131,7 @@ app.post('/files/delete', async (req) => {
   if (!relative(b.path))
     throw Object.assign(new Error('Root cannot be deleted'), { statusCode: 400 });
   await fs.rm(await resolvePath(b.path), { recursive: true, force: false });
-  measured = await usage();
+  measured = (await usage()) + agentBytes;
   return { ok: true };
 });
 app.post('/files/upload', async (req) => {
@@ -138,7 +141,7 @@ app.post('/files/upload', async (req) => {
   const p = await resolvePath(b.path, true);
   if (!relative(b.path)) throw Object.assign(new Error('A path is required'), { statusCode: 400 });
   await fs.mkdir(path.dirname(p), { recursive: true });
-  await fs.writeFile(p, data, { flag: 'wx' });
+  await fs.writeFile(p, data, { flag: 'wx', mode: 0o664 });
   return { ok: true };
 });
 app.get('/files/download', async (req, reply) => {
@@ -198,6 +201,13 @@ app.post('/run/stop', async () => {
   await stopTerminal('run');
   return { ok: true };
 });
+app.get('/environment', async () => projectEnvironment());
+app.put('/agent-usage', async (req) => {
+  const bytes = (req.body as { bytes: number }).bytes;
+  if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('Invalid agent storage usage');
+  agentBytes = bytes;
+  return { ok: true };
+});
 app.put('/environment', async (req) => {
   setEnvironment(req.body as Record<string, string>);
   return { ok: true };
@@ -243,7 +253,7 @@ watcher.on('error', (error) => {
 });
 watcher.on('all', (event, p) => emit({ type: 'file', event, path: path.relative(root, p) }));
 app.get('/usage', async () => {
-  measured = await usage();
+  measured = (await usage()) + agentBytes;
   const exceeded = measured > storageLimit;
   if (exceeded && !suspended) {
     suspended = true;

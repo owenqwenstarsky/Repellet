@@ -28,7 +28,7 @@ For LAN or VPN access, set `BIND_ADDRESS=0.0.0.0` and `PUBLIC_URL=http://your-ho
 
 Language services provide completion, hover, diagnostics, and definition navigation for Python, JS/TS, Go, and Rust. Format Document uses Ruff, Prettier, gofmt, or rustfmt. Project dependencies and tool configuration are available to the services inside the container.
 
-The default limits are 2 CPUs, 2 GiB memory, 512 processes, three active projects per owner, and 5 GiB monitored storage. Containers stop after 30 minutes without connected IDE users or authenticated preview requests. Terminal-only processes and socket keepalives do not keep them awake. Change installation defaults under Administration.
+The default limits are 2 CPUs, 2 GiB memory, 512 processes, three active projects per owner, and 5 GiB monitored storage. Containers stop after 30 minutes without connected IDE users, authenticated preview requests, or actively executing agent turns. Terminal-only processes and socket keepalives do not keep them awake. Change installation defaults under Administration.
 
 ## Develop and validate
 
@@ -49,6 +49,8 @@ npm audit
 ```
 
 Database tests create disposable databases; Docker tests create disposable containers/volumes. Browser tests use their own database, ports, worker, and preview range. They never reset the owner account in your installation. Build before browser tests. See [verification notes](docs/verification.md) for platform coverage and limitations.
+
+See [Codex agents and personal provider settings](docs/agents.md).
 
 See [starters, workspace preferences, GitHub setup, and recovery](docs/workflows.md).
 

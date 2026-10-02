@@ -49,7 +49,7 @@ describe.skipIf(!enabled)('backup restoration with PostgreSQL and Docker volumes
   const source = 'repellet_backup_' + suffix,
     target = 'repellet_restore_' + suffix;
   const id = randomUUID();
-  const volumes = [`repellet-${id}-files`, `repellet-${id}-home`];
+  const volumes = [`repellet-${id}-files`, `repellet-${id}-home`, `repellet-${id}-agent`];
   let admin: pg.Client, client: pg.Client, temp: string, databaseContainer: string;
   let security: typeof import('../apps/api/src/security.js');
   beforeAll(async () => {
@@ -147,6 +147,10 @@ describe.skipIf(!enabled)('backup restoration with PostgreSQL and Docker volumes
       volumes[1]!,
       "mkdir -p /data/.ssh; printf 'private config' > /data/.ssh/config; chmod 600 /data/.ssh/config",
     );
+    await helper(
+      volumes[2]!,
+      "mkdir -p /data/.codex/sessions; printf 'saved Codex history' > /data/.codex/sessions/thread.jsonl; chown -R 1001:1001 /data; chmod 700 /data /data/.codex",
+    );
     const envFile = path.join(temp, 'installation.env');
     await writeFile(envFile, `ENCRYPTION_KEY=${process.env.ENCRYPTION_KEY}\n`, { mode: 0o600 });
     const directory = path.join(temp, 'snapshot');
@@ -160,7 +164,7 @@ describe.skipIf(!enabled)('backup restoration with PostgreSQL and Docker volumes
         }),
       archiveVolume: (volume, file) => helper(volume, 'tar -czpf - -C /data .', { output: file }),
     });
-    expect((await verifyBackup(directory)).volumes).toHaveLength(2);
+    expect((await verifyBackup(directory)).volumes).toHaveLength(3);
     for (const volume of volumes)
       await helper(volume, 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +');
     let restoredKey = '';
@@ -226,5 +230,56 @@ describe.skipIf(!enabled)('backup restoration with PostgreSQL and Docker volumes
         capture: true,
       }),
     ).toBe('private config600');
-  }, 120000);
+    expect(
+      await helper(
+        volumes[2]!,
+        'cat /data/.codex/sessions/thread.jsonl; stat -c %u:%g:%a /data/.codex',
+        {
+          capture: true,
+        },
+      ),
+    ).toBe('saved Codex history1001:1001:700');
+  }, 300000);
+});
+
+it('backs up agent history and private accounts while accepting older backups', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'repellet-agent-backup-'));
+  try {
+    const envFile = path.join(root, 'installation.env');
+    await writeFile(envFile, 'KEY=test\n');
+    const id = randomUUID();
+    const volumes = [`repellet-${id}-files`, `repellet-${id}-agent`, 'repellet-agent-accounts'];
+    const destination = path.join(root, 'new');
+    await createBackup({
+      destination,
+      envFile,
+      volumes,
+      dump: (file) => writeFile(file, 'database'),
+      archiveVolume: (volume, file) => writeFile(file, volume),
+    });
+    expect((await verifyBackup(destination)).volumes.map((volume: any) => volume.name)).toEqual(
+      volumes,
+    );
+    const restored: string[] = [];
+    await restoreBackup({
+      directory: destination,
+      restoreEnvironment: async () => {},
+      restoreDatabase: async () => {},
+      restoreVolume: async (volume: string) => {
+        restored.push(volume);
+      },
+    });
+    expect(restored).toEqual(volumes);
+    const legacy = path.join(root, 'old');
+    await createBackup({
+      destination: legacy,
+      envFile,
+      volumes: [`repellet-${id}-files`, `repellet-${id}-home`],
+      dump: (file) => writeFile(file, 'database'),
+      archiveVolume: (volume, file) => writeFile(file, volume),
+    });
+    expect((await verifyBackup(legacy)).version).toBe(1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -8,6 +8,8 @@ import { GitPane } from './GitPane';
 import { preferenceKey, readPreferences, savePreferences } from './preferences';
 import { flushOpenDocuments } from './documentSaves';
 import { QuickOpen } from './QuickOpen';
+import { AgentPanel } from './AgentPanel';
+import { Tabs } from './ui';
 import { ProjectSettings } from './Settings';
 import { runEligible } from './workspaceState';
 import { useProjectPolling } from './workspace/useProjectPolling';
@@ -48,6 +50,14 @@ export function Workspace({
   const terminals = useTerminals(base, saved.terminal, editable, mounted);
   const editor = useEditorTabs(id, saved, project, mounted);
   const layout = useWorkspaceLayout(saved, project?.state);
+  const agentOwner = project?.ownerId === user.id;
+  const [rightPanel, setRightPanel] = useState<'preview' | 'agent'>(saved.rightPanel || 'preview');
+  const [agentThread, setAgentThread] = useState(saved.agentThread || '');
+  const [agentVisited, setAgentVisited] = useState(saved.rightPanel === 'agent');
+  useEffect(() => {
+    if (rightPanel === 'agent') setAgentVisited(true);
+  }, [rightPanel]);
+  const selectedRightPanel = agentOwner ? rightPanel : 'preview';
   const [quickOpen, setQuickOpen] = useState(false);
   const [settings, setSettings] = useState(false);
   const [peers, setPeers] = useState<{ id: string; name: string }[]>([]);
@@ -111,6 +121,8 @@ export function Workspace({
       pane: layout.pane,
       showSidebar: layout.showSidebar,
       showPreview: layout.showPreview,
+      rightPanel: selectedRightPanel,
+      agentThread,
       showTerminal: layout.showTerminal,
       leftWidth: layout.leftWidth,
       previewWidth: layout.previewWidth,
@@ -124,6 +136,8 @@ export function Workspace({
     layout.pane,
     layout.showSidebar,
     layout.showPreview,
+    selectedRightPanel,
+    agentThread,
     layout.showTerminal,
     layout.leftWidth,
     layout.previewWidth,
@@ -292,7 +306,18 @@ export function Workspace({
               showPreview={layout.showPreview}
               onPane={layout.selectPane}
               onToggleTerminal={() => layout.setShowTerminal(!layout.showTerminal)}
-              onTogglePreview={() => layout.setShowPreview(!layout.showPreview)}
+              onTogglePreview={() => {
+                setRightPanel('preview');
+                layout.setShowPreview(
+                  selectedRightPanel === 'preview' ? !layout.showPreview : true,
+                );
+              }}
+              agentOwner={agentOwner}
+              agentActive={layout.showPreview && selectedRightPanel === 'agent'}
+              onAgent={() => {
+                setRightPanel('agent');
+                layout.setShowPreview(selectedRightPanel === 'agent' ? !layout.showPreview : true);
+              }}
             />
             <aside
               className="explorer"
@@ -377,18 +402,49 @@ export function Workspace({
                         layout.setPreviewWidth((v) => Math.max(260, Math.min(720, v - delta)))
                       }
                     />
-                    <PreviewPanel
-                      project={project}
-                      url={url}
-                      width={dimensions.preview}
-                      revision={previewRevision}
-                      editable={editable}
-                      onRefresh={() => setPreviewRevision((v) => v + 1)}
-                      onClose={() => layout.setShowPreview(false)}
-                      onRetryReadiness={() =>
-                        post(base + '/readiness').catch((e) => ui.notify(errorMessage(e)))
-                      }
-                    />
+                    <aside className="workspace-right-panel" style={{ width: dimensions.preview }}>
+                      {agentOwner && (
+                        <Tabs
+                          label="Workspace right panel"
+                          value={selectedRightPanel}
+                          onChange={setRightPanel}
+                          items={[
+                            { id: 'preview', label: 'Preview' },
+                            { id: 'agent', label: 'Agent' },
+                          ]}
+                        />
+                      )}
+                      <div
+                        className="workspace-right-content"
+                        hidden={selectedRightPanel !== 'preview'}
+                      >
+                        <PreviewPanel
+                          project={project}
+                          url={url}
+                          width={dimensions.preview}
+                          revision={previewRevision}
+                          editable={editable}
+                          onRefresh={() => setPreviewRevision((v) => v + 1)}
+                          onClose={() => layout.setShowPreview(false)}
+                          onRetryReadiness={() =>
+                            post(base + '/readiness').catch((e) => ui.notify(errorMessage(e)))
+                          }
+                        />
+                      </div>
+                      {agentOwner && agentVisited && (
+                        <div
+                          className="workspace-right-content"
+                          hidden={selectedRightPanel !== 'agent'}
+                        >
+                          <AgentPanel
+                            projectId={id}
+                            selectedThread={agentThread}
+                            onSelectThread={setAgentThread}
+                            onOpenFile={editor.openFile}
+                          />
+                        </div>
+                      )}
+                    </aside>
                   </>
                 )}
               </div>

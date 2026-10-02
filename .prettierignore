@@ -6,3 +6,7 @@ test-results/
 package-lock.json
 packages/bridge/package-lock.json
 .env*
+
+# Codex version-pinned generated protocol artifacts.
+packages/codex-protocol/src/generated/
+packages/codex-protocol/schemas/

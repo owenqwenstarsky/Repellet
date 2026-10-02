@@ -36,6 +36,11 @@ export function readPreferences(key: string): WorkspacePreferences {
     pane: ['files', 'search', 'git', 'problems'].includes(value.pane || '') ? value.pane! : 'files',
     showSidebar: value.showSidebar !== false,
     showPreview: value.showPreview !== false,
+    rightPanel: value.rightPanel === 'agent' ? 'agent' : 'preview',
+    agentThread:
+      typeof value.agentThread === 'string' && /^[a-zA-Z0-9_-]{1,200}$/.test(value.agentThread)
+        ? value.agentThread
+        : '',
     showTerminal: value.showTerminal !== false,
     leftWidth: clamp(value.leftWidth, 232, 150, Math.max(150, innerWidth * 0.35)),
     previewWidth: clamp(value.previewWidth, 420, 200, Math.max(200, innerWidth * 0.45)),
