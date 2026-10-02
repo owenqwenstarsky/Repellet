@@ -68,6 +68,26 @@ async function creation() {
   fireEvent.change(screen.getByLabelText('Project source'), { target: { value: 'github' } });
   await screen.findByRole('option', { name: 'owen/one' });
 }
+it('creates the HTML starter with its Node environment and no-install help', async () => {
+  render(
+    <UiProvider>
+      <Projects user={user} onOpen={vi.fn()} />
+    </UiProvider>,
+  );
+  await screen.findByText('Test project');
+  fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
+  fireEvent.change(screen.getByLabelText('Project source'), { target: { value: 'static-html' } });
+  expect(screen.getByText(/No dependency installation needed/)).toBeTruthy();
+  expect(screen.getByRole('button', { name: /Node.js/ }).getAttribute('aria-pressed')).toBe('true');
+  fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'My static site' } });
+  fireEvent.submit(screen.getByLabelText('Project name').closest('form')!);
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      '/projects',
+      expect.objectContaining({ starterId: 'static-html', runtimes: ['node'] }),
+    ),
+  );
+});
 it('preserves runtime edits while detection is pending', async () => {
   const pending = deferred<any>();
   vi.mocked(api).mockImplementation(async (path) =>

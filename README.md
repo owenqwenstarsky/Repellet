@@ -20,7 +20,7 @@ For LAN or VPN access, set `BIND_ADDRESS=0.0.0.0` and `PUBLIC_URL=http://your-ho
 
 ## Use
 
-1. Choose a React/Vite/TypeScript or Python/FastAPI starter, a blank project, a GitHub repository, or an HTTPS/SSH clone. Starters prepare dependencies automatically and wait for Run. Select one or more runtimes. First use builds an environment; later projects reuse cached images.
+1. Choose an HTML/CSS/JavaScript, React/Vite/TypeScript, or Python/FastAPI starter, a blank project, a GitHub repository, or an HTTPS/SSH clone. Starters prepare files and any dependencies automatically and wait for Run. Static HTML needs no packages or build step and refreshes its preview after saves. Select one or more runtimes. First use builds an environment; later projects reuse cached images.
 2. Create/upload files in the explorer. Edits autosave; collaborators share documents, cursors, terminals, and Git state.
 3. Set **Run command**, **Working directory**, and **Preview port** in project settings. Your server must bind to `0.0.0.0`. Run starts a managed process group; Stop app terminates it. Stop workspace stops the container.
 4. Use Source control to stage, commit, switch/create branches, and push/pull. Connect your GitHub account for matching HTTPS remotes, or configure credentials manually in the terminal for other remotes. `/home/workspace` persists.

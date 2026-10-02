@@ -524,6 +524,7 @@ export async function githubRoutes(app: FastifyInstance) {
     const manifests: Record<string, string> = {};
     const entries = await githubRequest(`/repos/${repo.fullName}/contents`, token);
     for (const name of [
+      'index.html',
       'package.json',
       'package-lock.json',
       'npm-shrinkwrap.json',

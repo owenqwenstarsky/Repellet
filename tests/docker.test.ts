@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
-import { defaultLimits, runtimeCatalog } from '@repellet/shared';
+import { defaultLimits, runtimeCatalog, starterCatalog } from '@repellet/shared';
 const enabled = process.env.RUN_DOCKER_TESTS === '1';
 const id = randomUUID();
 let worker: typeof import('../apps/worker/src/workspaces.js');
@@ -147,6 +147,55 @@ describe.skipIf(!enabled)('real Docker workspace integration', () => {
     expect(response?.status).toBe(200);
     expect(await response!.text()).toBe('external change');
     await json('/run/stop', 'POST');
+  });
+  it('inspects and runs an imported static site in a subdirectory without preparation', async () => {
+    await json('/scaffold', 'POST', {
+      files: [
+        { path: 'site/index.html', content: '<h1>Imported static page</h1>' },
+        { path: 'site/style.css', content: 'h1 { color: green; }' },
+      ],
+    });
+    expect((await json('/inspect', 'POST', { cwd: 'site' })).files['index.html']).toBe(
+      '<h1>Imported static page</h1>',
+    );
+    const command = starterCatalog
+      .find((s) => s.id === 'static-html')!
+      .runConfig.command.replace('--port 3000', '--port 8000');
+    const state = await worker.inspect(id);
+    const binding = state!.NetworkSettings.Ports['8000/tcp']![0]!;
+    const address = `http://127.0.0.1:${binding.HostPort}`;
+    try {
+      for (let run = 0; run < 2; run++) {
+        await json('/run', 'POST', { command, cwd: 'site' });
+        await expect
+          .poll(
+            async () => {
+              try {
+                return (await fetch(address)).status;
+              } catch {
+                return 0;
+              }
+            },
+            { timeout: 10000 },
+          )
+          .toBe(200);
+        expect(await (await fetch(address)).text()).toContain('Imported static page');
+        expect(await (await fetch(address)).text()).toContain('/__repellet_static__/reload.js');
+        expect(await (await fetch(address + '/style.css')).text()).toContain('color: green');
+      }
+    } finally {
+      await json('/run/stop', 'POST');
+    }
+    await expect
+      .poll(async () => {
+        try {
+          await fetch(address);
+          return false;
+        } catch {
+          return true;
+        }
+      })
+      .toBe(true);
   });
   it('provides Python and Node language-server initialization', async () => {
     for (const runtime of ['python', 'node']) {
