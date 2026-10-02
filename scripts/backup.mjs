@@ -45,7 +45,7 @@ async function projectVolumes() {
   const ids = (await query('SELECT id FROM projects ORDER BY id')).split('\n').filter(Boolean);
   const volumes = [];
   for (const id of ids)
-    for (const kind of ['files', 'home']) {
+    for (const kind of ['files', 'home', 'agent']) {
       const name = `repellet-${id}-${kind}`;
       const found = await run(
         ['volume', 'ls', '--filter', `name=^${name}$`, '--format', '{{.Name}}'],
@@ -53,6 +53,11 @@ async function projectVolumes() {
       );
       if (found === name) volumes.push(name);
     }
+  const accounts = await run(
+    ['volume', 'ls', '--filter', 'name=^repellet-agent-accounts$', '--format', '{{.Name}}'],
+    { capture: true },
+  );
+  if (accounts === 'repellet-agent-accounts') volumes.push(accounts);
   return volumes;
 }
 try {
@@ -166,7 +171,9 @@ try {
             'volume',
             'create',
             '--label',
-            'repellet.project=' + volume.slice(9, 45),
+            volume === 'repellet-agent-accounts'
+              ? 'repellet.accounts=true'
+              : 'repellet.project=' + volume.slice(9, 45),
             '--label',
             'repellet.kind=' + volume.split('-').at(-1),
             volume,

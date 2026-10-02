@@ -189,6 +189,7 @@ export async function routes(app: FastifyInstance) {
         ...(b.password ? { passwordHash: await hashPassword(b.password) } : {}),
       })
       .where(eq(users.id, id));
+    if (b.enabled === false) await workerJson(`/agent/users/${id}/stop`, 'POST').catch(() => {});
     if (b.password || b.enabled === false) {
       await db.delete(sessions).where(eq(sessions.userId, id));
       revokeUser(id);

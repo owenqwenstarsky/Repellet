@@ -98,7 +98,7 @@ async function writeFileUnlocked(
   try {
     await fs.writeFile(temp, content, {
       flag: 'wx',
-      mode: current ? (await fs.stat(p)).mode : 0o644,
+      mode: current ? (await fs.stat(p)).mode | 0o660 : 0o664,
     });
     await fs.rename(temp, p);
   } finally {

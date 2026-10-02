@@ -1,4 +1,12 @@
-import { Files, Search, GitBranch, CircleAlert, PanelRight, TerminalSquare } from 'lucide-react';
+import {
+  Files,
+  Search,
+  GitBranch,
+  CircleAlert,
+  PanelRight,
+  TerminalSquare,
+  Bot,
+} from 'lucide-react';
 const tools = [
   ['files', 'Files', Files],
   ['search', 'Search', Search],
@@ -13,7 +21,13 @@ export function ActivityBar({
   onPane,
   onToggleTerminal,
   onTogglePreview,
+  agentOwner = false,
+  agentActive = false,
+  onAgent,
 }: {
+  agentOwner?: boolean;
+  agentActive?: boolean;
+  onAgent?: () => void;
   pane: string;
   showSidebar: boolean;
   showTerminal: boolean;
@@ -39,6 +53,17 @@ export function ActivityBar({
           </button>
         );
       })}
+      {agentOwner && (
+        <button
+          aria-label="Agent"
+          title="Agent"
+          aria-pressed={agentActive}
+          className={agentActive ? 'active' : ''}
+          onClick={onAgent}
+        >
+          <Bot size={19} />
+        </button>
+      )}
       <div className="activity-spacer" />
       <button
         aria-pressed={showTerminal}

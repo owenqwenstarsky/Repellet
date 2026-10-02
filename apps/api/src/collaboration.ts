@@ -6,7 +6,7 @@ import {
   removeAwarenessStates,
 } from 'y-protocols/awareness';
 import * as decoding from 'lib0/decoding';
-import { and, eq } from 'drizzle-orm';
+import { or, and, eq } from 'drizzle-orm';
 import type { WebSocket } from 'ws';
 import { db } from './db.js';
 import { documents } from './schema.js';
@@ -142,11 +142,11 @@ function schedule(d: Document) {
 }
 async function flush(d: Document) {
   clearTimeout(d.timer);
-  if (!d.dirty) return;
   if (d.conflict)
     throw Object.assign(new Error(`Resolve the disk conflict in ${d.path} before continuing`), {
       statusCode: 409,
     });
+  if (!d.dirty) return;
   try {
     const result = await bridge<{ hash: string }>(d.projectId, '/file', 'PUT', {
       path: d.path,
@@ -267,7 +267,12 @@ export async function flushProject(projectId: string) {
   const stored = await db
     .select()
     .from(documents)
-    .where(and(eq(documents.projectId, projectId), eq(documents.dirty, true)));
+    .where(
+      and(
+        eq(documents.projectId, projectId),
+        or(eq(documents.dirty, true), eq(documents.conflict, true)),
+      ),
+    );
   for (const row of stored) await load(projectId, row.path);
   for (const [k, promise] of opened)
     if (k.startsWith(projectId + ':')) {

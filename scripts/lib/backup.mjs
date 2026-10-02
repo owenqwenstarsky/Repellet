@@ -16,7 +16,7 @@ export async function createBackup({ destination, envFile, dump, volumes, archiv
   });
   await dump(path.join(destination, 'database.dump'));
   for (const volume of volumes) {
-    if (!/^repellet-[a-f0-9-]{36}-(files|home)$/.test(volume))
+    if (!/^(?:repellet-[a-f0-9-]{36}-(?:files|home|agent)|repellet-agent-accounts)$/.test(volume))
       throw new Error('Unexpected workspace volume name');
     const file = volume + '.tar.gz';
     await archiveVolume(volume, path.join(destination, file));
@@ -58,7 +58,9 @@ export async function verifyBackup(directory) {
   const volumeNames = new Set();
   for (const volume of manifest.volumes) {
     if (
-      !/^repellet-[a-f0-9-]{36}-(files|home)$/.test(volume.name) ||
+      !/^(?:repellet-[a-f0-9-]{36}-(?:files|home|agent)|repellet-agent-accounts)$/.test(
+        volume.name,
+      ) ||
       volume.file !== volume.name + '.tar.gz' ||
       !names.has(volume.file) ||
       volumeNames.has(volume.name)

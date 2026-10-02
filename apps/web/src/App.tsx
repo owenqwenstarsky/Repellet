@@ -17,6 +17,7 @@ import {
 } from './ui';
 import { useAsyncAction } from './components/useAsyncAction';
 import { parseRoute, pathFor, type Page } from './routes';
+import { AgentSettings } from './AgentSettings';
 import { Auth } from './Auth';
 import { Projects } from './Projects';
 import { GitHubSettings } from './GitHub';
@@ -34,6 +35,7 @@ function Application() {
   const [setup, setSetup] = useState(false);
   const [loading, setLoading] = useState(true);
   const [current, setCurrent] = useState(() => parseRoute());
+  const [agentSettings, setAgentSettings] = useState(false);
   const [password, setPassword] = useState(false);
   const [workerHealthy, setWorkerHealthy] = useState<boolean | null>(null);
   const [bootError, setBootError] = useState('');
@@ -181,6 +183,9 @@ function Application() {
               </>
             }
           >
+            <MenuItem icon={<Settings2 size={15} />} onSelect={() => setAgentSettings(true)}>
+              Agent settings
+            </MenuItem>
             <MenuItem icon={<KeyRound size={15} />} onSelect={() => setPassword(true)}>
               Change password
             </MenuItem>
@@ -209,6 +214,7 @@ function Application() {
           <Projects user={user} onOpen={(id) => navigate('workspace', id)} />
         )}
       </section>
+      {agentSettings && <AgentSettings onClose={() => setAgentSettings(false)} />}
       {password && <ChangePassword onClose={() => setPassword(false)} onChanged={setUser} />}
     </div>
   );

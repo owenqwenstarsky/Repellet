@@ -1,3 +1,5 @@
+import { agentRoutes, terminateStaleAgents } from './agent/routes.js';
+import { stopAgent } from './agent/projects.js';
 import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import { WebSocket } from 'ws';
@@ -16,6 +18,7 @@ import {
   bridgeRequest,
 } from './workspaces.js';
 import { enablePreview, disablePreview, listPreviews, revokePreview } from './previews.js';
+await terminateStaleAgents();
 const app = Fastify({ logger: true, bodyLimit: 12 * 1024 * 1024 });
 await app.register(websocket, { options: { maxPayload: 4 * 1024 * 1024 } });
 app.addHook('onRequest', async (req, reply) => {
@@ -29,6 +32,7 @@ app.setErrorHandler((error, req, reply) => {
     .code(e.statusCode || 400)
     .send({ error: e.message, ...(e.completedFiles ? { completedFiles: e.completedFiles } : {}) });
 });
+await agentRoutes(app);
 const idFrom = (req: { params: unknown }) => projectId((req.params as { id: string }).id);
 app.post('/revoke', async (req) => {
   const b = req.body as { userId: string; projectId?: string };
@@ -63,11 +67,15 @@ app.get('/projects/:id', async (req) => {
 app.get('/projects/:id/logs', async (req) => ({ log: buildLog(idFrom(req)) }));
 app.post('/projects/:id/build', async (req) => {
   const b = req.body as { runtimes: unknown; rebuild?: boolean };
-  if (b.rebuild) await disablePreview(idFrom(req));
+  if (b.rebuild) {
+    await stopAgent(idFrom(req));
+    await disablePreview(idFrom(req));
+  }
   return prepareWorkspace(idFrom(req), runtimesSchema.parse(b.runtimes), b.rebuild === true);
 });
 app.post('/projects/:id/ensure', async (req) => {
   const b = req.body as Record<string, unknown>;
+  if (b.rebuild) await stopAgent(idFrom(req));
   return ensureWorkspace(idFrom(req), {
     runtimes: runtimesSchema.parse(b.runtimes),
     limits: limitsSchema.parse(b.limits),
@@ -79,10 +87,12 @@ app.post('/projects/:id/ensure', async (req) => {
   });
 });
 app.post('/projects/:id/stop', async (req) => {
+  await stopAgent(idFrom(req));
   await disablePreview(idFrom(req));
   return stopWorkspace(idFrom(req));
 });
 app.delete('/projects/:id', async (req) => {
+  await stopAgent(idFrom(req));
   await disablePreview(idFrom(req));
   return removeWorkspace(idFrom(req));
 });
@@ -119,7 +129,7 @@ app.post('/projects/:id/probe', async (req) => {
   }
 });
 const allowedPath =
-  /^\/(preparation(?:\/[a-z0-9-]+)?|scaffold|fingerprint|inspect|health|files(?:\/(?:create|move|delete|upload))?|file-index|file|search|replace|format|terminals(?:\/[0-9a-z-]+)?|run(?:\/stop)?|environment|limits|usage|git(?:\/(?:status|diff|remote))?|shutdown)(?:\?[^\r\n]*)?$/;
+  /^\/(preparation(?:\/[a-z0-9-]+)?|scaffold|fingerprint|inspect|health|files(?:\/(?:create|move|delete|upload))?|file-index|file|search|replace|format|terminals(?:\/[0-9a-z-]+)?|run(?:\/stop)?|environment|agent-usage|limits|usage|git(?:\/(?:status|diff|remote))?|shutdown)(?:\?[^\r\n]*)?$/;
 app.post('/projects/:id/request', async (req) => {
   const b = req.body as { path: string; method: string; body?: unknown };
   if (!allowedPath.test(b.path) || !['GET', 'POST', 'PUT', 'DELETE'].includes(b.method))
@@ -172,3 +182,8 @@ app.get('/projects/:id/ws', { websocket: true }, async (client, req) => {
   }
 });
 await app.listen({ host: config.inDocker ? '0.0.0.0' : '127.0.0.1', port: config.port });
+
+for (const signal of ['SIGTERM', 'SIGINT'] as const)
+  process.on(signal, () => {
+    void app.close().then(() => process.exit(0));
+  });

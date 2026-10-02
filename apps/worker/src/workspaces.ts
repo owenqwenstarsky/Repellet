@@ -62,7 +62,7 @@ async function ensureNetwork() {
   }
 }
 async function initVolumes(id: string) {
-  for (const kind of ['files', 'home']) {
+  for (const kind of ['files', 'home', 'agent']) {
     const name = volumeName(id, kind);
     try {
       await docker.getVolume(name).inspect();
@@ -77,12 +77,15 @@ async function initVolumes(id: string) {
     Image: BASE_IMAGE,
     User: 'root',
     Entrypoint: ['/bin/sh', '-c'],
-    Cmd: ['chown 1000:1000 /workspace /home/workspace'],
+    Cmd: [
+      'chown 1000:1000 /workspace /home/workspace && chown 1001:1001 /home/agent && chmod 700 /home/agent && chmod 2775 /workspace && setfacl -m g:1000:rwx,d:g:1000:rwx,d:m:rwx /workspace',
+    ],
     HostConfig: {
       AutoRemove: false,
       Mounts: [
         { Type: 'volume', Source: volumeName(id), Target: '/workspace' },
         { Type: 'volume', Source: volumeName(id, 'home'), Target: '/home/workspace' },
+        { Type: 'volume', Source: volumeName(id, 'agent'), Target: '/home/agent' },
       ],
     },
     Labels: { 'repellet.helper': 'true' },
@@ -127,6 +130,7 @@ export async function ensureWorkspace(id: string, options: EnsureOptions) {
     if (
       current &&
       (current.Image !== desiredImage.Id ||
+        !current.Mounts.some((mount) => mount.Destination === '/home/agent') ||
         (!config.inDocker &&
           !current.NetworkSettings.Ports[`${options.previewTargetPort || 3000}/tcp`]))
     ) {
@@ -153,9 +157,11 @@ export async function ensureWorkspace(id: string, options: EnsureOptions) {
           CapDrop: ['ALL'],
           SecurityOpt: ['no-new-privileges:true'],
           Init: true,
+          ExtraHosts: ['host.docker.internal:host-gateway'],
           Mounts: [
             { Type: 'volume', Source: volumeName(id), Target: '/workspace' },
             { Type: 'volume', Source: volumeName(id, 'home'), Target: '/home/workspace' },
+            { Type: 'volume', Source: volumeName(id, 'agent'), Target: '/home/agent' },
           ],
           ...(config.inDocker
             ? {}
@@ -227,7 +233,7 @@ export async function removeWorkspace(id: string) {
   return locked(id, async () => {
     const current = await inspect(id);
     if (current) await docker.getContainer(current.Id).remove({ force: true });
-    for (const kind of ['files', 'home'])
+    for (const kind of ['files', 'home', 'agent'])
       try {
         await docker.getVolume(volumeName(id, kind)).remove();
       } catch (e) {

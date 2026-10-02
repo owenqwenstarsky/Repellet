@@ -272,14 +272,17 @@ export async function monitor() {
               error: 'The app process exited. Check the Run terminal, then click Run to retry.',
             });
         }
-        const usage = await bridge<{ bytes: number; exceeded: boolean }>(p.id, '/usage');
+        const usage = await workerJson<{ bytes: number; exceeded: boolean }>(
+          `/projects/${p.id}/agent/usage`,
+        );
         await db
           .update(projects)
           .set({ storageBytes: usage.bytes, storageExceeded: usage.exceeded })
           .where(eq(projects.id, p.id));
         emit(p.id, { type: 'storage', bytes: usage.bytes, exceeded: usage.exceeded });
         if (operations.has(p.id)) continue;
-        if (hasClients(p.id))
+        const agent = await workerJson<{ executing: boolean }>(`/projects/${p.id}/agent/activity`);
+        if (hasClients(p.id) || agent.executing)
           await db.update(projects).set({ lastActiveAt: new Date() }).where(eq(projects.id, p.id));
         else if (Date.now() - p.lastActiveAt.getTime() > currentLimits.idleMinutes * 60000)
           await stopProject(p.id);

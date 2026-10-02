@@ -126,7 +126,7 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
   expect(denied.status()).toBe(403);
   await anonymous.close();
   // Two real browser sessions edit one document.
-  const origin = { origin: 'http://localhost:3315' };
+  const origin = { origin: `http://localhost:${process.env.REPELLET_E2E_PORT || 3315}` };
   const created = await page.request.post('/api/admin/users', {
     headers: origin,
     data: {
@@ -180,8 +180,13 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
   const term = terminals.find((t: any) => !t.isRun && t.alive);
   const cookies = (await page.context().cookies()).map((c) => `${c.name}=${c.value}`).join('; ');
   const shell = new WebSocket(
-    `ws://localhost:3315/ws/projects/${id}/channel?path=${encodeURIComponent(`/terminals/${term.id}/connect`)}`,
-    { headers: { origin: 'http://localhost:3315', cookie: cookies } },
+    `ws://localhost:${process.env.REPELLET_E2E_PORT || 3315}/ws/projects/${id}/channel?path=${encodeURIComponent(`/terminals/${term.id}/connect`)}`,
+    {
+      headers: {
+        origin: `http://localhost:${process.env.REPELLET_E2E_PORT || 3315}`,
+        cookie: cookies,
+      },
+    },
   );
   await new Promise<void>((resolve, reject) => {
     shell.once('message', () => resolve());
@@ -352,7 +357,7 @@ for (const starter of [
       ),
     ).toHaveLength(1);
     if (starter.id === 'react-vite') {
-      const origin = { origin: 'http://localhost:3315' };
+      const origin = { origin: `http://localhost:${process.env.REPELLET_E2E_PORT || 3315}` };
       for (const path of ['src/one.ts', 'src/two.ts']) {
         expect(
           (
@@ -419,7 +424,7 @@ for (const starter of [
     expect(
       (
         await page.request.post(`/api/projects/${id}/stop`, {
-          headers: { origin: 'http://localhost:3315' },
+          headers: { origin: `http://localhost:${process.env.REPELLET_E2E_PORT || 3315}` },
         })
       ).ok(),
     ).toBe(true);
@@ -433,7 +438,7 @@ test('GitHub redirects complete with Strict cookies and member repository permis
   await login(page);
   const connect = async (page: Page, identity: string) => {
     const response = await page.request.post('/api/github/authorize', {
-      headers: { origin: 'http://localhost:3315' },
+      headers: { origin: `http://localhost:${process.env.REPELLET_E2E_PORT || 3315}` },
     });
     const { url } = await response.json();
     await page.goto(url + '&identity=' + identity);
@@ -470,4 +475,93 @@ test('GitHub redirects complete with Strict cookies and member repository permis
   );
   expect((await (await page.request.get('/api/github/connection')).json()).login).toBe('writer');
   await context.close();
+});
+
+test('owner Codex settings, streamed tools, threads, steering, interruption, and reconnect', async ({
+  page,
+  browser,
+}) => {
+  await login(page);
+  const { providerUrl } = JSON.parse(await readFile('.cache/e2e.json', 'utf8'));
+  await page.getByRole('button', { name: 'Account for Workspace Owner' }).click();
+  await page.getByRole('menuitem', { name: 'Agent settings' }).click();
+  await page.getByRole('tab', { name: 'Custom API' }).click();
+  await page.getByLabel('Base URL', { exact: true }).fill(providerUrl);
+  await page.getByLabel('API key', { exact: true }).fill('browser-provider-key');
+  await page.getByLabel('Model ID', { exact: true }).fill('repellet-test-model');
+  await page.getByRole('button', { name: 'Save agent settings' }).click();
+  await expect(page.getByLabel('API key', { exact: true })).toHaveValue('');
+  const publicSettings = await (await page.request.get('/api/agent/settings')).json();
+  expect(publicSettings.hasApiKey).toBe(true);
+  expect(publicSettings).not.toHaveProperty('apiKey');
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await page.getByRole('button', { name: 'Create project', exact: true }).click();
+  await page.getByLabel('Project name', { exact: true }).fill('Codex browser workspace');
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Create project', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Agent', exact: true }).click({ timeout: 300000 });
+  const id = page.url().split('/').pop()!;
+  await page.getByLabel('Message Codex').fill('create agent file');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect(page.getByLabel('Agent conversation')).toContainText(
+    'Codex is connected to Repellet',
+    { timeout: 60000 },
+  );
+  await expect
+    .poll(
+      async () =>
+        (await (await page.request.get(`/api/projects/${id}/file?path=agent-result.txt`)).json())
+          .content,
+    )
+    .toBe('created by agent\n');
+  await expect(page.locator('.agent-activity')).toContainText('PROVIDER_KEY_HIDDEN');
+  await page.getByRole('button', { name: 'Rename', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill('Saved Codex conversation');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByLabel('Agent thread', { exact: true })).toContainText(
+    'Saved Codex conversation',
+  );
+  const original = await page.getByLabel('Agent thread', { exact: true }).inputValue();
+  await page.getByRole('button', { name: 'Fork', exact: true }).click();
+  await expect(page.getByLabel('Agent thread', { exact: true })).not.toHaveValue(original);
+  await page.getByRole('button', { name: 'Archive', exact: true }).click();
+  await page.getByLabel('Archived', { exact: true }).check();
+  await expect(page.getByLabel('Agent thread', { exact: true }).locator('option')).toHaveCount(2);
+  await page.getByLabel('Agent thread', { exact: true }).selectOption({ index: 1 });
+  await page.getByRole('button', { name: 'Unarchive', exact: true }).click();
+  await page.getByLabel('Archived', { exact: true }).uncheck();
+  await page.getByLabel('Agent thread', { exact: true }).selectOption(original);
+  await page.getByLabel('Message Codex').fill('hold for steering');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+  await page.getByLabel('Message Codex').fill('additional guidance');
+  await page.getByRole('button', { name: 'Steer', exact: true }).click();
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole('tab', { name: 'Agent', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await expect(page.getByLabel('Agent thread', { exact: true })).toHaveValue(original);
+  await expect(page.getByLabel('Agent conversation')).toContainText(
+    'Codex is connected to Repellet',
+  );
+  await page.screenshot({ path: '.cache/agent-workspace.png', fullPage: true });
+  const editorContext = await browser.newContext(),
+    editor = await editorContext.newPage();
+  await login(editor, 'e2e-editor');
+  const users = await (await page.request.get('/api/users')).json();
+  const editorId = users.find((user: any) => user.username === 'e2e-editor').id;
+  await page.request.put(`/api/projects/${id}/members`, {
+    headers: { origin: `http://localhost:${process.env.REPELLET_E2E_PORT || 3315}` },
+    data: { userId: editorId, role: 'editor' },
+  });
+  await editor.goto(`/projects/${id}`);
+  await expect(editor.getByRole('button', { name: 'Project settings' })).toBeVisible();
+  await expect(editor.getByRole('button', { name: 'Agent', exact: true })).toHaveCount(0);
+  expect((await editor.request.get(`/api/projects/${id}/agent/status`)).status()).toBe(403);
+  await editorContext.close();
 });

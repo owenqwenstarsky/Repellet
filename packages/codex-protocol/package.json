@@ -1,0 +1,17 @@
+{
+  "name": "@repellet/codex-protocol",
+  "version": "0.160.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./schemas/*": "./schemas/*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "generate": "node ../../scripts/generate-codex-protocol.mjs"
+  }
+}

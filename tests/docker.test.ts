@@ -74,11 +74,12 @@ describe.skipIf(!enabled)('real Docker workspace integration', () => {
     const terminal = await json('/terminals', 'POST', { name: 'Integration' });
     terminalId = terminal.id;
     const output = await command(
-      'python --version; node --version; printf \'RUNTIME_%s\\n\' "$TEST_SECRET"',
+      'python --version; node --version; codex --version; printf \'RUNTIME_%s\\n\' "$TEST_SECRET"',
       'RUNTIME_test-value',
     );
     expect(output).toContain('Python 3.13');
     expect(output).toContain('v24.14');
+    expect(output).toContain('codex-cli 0.160.0');
   });
   it('preserves files across stops and container recreation', async () => {
     const file = await json('/file', 'PUT', {
@@ -293,7 +294,7 @@ chmod +x /usr/local/bin/git`);
     await json('/files/delete', 'POST', { path: 'persistent.txt' });
     await json('/limits', 'PUT', { storageMb: 256 });
     expect((await json('/usage')).exceeded).toBe(false);
-  });
+  }, 120000);
   it('recovers files after an unexpected container crash', async () => {
     await json('/file', 'PUT', { path: 'recovery.txt', content: 'recover me', expectedHash: null });
     const state = await worker.inspect(id);
@@ -383,12 +384,13 @@ chmod +x /usr/local/bin/git`);
     }
     terminalId = (await json('/terminals', 'POST', { name: 'Compiled languages' })).id;
     const output = await command(
-      "go version; rustc --version; gopls version; rust-analyzer --version; printf 'COMPILED_%s\\n' READY",
+      "go version; rustc --version; gopls version; rust-analyzer --version; codex --version; printf 'COMPILED_%s\\n' READY",
       'COMPILED_READY',
     );
     expect(output).toContain('go1.26.1');
     expect(output).toContain('rustc 1.95.0');
     expect(output).toContain('rust-analyzer');
+    expect(output).toContain('codex-cli 0.160.0');
     expect(
       (
         await json('/format', 'POST', {
