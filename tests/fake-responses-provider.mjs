@@ -16,6 +16,9 @@ export async function fakeResponsesProvider() {
       path: request.url,
       model: body.model,
       authorizationPresent: !!request.headers.authorization,
+      agentContextPresent: JSON.stringify([body.instructions, body.input]).includes(
+        'REPELLET_AGENT_CONTEXT_MARKER=repellet-agent-context-v1',
+      ),
       toolNames: (body.tools || []).map((tool) => ({
         type: tool.type,
         name: tool.name,
