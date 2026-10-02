@@ -49,6 +49,7 @@ vi.mock('../apps/worker/src/workspaces.js', () => ({
       ),
       { headers: { 'content-type': 'application/json' } },
     ),
+  locked: async (_id: string, fn: () => unknown) => fn(),
 }));
 let accounts: typeof import('../apps/worker/src/agent/accounts.js');
 let projects: typeof import('../apps/worker/src/agent/projects.js');
