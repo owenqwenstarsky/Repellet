@@ -71,6 +71,11 @@ export async function createStaticServer(directory: string) {
       .some((part) => part.startsWith('.') || ['node_modules', 'vendor', 'target'].includes(part));
   const watcher = chokidar.watch(root, {
     ignoreInitial: true,
+    // Preview roots live in containers and mounted workspaces where the native
+    // fs watcher can exhaust the host's watch descriptors (EMFILE). Polling is
+    // slightly less efficient, but keeps the preview server available and the
+    // reload behavior deterministic across those environments.
+    usePolling: true,
     followSymlinks: false,
     ignored: (filename, stat) => {
       if (stat?.isSymbolicLink() || ignoredPath(filename)) return true;
