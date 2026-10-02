@@ -123,6 +123,35 @@ describe.skipIf(!enabled)('real Codex 0.160.0 in the unprivileged workspace cont
       'edited through bridge',
     );
   }, 60000);
+  it('preserves live message and tool order when loading history after process replacement', async () => {
+    const orderedThread = (await rpc('thread/start')).thread.id;
+    await rpc('turn/start', {
+      threadId: orderedThread,
+      input: [{ type: 'text', text: 'create agent file with ordered commentary' }],
+    });
+    await vi.waitFor(() => expect(projects.agentActivity(id).active).toBe(false), {
+      timeout: 30000,
+    });
+    const live = (await projects.agentStatus(id, userId)).items
+      .filter((entry) => entry.threadId === orderedThread)
+      .map((entry) => entry.item)
+      .filter((item) => ['userMessage', 'agentMessage', 'commandExecution'].includes(item.type));
+    expect(live.map((item) => item.type)).toEqual([
+      'userMessage',
+      'agentMessage',
+      'commandExecution',
+      'agentMessage',
+    ]);
+    const read = async () =>
+      (await rpc('thread/read', { threadId: orderedThread, includeTurns: true })).thread.turns[0]
+        .items;
+    expect((await read()).map((item: any) => item.type)).toEqual(live.map((item) => item.type));
+    await projects.stopAgent(id);
+    const saved = await read();
+    expect(saved.map((item: any) => item.type)).toEqual(live.map((item) => item.type));
+    expect(saved[1].text).toBe('Checking the project.');
+    expect(saved[3].text).toBe('Ordered final answer.');
+  }, 60000);
   it('streams built-in patch diffs and recovers them from Codex history', async () => {
     const patchThread = (await rpc('thread/start')).thread.id;
     await rpc('turn/start', {

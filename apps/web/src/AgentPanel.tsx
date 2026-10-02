@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
 import { Plus, Settings2, Square } from 'lucide-react';
 import {
   projectAgentEvent,
-  safeRelativePath,
   type AgentSettings as Settings,
   type AgentSnapshot,
   type AgentEvent,
   type AgentMethod,
   type AgentQuestion,
 } from '@repellet/shared';
-import type { Thread, ThreadItem, Model } from '@repellet/codex-protocol';
+import type { Thread, Model } from '@repellet/codex-protocol';
 import { api, post, wsUrl, errorMessage } from './api';
 import { AgentSettings } from './AgentSettings';
+import { agentTranscript } from './agentTranscript';
+import { AgentTranscriptItems } from './AgentItems';
+export { AgentItem, AgentTranscriptItems } from './AgentItems';
 import { flushOpenDocuments } from './documentSaves';
 import { Button, IconButton, Banner, Spinner, useUi } from './ui';
 export function AgentPanel({
@@ -221,37 +222,7 @@ export function AgentPanel({
   const active = snapshot?.active;
   const activeHere = active?.threadId === selectedThread;
   const unavailable = busy || !connected || !snapshot?.connected;
-  const items = new Map<string, ThreadItem>();
-  const storedMessages = new Map<string, Set<string>>();
-  function messageKey(item: ThreadItem) {
-    if (item.type === 'agentMessage') return 'agent:' + item.text;
-    if (item.type === 'userMessage')
-      return (
-        'user:' +
-        item.content
-          .filter((content) => content.type === 'text')
-          .map((content) => content.text)
-          .join('\n')
-      );
-    return null;
-  }
-  if (history?.id === selectedThread)
-    for (const turn of history.turns) {
-      const messages = new Set<string>();
-      storedMessages.set(turn.id, messages);
-      for (const item of turn.items) {
-        items.set(turn.id + ':' + item.id, item);
-        const key = messageKey(item);
-        if (key !== null) messages.add(key);
-      }
-    }
-  for (const entry of snapshot?.items || [])
-    if (entry.threadId === selectedThread) {
-      const key = messageKey(entry.item);
-      // Legacy Codex assigns synthetic history message IDs, unlike its live IDs.
-      if (key !== null && storedMessages.get(entry.turnId)?.has(key)) continue;
-      items.set(entry.turnId + ':' + entry.item.id, entry.item);
-    }
+  const items = agentTranscript(selectedThread, history, snapshot?.items || []);
   return (
     <div className="agent-panel">
       <div className="agent-toolbar">
@@ -378,9 +349,7 @@ export function AgentPanel({
             for you.
           </p>
         )}
-        {[...items].map(([key, item]) => (
-          <AgentItem key={key} item={item} onOpenFile={onOpenFile} />
-        ))}
+        <AgentTranscriptItems items={items} onOpenFile={onOpenFile} />
         {snapshot?.pending
           .filter(
             (question) => (question.displayThreadId || question.params.threadId) === selectedThread,
@@ -523,93 +492,6 @@ export function AgentPanel({
         />
       )}
     </div>
-  );
-}
-export function AgentItem({
-  item,
-  onOpenFile,
-}: {
-  item: ThreadItem;
-  onOpenFile: (path: string) => void;
-}) {
-  if (item.type === 'agentMessage' || item.type === 'plan')
-    return (
-      <article className={`agent-item ${item.type}`}>
-        <ReactMarkdown
-          skipHtml
-          components={{
-            img: () => null,
-            a: ({ href, children }) => (
-              <a href={href} target="_blank" rel="noopener noreferrer">
-                {children}
-              </a>
-            ),
-          }}
-        >
-          {item.text}
-        </ReactMarkdown>
-      </article>
-    );
-  if (item.type === 'userMessage')
-    return (
-      <article className="agent-item userMessage">
-        {item.content.map((content, index) =>
-          content.type === 'text' ? <p key={index}>{content.text}</p> : null,
-        )}
-      </article>
-    );
-  if (item.type === 'commandExecution')
-    return (
-      <details className="agent-activity">
-        <summary>
-          <code>{item.command}</code> · {item.status}
-        </summary>
-        <pre>{item.aggregatedOutput || 'Waiting for output…'}</pre>
-        {item.exitCode !== null && <small>Exit code {item.exitCode}</small>}
-      </details>
-    );
-  if (item.type === 'fileChange')
-    return (
-      <details className="agent-activity" open>
-        <summary>File changes · {item.status}</summary>
-        {item.changes.map((change, index) => {
-          let path: string | null = null;
-          try {
-            path = safeRelativePath(
-              change.path.startsWith('/workspace/') ? change.path.slice(11) : change.path,
-            );
-          } catch {}
-          return (
-            <div key={index}>
-              {path ? (
-                <Button variant="link" onClick={() => onOpenFile(path!)}>
-                  {path}
-                </Button>
-              ) : (
-                <span>{change.path}</span>
-              )}
-              <pre className="agent-diff">{change.diff}</pre>
-            </div>
-          );
-        })}
-      </details>
-    );
-  if (item.type === 'reasoning')
-    return (
-      <details className="agent-activity">
-        <summary>Reasoning</summary>
-        {item.summary.map((text, index) => (
-          <ReactMarkdown key={index} skipHtml>
-            {text}
-          </ReactMarkdown>
-        ))}
-      </details>
-    );
-  return (
-    <details className="agent-activity">
-      <summary>{item.type}</summary>
-      <pre>{JSON.stringify(item, null, 2)}</pre>
-    </details>
   );
 }
 function Question({

@@ -35,7 +35,10 @@ export async function fakeResponsesProvider() {
     );
     const writeFile = input.includes('create agent file');
     const patchFile = input.includes('apply agent patch');
-    const content = 'Codex is connected to Repellet. Your conversation is saved.';
+    const ordered = input.includes('ordered commentary');
+    const content = ordered
+      ? 'Ordered final answer.'
+      : 'Codex is connected to Repellet. Your conversation is saved.';
     const output =
       patchFile && (patchTool || command) && !hasOutput
         ? {
@@ -91,13 +94,27 @@ export async function fakeResponsesProvider() {
               status: 'completed',
               content: [{ type: 'output_text', text: content, annotations: [] }],
             };
+    const outputItems =
+      ordered && output.type !== 'message'
+        ? [
+            {
+              type: 'message',
+              id: 'msg_' + randomUUID(),
+              role: 'assistant',
+              phase: 'commentary',
+              status: 'completed',
+              content: [{ type: 'output_text', text: 'Checking the project.', annotations: [] }],
+            },
+            output,
+          ]
+        : [output];
     const result = {
       id: 'resp_' + randomUUID(),
       object: 'response',
       created_at: Math.floor(Date.now() / 1000),
       status: 'completed',
       model: body.model,
-      output: [output],
+      output: outputItems,
       usage: {
         input_tokens: 10,
         output_tokens: 10,
@@ -110,66 +127,69 @@ export async function fakeResponsesProvider() {
     const send = (type, data) =>
       response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
     send('response.created', { response: { ...result, status: 'in_progress', output: [] } });
-    send('response.output_item.added', {
-      output_index: 0,
-      item:
-        output.type === 'message'
-          ? { ...output, status: 'in_progress', content: [] }
-          : output.type === 'custom_tool_call'
-            ? { ...output, input: '' }
-            : { ...output, arguments: '' },
-    });
-    if (output.type === 'message') {
-      send('response.content_part.added', {
-        item_id: output.id,
-        output_index: 0,
-        content_index: 0,
-        part: { type: 'output_text', text: '', annotations: [] },
+    for (const [outputIndex, output] of outputItems.entries()) {
+      const content = output.type === 'message' ? output.content[0].text : '';
+      send('response.output_item.added', {
+        output_index: outputIndex,
+        item:
+          output.type === 'message'
+            ? { ...output, status: 'in_progress', content: [] }
+            : output.type === 'custom_tool_call'
+              ? { ...output, input: '' }
+              : { ...output, arguments: '' },
       });
-      send('response.output_text.delta', {
-        item_id: output.id,
-        output_index: 0,
-        content_index: 0,
-        delta: content,
-      });
-      send('response.output_text.done', {
-        item_id: output.id,
-        output_index: 0,
-        content_index: 0,
-        text: content,
-      });
-      send('response.content_part.done', {
-        item_id: output.id,
-        output_index: 0,
-        content_index: 0,
-        part: output.content[0],
-      });
-    } else if (output.type === 'custom_tool_call') {
-      send('response.custom_tool_call_input.delta', {
-        item_id: output.id,
-        output_index: 0,
-        delta: output.input,
-      });
-      send('response.custom_tool_call_input.done', {
-        item_id: output.id,
-        output_index: 0,
-        input: output.input,
-      });
-    } else {
-      send('response.function_call_arguments.delta', {
-        item_id: output.id,
-        output_index: 0,
-        delta: output.arguments,
-      });
-      send('response.function_call_arguments.done', {
-        item_id: output.id,
-        output_index: 0,
-        arguments: output.arguments,
-      });
+      if (output.type === 'message') {
+        send('response.content_part.added', {
+          item_id: output.id,
+          output_index: outputIndex,
+          content_index: 0,
+          part: { type: 'output_text', text: '', annotations: [] },
+        });
+        send('response.output_text.delta', {
+          item_id: output.id,
+          output_index: outputIndex,
+          content_index: 0,
+          delta: content,
+        });
+        send('response.output_text.done', {
+          item_id: output.id,
+          output_index: outputIndex,
+          content_index: 0,
+          text: content,
+        });
+        send('response.content_part.done', {
+          item_id: output.id,
+          output_index: outputIndex,
+          content_index: 0,
+          part: output.content[0],
+        });
+      } else if (output.type === 'custom_tool_call') {
+        send('response.custom_tool_call_input.delta', {
+          item_id: output.id,
+          output_index: outputIndex,
+          delta: output.input,
+        });
+        send('response.custom_tool_call_input.done', {
+          item_id: output.id,
+          output_index: outputIndex,
+          input: output.input,
+        });
+      } else {
+        send('response.function_call_arguments.delta', {
+          item_id: output.id,
+          output_index: outputIndex,
+          delta: output.arguments,
+        });
+        send('response.function_call_arguments.done', {
+          item_id: output.id,
+          output_index: outputIndex,
+          arguments: output.arguments,
+        });
+      }
+      if (input.includes('hold for steering'))
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      send('response.output_item.done', { output_index: outputIndex, item: output });
     }
-    if (input.includes('hold for steering'))
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-    send('response.output_item.done', { output_index: 0, item: output });
     send('response.completed', { response: result });
     response.end();
   });

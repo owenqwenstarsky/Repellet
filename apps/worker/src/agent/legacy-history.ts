@@ -17,9 +17,15 @@ export async function hydrateLegacyTools(connection: CodexConnection, thread: Th
 }
 
 export function projectLegacyTools(thread: Thread, contents: string): Thread {
-  const calls = new Map<string, { turnId: string; name: string; args: string; output?: string }>();
+  const calls = new Map<
+    string,
+    { turnId: string; name: string; args: string; position: number; output?: string }
+  >();
+  const positions = new Map<string, Map<string, number>>();
   let turnId = '';
+  let position = 0;
   for (const line of contents.split('\n')) {
+    position++;
     if (!line.trim()) continue;
     let record;
     try {
@@ -35,13 +41,44 @@ export function projectLegacyTools(thread: Thread, contents: string): Thread {
       typeof item.turn_id === 'string'
     )
       turnId = item.turn_id;
+    if (record.type === 'event_msg' && turnId) {
+      // Match occurrences to the messages returned by Codex, which gives legacy
+      // messages synthetic IDs. Only use events as ordering anchors, never as
+      // another source of transcript content (including model instructions).
+      const type =
+        item.type === 'agent_message'
+          ? 'agentMessage'
+          : item.type === 'user_message'
+            ? 'userMessage'
+            : null;
+      const turn = thread.turns.find((turn) => turn.id === turnId);
+      if (type && turn && typeof item.message === 'string') {
+        const order = positions.get(turnId) || new Map<string, number>();
+        positions.set(turnId, order);
+        const message = turn.items.find(
+          (entry) =>
+            !order.has(entry.id) &&
+            entry.type === type &&
+            (entry.type === 'agentMessage'
+              ? entry.text
+              : entry.type === 'userMessage'
+                ? entry.content
+                    .filter((content) => content.type === 'text')
+                    .map((content) => content.text)
+                    .join('\n')
+                : null) === item.message,
+        );
+        if (message) order.set(message.id, position);
+      }
+    }
     if (record.type !== 'response_item' || !turnId || typeof item.call_id !== 'string') continue;
     if (
       ['function_call', 'custom_tool_call'].includes(item.type) &&
       typeof item.name === 'string'
     ) {
       const args = item.arguments ?? item.input;
-      if (typeof args === 'string') calls.set(item.call_id, { turnId, name: item.name, args });
+      if (typeof args === 'string' && !calls.has(item.call_id))
+        calls.set(item.call_id, { turnId, name: item.name, args, position });
     }
     if (['function_call_output', 'custom_tool_call_output'].includes(item.type)) {
       const call = calls.get(item.call_id);
@@ -56,19 +93,24 @@ export function projectLegacyTools(thread: Thread, contents: string): Thread {
       const existing = new Set(turn.items.map((item) => item.id));
       for (const [id, call] of calls) {
         if (call.turnId !== turn.id || existing.has(id)) continue;
-        let args: any = {};
+        let args: any;
         try {
           args = JSON.parse(call.args);
-        } catch {}
-        const command = args.cmd ?? args.command;
+        } catch {
+          // Custom tools such as exec accept source code rather than JSON.
+          // Preserve that input so saved activity can display the original script.
+          args = call.args;
+        }
+        const fields = args && typeof args === 'object' ? args : {};
+        const command = fields.cmd ?? fields.command;
         // Unknown custom models invoke Codex's patch tool through unified exec.
         // Only recognize the direct apply_patch heredoc form, never arbitrary output.
         const patch =
           call.name === 'apply_patch'
-            ? typeof args.patch === 'string'
-              ? args.patch
-              : typeof args.input === 'string'
-                ? args.input
+            ? typeof fields.patch === 'string'
+              ? fields.patch
+              : typeof fields.input === 'string'
+                ? fields.input
                 : call.args
             : typeof command === 'string' && /^\s*apply_patch\s+<</.test(command)
               ? (command.match(/\*\*\* Begin Patch[\s\S]*?\*\*\* End Patch/)?.[0] ?? null)
@@ -106,7 +148,7 @@ export function projectLegacyTools(thread: Thread, contents: string): Thread {
             type: 'commandExecution',
             id,
             command: Array.isArray(command) ? command.join(' ') : command,
-            cwd: typeof args.workdir === 'string' ? args.workdir : thread.cwd,
+            cwd: typeof fields.workdir === 'string' ? fields.workdir : thread.cwd,
             pluginId: null,
             scriptPath: null,
             processId: null,
@@ -139,9 +181,27 @@ export function projectLegacyTools(thread: Thread, contents: string): Thread {
       }
       // Messages are supplied by Codex's supported thread API. Never project instructions,
       // credentials, encrypted reasoning, or model context from the rollout.
+      const order = positions.get(turn.id) || new Map<string, number>();
+      for (const [id, call] of calls) if (call.turnId === turn.id) order.set(id, call.position);
       const firstAgent = turn.items.findIndex((item) => item.type === 'agentMessage');
       const at = firstAgent === -1 ? turn.items.length : firstAgent;
-      return { ...turn, items: [...turn.items.slice(0, at), ...tools, ...turn.items.slice(at)] };
+      const ranked = turn.items.map((item, index) => {
+        let rank = order.get(item.id);
+        if (rank === undefined) {
+          // Keep API-only items in their original relative order, before their
+          // next saved anchor. An incomplete rollout may not have their event yet.
+          const next = turn.items.slice(index + 1).find((entry) => order.has(entry.id));
+          rank = next
+            ? order.get(next.id)! - (turn.items.length - index) / (turn.items.length + 1)
+            : index < at && !turn.items.some((entry) => order.has(entry.id))
+              ? -1 + index / (turn.items.length + 1)
+              : position + index;
+        }
+        return { item, rank };
+      });
+      for (const item of tools) ranked.push({ item, rank: order.get(item.id)! });
+      ranked.sort((a, b) => a.rank - b.rank);
+      return { ...turn, items: ranked.map(({ item }) => item) };
     }),
   };
 }

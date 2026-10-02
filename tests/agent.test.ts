@@ -430,6 +430,47 @@ it('recovers tools from Codex rollouts without exposing model context or other t
   expect(JSON.stringify(result)).not.toMatch(/private instructions|other-command/);
 });
 
+it('preserves custom-tool source code and nested output when recovering saved activity', () => {
+  const script = 'const result = await tools.exec_command({cmd: "pwd"});\ntext(result);';
+  const output = [
+    { type: 'input_text', text: 'Script completed\nOutput:\n' },
+    { type: 'input_text', text: JSON.stringify({ exit_code: 0, output: '/workspace\n' }) },
+  ];
+  const thread = {
+    cwd: '/workspace',
+    turns: [{ id: 'turn', status: 'completed', items: [] }],
+  } as unknown as Thread;
+  const lines = [
+    { type: 'turn_context', payload: { turn_id: 'turn' } },
+    {
+      type: 'response_item',
+      payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-call', input: script },
+    },
+    {
+      type: 'response_item',
+      payload: { type: 'custom_tool_call_output', call_id: 'exec-call', output },
+    },
+    {
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        name: 'other_tool',
+        call_id: 'other-call',
+        arguments: 'null',
+      },
+    },
+  ];
+  const result = projectLegacyTools(thread, lines.map((line) => JSON.stringify(line)).join('\n'));
+  expect(result.turns[0]!.items[0]).toMatchObject({
+    type: 'dynamicToolCall',
+    tool: 'exec',
+    arguments: script,
+    status: 'completed',
+    contentItems: [{ type: 'inputText', text: JSON.stringify(output) }],
+  });
+  expect(result.turns[0]!.items[1]).toMatchObject({ arguments: null });
+});
+
 it('refuses history paths outside the private Codex rollout directories', async () => {
   const connection = { call: vi.fn() } as unknown as CodexConnection;
   const thread = { path: '/workspace/stolen.jsonl', historyMode: 'legacy', turns: [{}] } as Thread;
@@ -437,4 +478,74 @@ it('refuses history paths outside the private Codex rollout directories', async 
     'incompatible history location',
   );
   expect(connection.call).not.toHaveBeenCalled();
+});
+
+it('interleaves recovered tools with saved messages in rollout order, including repeated messages and steering', () => {
+  const message = (id: string, text: string) => ({ type: 'agentMessage', id, text });
+  const user = (id: string, text: string) => ({
+    type: 'userMessage',
+    id,
+    content: [{ type: 'text', text }],
+  });
+  const thread = {
+    cwd: '/workspace',
+    turns: [
+      {
+        id: 'turn',
+        status: 'completed',
+        items: [
+          user('user', 'Start'),
+          message('comment-one', 'Checking'),
+          message('comment-two', 'Checking'),
+          user('steer', 'Also check this'),
+          message('final', 'Done'),
+        ],
+      },
+    ],
+  } as unknown as Thread;
+  const event = (type: string, message: string) => ({
+    type: 'event_msg',
+    payload: { type, message },
+  });
+  const call = (id: string) => ({
+    type: 'response_item',
+    payload: {
+      type: 'function_call',
+      name: 'exec_command',
+      call_id: id,
+      arguments: '{"cmd":"echo hello"}',
+    },
+  });
+  const lines = [
+    { type: 'turn_context', payload: { turn_id: 'turn' } },
+    // A model-context message must never be used to reorder or add transcript text.
+    { type: 'response_item', payload: { type: 'message', role: 'developer', content: [] } },
+    event('user_message', 'Start'),
+    event('agent_message', 'Checking'),
+    call('first-command'),
+    event('agent_message', 'Checking'),
+    event('user_message', 'Also check this'),
+    call('second-command'),
+    event('agent_message', 'Done'),
+    // A parallel tool's late output does not move its original call position.
+    {
+      type: 'response_item',
+      payload: { type: 'function_call_output', call_id: 'first-command', output: 'hello' },
+    },
+  ];
+  const result = projectLegacyTools(thread, lines.map((line) => JSON.stringify(line)).join('\n'));
+  expect(result.turns[0]!.items.map((item) => item.id)).toEqual([
+    'user',
+    'comment-one',
+    'first-command',
+    'comment-two',
+    'steer',
+    'second-command',
+    'final',
+  ]);
+  expect(result.turns[0]!.items[2]).toMatchObject({ aggregatedOutput: 'hello' });
+  // Rehydrating a thread that already has the tools must neither move nor duplicate them.
+  expect(projectLegacyTools(result, lines.map((line) => JSON.stringify(line)).join('\n'))).toEqual(
+    result,
+  );
 });

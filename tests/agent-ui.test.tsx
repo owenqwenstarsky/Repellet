@@ -4,6 +4,9 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { useState } from 'react';
 import { randomUUID } from 'node:crypto';
 import { AgentPanel, AgentItem } from '../apps/web/src/AgentPanel';
+import { agentTranscript } from '../apps/web/src/agentTranscript';
+import { groupAgentTools } from '../apps/web/src/agentTranscript';
+import type { Thread, ThreadItem } from '@repellet/codex-protocol';
 import { AgentSettings } from '../apps/web/src/AgentSettings';
 import { ActivityBar } from '../apps/web/src/workspace/ActivityBar';
 import { UiProvider } from '../apps/web/src/ui';
@@ -162,6 +165,135 @@ it('retains each turn and reconciles synthetic history IDs with live message IDs
   await screen.findByText('Earlier answer');
   await waitFor(() => expect(screen.getAllByText('Latest answer')).toHaveLength(1));
 });
+it('keeps cached live-only activity within its original turn and matches repeated message occurrences', () => {
+  const message = (id: string, text: string) => ({ type: 'agentMessage', id, text }) as ThreadItem;
+  const saved = {
+    ...thread,
+    turns: [
+      {
+        id: 'older',
+        items: [message('saved-1', 'Checking'), message('saved-2', 'Checking')],
+      },
+      { id: 'newer', items: [message('saved-1', 'Latest answer')] },
+    ],
+  } as Thread;
+  const live = [
+    { threadId: 'thread', turnId: 'older', item: message('live-1', 'Checking') },
+    {
+      threadId: 'thread',
+      turnId: 'older',
+      item: { type: 'plan', id: 'plan', text: 'Intermediate plan' } as ThreadItem,
+    },
+    { threadId: 'thread', turnId: 'older', item: message('live-2', 'Checking') },
+    { threadId: 'another-thread', turnId: 'older', item: message('foreign', 'Private') },
+    { threadId: 'thread', turnId: 'newer', item: message('live-3', 'Latest answer') },
+    { threadId: 'thread', turnId: 'newest', item: message('live-4', 'Still streaming') },
+  ];
+  const result = agentTranscript('thread', saved, live);
+  expect(result.map(({ key }) => key)).toEqual([
+    'older:saved-1',
+    'older:plan',
+    'older:saved-2',
+    'newer:saved-1',
+    'newest:live-4',
+  ]);
+  expect(result.map(({ item }) => (item as any).text)).toEqual([
+    'Checking',
+    'Intermediate plan',
+    'Checking',
+    'Latest answer',
+    'Still streaming',
+  ]);
+  // A bounded snapshot with no common anchors still follows saved history.
+  expect(agentTranscript('thread', saved, [live[1]!]).at(2)!.key).toBe('older:plan');
+});
+
+it('collapses only runs of more than three tools while preserving every tool entry', () => {
+  const tool = (id: string): ThreadItem => ({
+    type: 'dynamicToolCall',
+    id,
+    namespace: null,
+    tool: 'exec',
+    arguments: {},
+    status: 'completed',
+    contentItems: null,
+    success: null,
+    durationMs: null,
+  });
+  const message = { type: 'agentMessage', id: 'message', text: 'Between runs' } as ThreadItem;
+  const entries = [
+    { key: 'one', turnId: 'turn', item: tool('one') },
+    { key: 'two', turnId: 'turn', item: tool('two') },
+    { key: 'three', turnId: 'turn', item: tool('three') },
+    { key: 'message', turnId: 'turn', item: message },
+    { key: 'four', turnId: 'turn', item: tool('four') },
+    { key: 'five', turnId: 'turn', item: tool('five') },
+    { key: 'six', turnId: 'turn', item: tool('six') },
+    { key: 'seven', turnId: 'turn', item: tool('seven') },
+  ];
+  const groups = groupAgentTools(entries);
+  expect(groups.map((group) => group.type)).toEqual(['item', 'item', 'item', 'item', 'tools']);
+  expect(groups.at(-1)).toMatchObject({ entries: entries.slice(4) });
+  expect(
+    groups.flatMap((group) => (group.type === 'tools' ? group.entries : [group.entry])),
+  ).toEqual(entries);
+});
+
+it('preserves interleaved transcript order when switching away from a thread and reopening it', async () => {
+  const original = vi.mocked(post).getMockImplementation()!;
+  const saved = {
+    ...thread,
+    turns: [
+      {
+        id: 'turn',
+        items: [
+          { type: 'agentMessage', id: 'saved-comment', text: 'Checking files' },
+          { type: 'commandExecution', id: 'command', command: 'echo checked', status: 'completed' },
+          { type: 'agentMessage', id: 'saved-final', text: 'All done' },
+        ],
+      },
+    ],
+  };
+  vi.mocked(post).mockImplementation(async (path, body: any) => {
+    if (body?.method === 'thread/list')
+      return { data: [thread, { ...thread, id: 'other', name: 'Other conversation' }] };
+    if (body?.method === 'thread/read')
+      return { thread: body.params.threadId === 'thread' ? saved : { ...thread, id: 'other' } };
+    return original(path, body);
+  });
+  snapshot.items = [
+    {
+      threadId: 'thread',
+      turnId: 'turn',
+      item: { type: 'agentMessage', id: 'live-comment', text: 'Checking files' } as ThreadItem,
+    },
+    {
+      threadId: 'thread',
+      turnId: 'turn',
+      item: { type: 'plan', id: 'plan', text: 'Check output' } as ThreadItem,
+    },
+    { threadId: 'thread', turnId: 'turn', item: saved.turns[0]!.items[1] as ThreadItem },
+    {
+      threadId: 'thread',
+      turnId: 'turn',
+      item: { type: 'agentMessage', id: 'live-final', text: 'All done' } as ThreadItem,
+    },
+  ];
+  await mountPanel();
+  const order = () => [...screen.getByRole('log').children].map((item) => item.textContent);
+  await waitFor(() => expect(order()).toHaveLength(4));
+  const before = order();
+  expect(before[0]).toContain('Checking files');
+  expect(before[1]).toContain('Check output');
+  expect(before[2]).toContain('echo checked');
+  expect(before[3]).toContain('All done');
+  fireEvent.change(screen.getByLabelText('Agent thread'), { target: { value: 'other' } });
+  await waitFor(() => expect(screen.queryByText('All done')).toBeNull());
+  fireEvent.change(screen.getByLabelText('Agent thread'), { target: { value: 'thread' } });
+  await waitFor(() => expect(order()).toEqual(before));
+  expect(screen.getAllByText('All done')).toHaveLength(1);
+});
+
 it('flushes browser saves before sending and steers an active turn instead of starting another', async () => {
   await mountPanel();
   fireEvent.change(screen.getByLabelText('Message Codex'), { target: { value: 'Hello' } });
@@ -297,6 +429,91 @@ it('renders file diffs linked to the editor and strips unsafe Markdown HTML', ()
   expect(view.container.querySelector('script')).toBeNull();
   expect(view.container.querySelector('a')?.getAttribute('href') || '').not.toMatch(/^javascript:/);
 });
+it('renders custom exec scripts and nested command results as readable tool activity', () => {
+  const script = 'text(await tools.exec_command({cmd: "pwd"}));';
+  const item: ThreadItem = {
+    type: 'dynamicToolCall',
+    id: 'exec',
+    namespace: null,
+    tool: 'exec',
+    arguments: script,
+    status: 'completed',
+    contentItems: [
+      {
+        type: 'inputText',
+        text: JSON.stringify([
+          { type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' },
+          {
+            type: 'input_text',
+            text: JSON.stringify({
+              chunk_id: '75747e',
+              exit_code: 0,
+              output: '/workspace\nREADME.md\nsrc/App.tsx\n',
+            }),
+          },
+        ]),
+      },
+    ],
+    success: null,
+    durationMs: null,
+  };
+  const view = render(<AgentItem item={item} onOpenFile={vi.fn()} />);
+  expect(view.container.querySelector('summary')!.textContent).toBe('exec · completed');
+  expect(screen.getByLabelText('Tool input').textContent).toBe(script);
+  const output = screen.getByLabelText('Tool output').textContent!;
+  expect(output).toContain('Script completed\nWall time 0.1 seconds\nOutput:\n');
+  expect(output).toContain('/workspace\nREADME.md\nsrc/App.tsx\n');
+  expect(output).toContain('Exit code 0');
+  expect(output).not.toMatch(/chunk_id|input_text|dynamicToolCall|\\n/);
+  // Existing saved entries that lost their script still show useful output.
+  view.rerender(<AgentItem item={{ ...item, arguments: {} }} onOpenFile={vi.fn()} />);
+  expect(screen.queryByLabelText('Tool input')).toBeNull();
+  expect(screen.getByLabelText('Tool output').textContent).toBe(output);
+});
+
+it('keeps unfamiliar tool output intact, escapes HTML, and shows pending and failed states', () => {
+  const item: ThreadItem = {
+    type: 'dynamicToolCall',
+    id: 'tool',
+    namespace: 'custom',
+    tool: 'lookup',
+    arguments: { query: 'example' },
+    status: 'inProgress',
+    contentItems: null,
+    success: null,
+    durationMs: null,
+  };
+  const view = render(<AgentItem item={item} onOpenFile={vi.fn()} />);
+  expect(view.container.querySelector('summary')!.textContent).toBe('custom.lookup · inProgress');
+  expect(screen.getByLabelText('Tool output').textContent).toBe('Waiting for output…');
+  const text = '[{"type":"unknown","value":"<script>alert(1)</script>"}]';
+  view.rerender(
+    <AgentItem
+      item={{
+        ...item,
+        status: 'failed',
+        success: false,
+        contentItems: [{ type: 'inputText', text }],
+      }}
+      onOpenFile={vi.fn()}
+    />,
+  );
+  expect(screen.getByLabelText('Tool output').textContent).toBe(text);
+  expect(view.container.querySelector('script')).toBeNull();
+  expect(screen.getByText('Tool reported a failure.')).not.toBeNull();
+  view.rerender(
+    <AgentItem
+      item={{
+        ...item,
+        status: 'completed',
+        contentItems: [{ type: 'inputText', text: '{partial' }],
+      }}
+      onOpenFile={vi.fn()}
+    />,
+  );
+  expect(screen.getByLabelText('Tool output').textContent).toBe('{partial');
+});
+
 it('retains stored provider keys without disclosing them in the settings form', async () => {
   vi.mocked(api).mockImplementation(async (path) =>
     path === '/agent/settings'

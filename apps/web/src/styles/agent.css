@@ -113,6 +113,83 @@
 .agent-diff {
   font-family: var(--font-mono);
 }
+.agent-tool-run {
+  margin: 12px 0 18px;
+}
+.agent-tool-run > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  list-style: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+.agent-tool-run > summary::-webkit-details-marker {
+  display: none;
+}
+.agent-tool-run > summary:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+.agent-tool-run > summary:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.agent-tool-run-chevron {
+  flex-shrink: 0;
+  transition: transform 140ms ease;
+}
+.agent-tool-run[open] .agent-tool-run-chevron {
+  transform: rotate(90deg);
+}
+.agent-tool-run-count {
+  flex-shrink: 0;
+  font-weight: var(--weight-medium);
+  color: var(--color-text-secondary);
+}
+.agent-tool-run-labels {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.agent-tool-run-failed,
+.agent-tool-run-running {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.agent-tool-run-failed,
+.agent-tool-error {
+  color: var(--color-danger);
+}
+.agent-tool-run-running {
+  color: var(--color-accent);
+}
+.agent-tool-run-content {
+  margin: 2px 0 0 12px;
+  padding-left: 14px;
+  border-left: 1px solid var(--color-border);
+}
+.agent-tool-run-content > .agent-activity {
+  border-left: 0;
+  padding-left: 0;
+}
+.agent-generated-image {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  margin-top: 10px;
+  object-fit: contain;
+}
 .agent-status {
   font-size: 12px;
   border-top: 1px solid var(--color-border);
