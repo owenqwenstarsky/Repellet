@@ -252,6 +252,7 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
 });
 
 for (const starter of [
+  { id: 'static-html', file: 'index.html', changed: 'Static edit is live' },
   { id: 'react-vite', file: 'src/App.tsx', changed: 'React edit is live' },
   { id: 'python-fastapi', file: 'main.py', changed: 'FastAPI edit is live' },
 ]) {
@@ -356,6 +357,151 @@ for (const starter of [
         (j: any) => j.kind === 'prepare' && j.state === 'succeeded',
       ),
     ).toHaveLength(1);
+    if (starter.id === 'static-html') {
+      const origin = { origin: 'http://localhost:3315' };
+      const preview = await page.getByLabel('Preview URL').inputValue();
+      const standalone = await page.context().newPage();
+      await standalone.goto(preview);
+      await standalone.getByRole('button', { name: 'Clicked 0 times' }).click();
+      await expect(
+        standalone.getByRole('button', { name: 'Clicked 1 time', exact: true }),
+      ).toBeVisible();
+      const anonymous = await page.context().browser()!.newContext();
+      expect((await anonymous.request.get(preview)).status()).toBe(403);
+      await anonymous.close();
+
+      const viewerResult = await page.request.post('/api/admin/users', {
+        headers: origin,
+        data: {
+          username: 'static-viewer',
+          displayName: 'Static Viewer',
+          password: 'repellet-e2e-password-123',
+        },
+      });
+      expect(viewerResult.ok()).toBe(true);
+      const viewer = await viewerResult.json();
+      expect(
+        (
+          await page.request.put(`/api/projects/${id}/members`, {
+            headers: origin,
+            data: { userId: viewer.id, role: 'viewer' },
+          })
+        ).ok(),
+      ).toBe(true);
+      const context = await page.context().browser()!.newContext();
+      await context.request.post('/api/auth/login', {
+        headers: origin,
+        data: { username: 'static-viewer', password: 'repellet-e2e-password-123' },
+      });
+      expect((await context.request.get(preview)).status()).toBe(200);
+      const cookie = (await context.cookies()).map((c) => `${c.name}=${c.value}`).join('; ');
+      const reload = new WebSocket(preview.replace(/^http/, 'ws') + '/__repellet_static__/reload', {
+        headers: { origin: new URL(preview).origin, cookie },
+      });
+      await new Promise<void>((resolve, reject) => {
+        reload.once('open', resolve);
+        reload.once('error', reject);
+      });
+      const reloadMessage = new Promise<string>((resolve) =>
+        reload.once('message', (data) => resolve(String(data))),
+      );
+      const update = async (filename: string, addition: string) => {
+        const file = await (
+          await page.request.get(`/api/projects/${id}/file?path=${filename}`)
+        ).json();
+        await page.locator('.file-row').filter({ hasText: filename }).click();
+        await expect(page.locator('.editor-tab.active')).toContainText(filename);
+        await expect(
+          page.locator('.retained-editor:visible .connection-indicator.connected'),
+        ).toBeVisible();
+        await page.locator('.retained-editor:visible .monaco-editor textarea').first().focus();
+        await page.keyboard.press('ControlOrMeta+A');
+        await page.evaluate(
+          (content) => navigator.clipboard.writeText(content),
+          file.content + addition,
+        );
+        await page.keyboard.press('ControlOrMeta+V');
+        await expect
+          .poll(
+            async () =>
+              (await (await page.request.get(`/api/projects/${id}/file?path=${filename}`)).json())
+                .content,
+          )
+          .toBe(file.content + addition);
+      };
+      await update('style.css', '\nh1 { color: rgb(19, 45, 67); }\n');
+      expect(await reloadMessage).toBe('reload');
+      await expect(
+        page.frameLocator('iframe[title="Project preview"]').getByRole('heading'),
+      ).toHaveCSS('color', 'rgb(19, 45, 67)');
+      await expect(standalone.getByRole('heading')).toHaveCSS('color', 'rgb(19, 45, 67)');
+      await update(
+        'script.js',
+        "\ndocument.querySelector('#counter').textContent = 'JavaScript edit is live';\n",
+      );
+      await expect(
+        page
+          .frameLocator('iframe[title="Project preview"]')
+          .getByRole('button', { name: 'JavaScript edit is live' }),
+      ).toBeVisible();
+      await expect(
+        standalone.getByRole('button', { name: 'JavaScript edit is live' }),
+      ).toBeVisible();
+      const closed = new Promise<void>((resolve) => reload.once('close', () => resolve()));
+      expect(
+        (
+          await page.request.delete(`/api/projects/${id}/members/${viewer.id}`, { headers: origin })
+        ).ok(),
+      ).toBe(true);
+      await closed;
+      expect((await context.request.get(preview)).status()).toBe(403);
+      await context.close();
+
+      // The open standalone preview must reconnect when the app process is replaced.
+      const beforeRestart = await standalone.evaluate(() => performance.timeOrigin);
+      expect(
+        (await page.request.post(`/api/projects/${id}/run/stop`, { headers: origin })).ok(),
+      ).toBe(true);
+      expect((await page.request.post(`/api/projects/${id}/run`, { headers: origin })).ok()).toBe(
+        true,
+      );
+      await expect
+        .poll(async () => {
+          try {
+            return await standalone.evaluate(() => performance.timeOrigin);
+          } catch {
+            return beforeRestart;
+          }
+        })
+        .toBeGreaterThan(beforeRestart);
+      await expect(
+        standalone.getByRole('button', { name: 'JavaScript edit is live' }),
+      ).toBeVisible();
+      await standalone.close();
+      expect((await page.request.post(`/api/projects/${id}/stop`, { headers: origin })).ok()).toBe(
+        true,
+      );
+      expect((await page.request.post(`/api/projects/${id}/open`, { headers: origin })).ok()).toBe(
+        true,
+      );
+      await expect
+        .poll(async () => (await (await page.request.get(`/api/projects/${id}`)).json()).state)
+        .toBe('running');
+      expect((await page.request.post(`/api/projects/${id}/run`, { headers: origin })).ok()).toBe(
+        true,
+      );
+      await page.reload();
+      await expect(
+        page
+          .frameLocator('iframe[title="Project preview"]')
+          .getByRole('heading', { name: starter.changed }),
+      ).toBeVisible();
+      expect(
+        (await (await page.request.get(`/api/projects/${id}/preparation`)).json()).jobs.filter(
+          (j: any) => j.kind === 'prepare',
+        ),
+      ).toHaveLength(1);
+    }
     if (starter.id === 'react-vite') {
       const origin = { origin: `http://localhost:${process.env.REPELLET_E2E_PORT || 3315}` };
       for (const path of ['src/one.ts', 'src/two.ts']) {
@@ -430,6 +576,80 @@ for (const starter of [
     ).toBe(true);
   });
 }
+
+test('an uploaded static site applies suggestions and serves only its selected subdirectory', async ({
+  page,
+}) => {
+  await login(page);
+  await page.getByRole('button', { name: 'Create project', exact: true }).click();
+  await page.getByLabel('Project name', { exact: true }).fill('Imported static site');
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Create project', exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/projects\/[a-f0-9-]{36}$/);
+  const id = page.url().split('/').pop()!;
+  await expect
+    .poll(async () => (await (await page.request.get(`/api/projects/${id}`)).json()).state)
+    .toBe('running');
+  const origin = { origin: 'http://localhost:3315' };
+  for (const [filename, content] of Object.entries({
+    'site/index.html':
+      '<h1>Imported static site</h1><script type="module" src="./script.js"></script>',
+    'site/script.js': "document.querySelector('h1').textContent = 'Imported JavaScript works';",
+    'site/nested/index.html': '<h1>Another page</h1>',
+    'private.txt': 'outside the selected site folder',
+  })) {
+    expect(
+      (
+        await page.request.post(`/api/projects/${id}/files/upload`, {
+          headers: origin,
+          data: { path: filename, data: Buffer.from(content).toString('base64') },
+        })
+      ).ok(),
+    ).toBe(true);
+  }
+  const suggestion = await (
+    await page.request.post(`/api/projects/${id}/setup/suggest`, {
+      headers: origin,
+      data: { cwd: 'site' },
+    })
+  ).json();
+  expect(suggestion.setupCommand).toBe('');
+  expect(suggestion.runConfig.cwd).toBe('site');
+  expect(suggestion.runConfig.command).toContain('static-server.js');
+  expect(
+    (
+      await page.request.put(`/api/projects/${id}/setup`, {
+        headers: origin,
+        data: {
+          setupCommand: suggestion.setupCommand,
+          runConfig: suggestion.runConfig,
+          confirmed: true,
+        },
+      })
+    ).ok(),
+  ).toBe(true);
+  expect(
+    (await (await page.request.get(`/api/projects/${id}/terminals`)).json()).some(
+      (t: any) => t.isRun && t.alive,
+    ),
+  ).toBe(false);
+  expect((await page.request.post(`/api/projects/${id}/run`, { headers: origin })).ok()).toBe(true);
+  await expect(
+    page
+      .frameLocator('iframe[title="Project preview"]')
+      .getByRole('heading', { name: 'Imported JavaScript works' }),
+  ).toBeVisible();
+  const preview = await page.getByLabel('Preview URL').inputValue();
+  expect((await page.request.get(preview + '/private.txt')).status()).toBe(404);
+  const nested = await page.request.get(preview + '/nested/');
+  expect(nested.status()).toBe(200);
+  expect(await nested.text()).toContain('Another page');
+  expect((await page.request.post(`/api/projects/${id}/stop`, { headers: origin })).ok()).toBe(
+    true,
+  );
+});
 
 test('GitHub redirects complete with Strict cookies and member repository permissions stay independent', async ({
   page,

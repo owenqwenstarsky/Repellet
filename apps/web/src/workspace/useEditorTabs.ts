@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import type { FileContent, Project, WorkspacePreferences } from '@repellet/shared';
+import { starterCatalog } from '@repellet/shared';
 import { api, errorMessage } from '../api';
 import { useUi } from '../ui';
 import { flushOpenDocuments } from '../documentSaves';
@@ -33,13 +34,8 @@ export function useEditorTabs(
     let disposed = false;
     const version = fileIntent.current;
     void (async () => {
-      const candidates = saved.tabs.length
-        ? saved.tabs
-        : project.starterId === 'react-vite'
-          ? ['src/App.tsx']
-          : project.starterId === 'python-fastapi'
-            ? ['main.py']
-            : [];
+      const initialFile = starterCatalog.find((s) => s.id === project.starterId)?.initialFile;
+      const candidates = saved.tabs.length ? saved.tabs : initialFile ? [initialFile] : [];
       const existing: string[] = [];
       for (const path of candidates) {
         try {

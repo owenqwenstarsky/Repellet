@@ -280,6 +280,7 @@ app.post('/inspect', async (req) => {
   const cwd = relative((req.body as { cwd: string }).cwd);
   const files: Record<string, string> = {};
   for (const name of [
+    'index.html',
     'package.json',
     'package-lock.json',
     'npm-shrinkwrap.json',

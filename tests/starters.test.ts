@@ -105,3 +105,35 @@ it('suggests commands without executing manifest scripts', () => {
   expect(suggestSetup({ 'go.mod': 'module test' }, '').setupCommand).toBe('go mod download');
   expect(suggestSetup({ 'Cargo.toml': '[package]' }, '').setupCommand).toBe('cargo fetch');
 });
+it('validates static starters and suggests plain HTML sites, including empty index files', () => {
+  expect(
+    projectCreateSchema.parse({ name: 'Static site', runtimes: ['node'], starterId: 'static-html' })
+      .starterId,
+  ).toBe('static-html');
+  for (const html of ['', '<h1>Hello</h1>']) {
+    const suggestion = suggestSetup({ 'index.html': html }, 'site');
+    expect(suggestion.runtimes).toEqual(['node']);
+    expect(suggestion.setupCommand).toBe('');
+    expect(suggestion.runConfig).toEqual({
+      command: '/opt/repellet/node/bin/node /opt/repellet/bridge/dist/static-server.js --port 3000',
+      cwd: 'site',
+      port: 3000,
+    });
+    expect(suggestion.warnings).toEqual([]);
+  }
+  expect(suggestSetup({}, '').runConfig.command).toBe('');
+  for (const name of ['package.json', 'requirements.txt', 'go.mod', 'Cargo.toml'])
+    expect(suggestSetup({ 'index.html': '', [name]: '' }, '').runConfig.command).not.toContain(
+      'static-server',
+    );
+});
+it.each([
+  { 'package.json': JSON.stringify({ scripts: { dev: 'vite' } }) },
+  { 'package.json': 'invalid json' },
+  { 'requirements.txt': 'fastapi', 'main.py': 'app = FastAPI()' },
+  { 'go.mod': 'module site', 'main.go': 'package main' },
+  { 'Cargo.toml': '[package]' },
+])('preserves application manifest precedence over index.html (%j)', (manifest) => {
+  const suggestion = suggestSetup({ ...manifest, 'index.html': '<h1>Page</h1>' }, '');
+  expect(suggestion.runConfig.command).not.toContain('static-server');
+});
