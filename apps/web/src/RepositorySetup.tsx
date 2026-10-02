@@ -149,7 +149,7 @@ export function RepositorySetupForm({
       </Section>
       <Section
         title="Dependencies"
-        description="Inspect manifests in the working directory, review the commands, then confirm to install. Nothing runs until you click Run."
+        description="Inspect project files in the working directory, review the commands, then confirm setup. Nothing runs until you click Run."
         actions={
           manage && (
             <Button

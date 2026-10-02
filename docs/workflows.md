@@ -4,7 +4,13 @@ Repellet keeps the container lifecycle, dependency preparation, app process, and
 
 ## Starters
 
-Choose **React / Vite / TypeScript** or **Python / FastAPI** under Project source. Repellet builds or reuses the runtime environment, writes version 1 of the bundled files without overwriting existing files, and installs dependencies. React uses the committed npm lockfile; Python installs pinned requirements into `.venv`. The app stays stopped until **Run**.
+Choose **HTML / CSS / JavaScript**, **React / Vite / TypeScript**, or **Python / FastAPI** under Project source. Repellet builds or reuses the runtime environment and writes version 1 of the bundled files without overwriting existing files. Static HTML has no dependency installation. React uses the committed npm lockfile; Python installs pinned requirements into `.venv`. The app stays stopped until **Run**.
+
+The HTML starter opens `index.html` and includes `style.css` and a browser JavaScript module, `script.js`. Click **Run** to serve the project on `0.0.0.0:3000` using the bundled server. Saved changes automatically refresh the private iframe and previews opened in another tab, including collaborator edits and terminal changes. The server injects its reload script into HTTP responses without editing your files. Page policies that block the script, or HTML files larger than 2 MiB, require manual preview refresh.
+
+Static sites support ordinary relative URLs, nested HTML pages, and directory `index.html` files. Missing resources return 404; directory listings and SPA fallback routing are disabled. Hidden files and symlinks outside the serving directory are blocked. `/__repellet_static__/` is reserved for reload connections, which use the existing authenticated preview gateway. Runtime environment secrets and bridge routes are not exposed by the static server.
+
+For an imported or uploaded static site, inspect the desired working directory under **Run & setup** and apply the suggestions. An `index.html` without a supported application manifest suggests the bundled server with no setup command. Framework manifests take precedence. Use **Working directory** to serve a subfolder; if changing **Preview port**, also update the run command's `--port` argument. Import inspection and confirmation do not start the app or overwrite files.
 
 React listens on `0.0.0.0:3000` with a strict port and accepts the installation hostname. FastAPI listens on `0.0.0.0:8000` with reload enabled. The initial tab is `src/App.tsx` or `main.py`. Edit, wait for autosave, and view the preview; Python may need a preview refresh after its reload.
 
@@ -48,7 +54,7 @@ The Git pane lists local and remote branches, upstream and ahead/behind counts, 
 
 ## Recovery and rollout
 
-Migrations 0002–0004 are additive. The bridge base image advances to 0.2.0 so existing installations rebuild their runtime images with the new endpoints. Apply with the normal API startup migration workflow. Back up the database, workspace/home volumes, and installation environment before upgrading. Encrypted GitHub configuration/connections and durable jobs are in the database dump; the environment backup supplies the matching encryption key. Restored expired access tokens refresh under a database row lock. Expired/revoked refresh authorization requests reconnection.
+Migrations 0002–0004 are additive. Static HTML support needs no additional migration. The bridge base image advances to 0.3.0 so new runtime images include the bundled static server. Running containers retain their previous image: stop the **workspace**, then use **Start workspace** to rebuild its environment with the updated bridge before using the bundled server in an existing project. Stopping only the app does not update the container. Project files and home configuration are preserved. Apply database migrations with the normal API startup workflow. Back up the database, workspace/home volumes, and installation environment before upgrading. Encrypted GitHub configuration/connections and durable jobs are in the database dump; the environment backup supplies the matching encryption key. Restored expired access tokens refresh under a database row lock. Expired/revoked refresh authorization requests reconnection.
 
 Validate and release milestones in order: starter loops/recovery, workspace restoration/diagnostics, then GitHub setup/permissions and Git controls. Before enabling GitHub for members, run the live two-user smoke procedure below. Keep existing projects unprepared until their owners opt in.
 

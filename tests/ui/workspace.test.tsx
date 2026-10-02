@@ -65,6 +65,15 @@ function mount() {
     </UiProvider>,
   );
 }
+it('opens the static starter index file from the starter catalog', async () => {
+  defaults({
+    ...project,
+    starterId: 'static-html',
+    preparation: { status: 'ready', scaffolded: true, fingerprint: null, error: null },
+  });
+  mount();
+  expect(await screen.findByLabelText('Editor index.html')).toBeTruthy();
+});
 for (const [name, changes] of [
   ['not running', { state: 'building' }],
   ['over storage limit', { storageExceeded: true }],

@@ -37,6 +37,8 @@ export async function prepareProject(id: string) {
     if (!project || project.state !== 'running') throw new Error('Open the workspace first');
     const needsInstall = !!project.setupCommand.trim();
     if (!needsInstall && !project.starterId) return;
+    if (!needsInstall && project.preparation.scaffolded && project.preparation.status === 'ready')
+      return;
     await flushProject(id);
     if (needsInstall && project.preparation.status === 'ready') {
       const current = await bridge<{ fingerprint: string }>(id, '/fingerprint', 'POST', {
@@ -160,7 +162,7 @@ export async function prepareProject(id: string) {
         }
       }
       finishStep('succeeded');
-      preparation.status = needsInstall ? 'ready' : 'none';
+      preparation.status = 'ready';
       await setPreparation(id, preparation);
       await db
         .update(jobs)
@@ -248,6 +250,16 @@ export async function probePreview(id: string, port: number) {
 export async function assertPrepared(id: string) {
   const [project] = await db.select().from(projects).where(eq(projects.id, id));
   if (!project) throw new Error('Project not found');
+  if (
+    project.starterId &&
+    (!project.preparation.scaffolded || !['none', 'ready'].includes(project.preparation.status))
+  )
+    throw Object.assign(
+      new Error('Starter files need preparation. Retry preparation before Run.'),
+      {
+        statusCode: 409,
+      },
+    );
   if (project.setupCommand.trim()) {
     const { fingerprint } = await bridge<{ fingerprint: string }>(id, '/fingerprint', 'POST', {
       cwd: project.runConfig.cwd,

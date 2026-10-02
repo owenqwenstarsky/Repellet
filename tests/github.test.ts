@@ -92,6 +92,10 @@ describe.skipIf(!process.env.DATABASE_URL)('GitHub App with a local fake GitHub 
             },
           ],
         };
+      if (path === '/repos/test-org/private/contents')
+        return [{ name: 'index.html', type: 'file', size: 0 }];
+      if (path === '/repos/test-org/private/contents/index.html')
+        return { encoding: 'base64', content: '' };
       return reply.code(404).send({ message: 'Not found' });
     });
     const address = await fake.listen({ host: '127.0.0.1', port: 0 });
@@ -276,6 +280,17 @@ describe.skipIf(!process.env.DATABASE_URL)('GitHub App with a local fake GitHub 
       payload: { username: 'owner', password: 'github-test-password-123' },
     });
     expect(login.headers['set-cookie']).toContain('SameSite=Strict');
+  });
+  it('suggests the bundled static server for an HTML-only GitHub repository', async () => {
+    await authorize(ownerCookie);
+    const response = await app.inject({
+      url: '/api/github/repositories/42/suggestion?installationId=55',
+      headers: headers(ownerCookie),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().runtimes).toEqual(['node']);
+    expect(response.json().setupCommand).toBe('');
+    expect(response.json().runConfig.command).toContain('static-server.js');
   });
   it('intersects app installations and user access and checks push independently', async () => {
     await authorize(ownerCookie);

@@ -69,6 +69,19 @@ export const userCreateSchema = credentialsSchema.extend({
 });
 export const starterCatalog = [
   {
+    id: 'static-html',
+    version: 1,
+    name: 'HTML / CSS / JavaScript',
+    runtimes: ['node'] as Runtime[],
+    setupCommand: '',
+    runConfig: {
+      command: '/opt/repellet/node/bin/node /opt/repellet/bridge/dist/static-server.js --port 3000',
+      cwd: '',
+      port: 3000,
+    },
+    initialFile: 'index.html',
+  },
+  {
     id: 'react-vite',
     version: 1,
     name: 'React / Vite / TypeScript',
@@ -100,7 +113,7 @@ export const projectCreateSchema = z
     name: z.string().trim().min(1).max(80),
     description: z.string().max(500).default(''),
     runtimes: runtimesSchema,
-    starterId: z.enum(['react-vite', 'python-fastapi']).optional(),
+    starterId: z.enum(['static-html', 'react-vite', 'python-fastapi']).optional(),
     githubSource: githubSourceSchema.optional(),
     cloneUrl: z
       .string()
@@ -389,6 +402,15 @@ export function suggestSetup(
       if (!result.runConfig.command)
         result.warnings.push('Cargo entrypoint is ambiguous. Enter a run command.');
     }
+  }
+  if (
+    !result.runtimes.length &&
+    'index.html' in files &&
+    !['package.json', 'requirements.txt', 'go.mod', 'Cargo.toml'].some((name) => name in files)
+  ) {
+    const starter = starterCatalog.find((s) => s.id === 'static-html')!;
+    result.runtimes.push(...starter.runtimes);
+    result.runConfig = { ...starter.runConfig, cwd };
   }
   if (!result.runtimes.length)
     result.warnings.push(

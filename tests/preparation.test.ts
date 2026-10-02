@@ -213,8 +213,49 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
     await preparation.prepareProject(id);
     expect(scaffoldCalls).toBe(1);
     expect(installCalls).toBe(0);
-    expect((await project()).preparation.status).toBe('none');
+    expect((await project()).preparation.status).toBe('ready');
     expect((await preparation.assertPrepared(id)).preparation.scaffolded).toBe(true);
+    await preparation.prepareProject(id);
+    expect(scaffoldCalls).toBe(1);
+    expect(await preparation.preparationJobs(id)).toHaveLength(1);
+  });
+  it('scaffolds a static starter without installing dependencies and rejects premature Run', async () => {
+    await db.db
+      .update(schema.projects)
+      .set({ starterId: 'static-html', setupCommand: '' })
+      .where(eq(schema.projects.id, id));
+    await expect(preparation.assertPrepared(id)).rejects.toMatchObject({ statusCode: 409 });
+    const { tokenHash } = await import('../apps/api/src/security.js');
+    await db.db.insert(schema.sessions).values({
+      userId: (await project()).ownerId,
+      tokenHash: tokenHash('static-run-session'),
+      expiresAt: new Date(Date.now() + 60000),
+    });
+    const premature = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${id}/run`,
+      headers: {
+        origin: process.env.PUBLIC_URL || 'http://localhost:3000',
+        cookie: 'repellet_session=static-run-session',
+      },
+    });
+    expect(premature.statusCode).toBe(409);
+    expect(fake.bridge.mock.calls.some((call) => call[1] === '/run')).toBe(false);
+    await preparation.prepareProject(id);
+    expect((await project()).preparation.status).toBe('ready');
+    expect(fake.bridge.mock.calls.find((call) => call[1] === '/scaffold')?.[3].files).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: 'index.html' })]),
+    );
+    expect(installCalls).toBe(0);
+    await preparation.prepareProject(id);
+    expect(await preparation.preparationJobs(id)).toHaveLength(1);
+    await db.db
+      .update(schema.projects)
+      .set({
+        preparation: { status: 'failed', scaffolded: true, fingerprint: null, error: 'Failed' },
+      })
+      .where(eq(schema.projects.id, id));
+    await expect(preparation.assertPrepared(id)).rejects.toMatchObject({ statusCode: 409 });
   });
   it('reconciles interrupted preparation without silently running installation again', async () => {
     await db.db

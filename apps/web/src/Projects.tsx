@@ -372,7 +372,9 @@ function CreateProject({
           label="Project source"
           help={
             starter
-              ? 'Files and dependencies prepare automatically. Click Run when ready.'
+              ? starter.setupCommand
+                ? 'Files and dependencies prepare automatically. Click Run when ready.'
+                : 'Files prepare automatically. No dependency installation needed. Click Run when ready.'
               : clone
                 ? undefined
                 : github
