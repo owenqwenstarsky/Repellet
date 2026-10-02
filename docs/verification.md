@@ -62,7 +62,7 @@ Live ChatGPT OAuth and paid upstream model requests were not exercised: authenti
 
 ## Static HTML projects
 
-Static HTML support was validated on macOS ARM64 with Node.js 22.22.3 and Docker Desktop 29.2.1, using a disposable Compose database and separate test workspaces. The workspace base image is `repellet/workspace-base:0.4.0`. Stop and start an existing workspace to rebuild its environment with the bundled static server; no database migration is added.
+Static HTML support was validated on macOS ARM64 with Node.js 22.22.3 and Docker Desktop 29.2.1, using a disposable Compose database and separate test workspaces. The workspace base image is `repellet/workspace-base:0.4.1`. Stop and start an existing workspace to rebuild its environment with the bundled static server; no database migration is added.
 
 `npm run check` passes type checks, 219 unit/database/UI tests, and production builds. The default suite skips 17 Docker-dependent tests; `npm run test:docker` exercises those tests alongside the backup corruption check. `npm run format:check` and high-severity dependency audits pass; the existing two low-severity Monaco/DOMPurify findings remain.
 
@@ -71,3 +71,9 @@ The 18 Docker/backup tests include static-site inspection in a subdirectory, ser
 Static-server unit tests cover MIME types, GET/HEAD, nested indexes and redirects, missing resources, malformed/traversal paths, hidden files and escaping symlinks, unchanged source HTML and inline script strings, debounced upload/rename/delete notifications, ignored dependencies, HTTPS origins behind the gateway, and release of sockets and ports on shutdown. Full-page refresh waits for atomic renames and write stabilization. HTML over 2 MiB streams without reload injection and requires manual refresh.
 
 Linux and non-Chromium browser coverage remain unverified locally.
+
+## Managed agent container context
+
+The workspace base image advances to `repellet/workspace-base:0.4.1` to include the immutable managed context source. Both project-volume initialization and agent-process startup install `/home/agent/.codex/AGENTS.md`; startup refreshes existing persistent agent volumes without a database migration. The worker image includes the source in its workspace build context.
+
+`tests/agent-docker.test.ts` checks exact context contents, agent readability, workspace-user denial, ownership/modes, placement outside `/workspace`, refresh after container recreation and agent-process replacement, and initialization of duplicated workspaces. The local Responses fixture captures whether the stable `REPELLET_AGENT_CONTEXT_MARKER=repellet-agent-context-v1` marker reached the model request, and the real Codex tests assert its presence before and after process replacement. These tests require `RUN_DOCKER_TESTS=1` and an available Docker daemon; default skips do not establish Docker integration coverage.

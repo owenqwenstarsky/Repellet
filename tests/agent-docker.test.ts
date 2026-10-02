@@ -1,11 +1,12 @@
 import { describe, beforeAll, afterAll, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { defaultLimits } from '@repellet/shared';
 import { fakeResponsesProvider } from './fake-responses-provider.mjs';
 import { PassThrough } from 'node:stream';
+import { managedAgentContextTarget } from '../apps/worker/src/agent-context.js';
 const enabled = process.env.RUN_DOCKER_TESTS === '1';
 const id = randomUUID(),
   userId = randomUUID();
@@ -15,7 +16,8 @@ let worker: typeof import('../apps/worker/src/workspaces.js'),
   accounts: typeof import('../apps/worker/src/agent/accounts.js');
 let provider: Awaited<ReturnType<typeof fakeResponsesProvider>>,
   temp = '',
-  threadId = '';
+  threadId = '',
+  managedContext = '';
 async function rpc(method: string, params: unknown = {}) {
   return projects.agentRpc(id, userId, {
     generation: (await projects.agentStatus(id, userId)).generation,
@@ -23,9 +25,9 @@ async function rpc(method: string, params: unknown = {}) {
     params,
   });
 }
-async function exec(user: string, command: string[]) {
+async function exec(user: string, command: string[], projectId = id) {
   const execution = await images.docker
-    .getContainer(worker.containerName(id))
+    .getContainer(worker.containerName(projectId))
     .exec({ User: user, Cmd: command, AttachStdout: true, AttachStderr: true });
   const stream = await execution.start({ hijack: true, stdin: false });
   const output = new PassThrough(),
@@ -42,8 +44,31 @@ async function exec(user: string, command: string[]) {
   });
   return { text, code: (await execution.inspect()).ExitCode };
 }
+async function expectManagedContext(projectId = id) {
+  expect(await exec('1001:1000', ['cat', managedAgentContextTarget], projectId)).toEqual({
+    text: managedContext,
+    code: 0,
+  });
+  expect((await exec('1000:1000', ['cat', managedAgentContextTarget], projectId)).code).not.toBe(0);
+  expect(
+    (
+      await exec(
+        '1001:1000',
+        ['stat', '-c', '%u:%g:%a', '/home/agent', '/home/agent/.codex', managedAgentContextTarget],
+        projectId,
+      )
+    ).text,
+  ).toBe('1001:1001:700\n1001:1001:700\n1001:1001:444\n');
+  expect(
+    (await exec('1000:1000', ['test', '!', '-e', '/workspace/AGENTS.md'], projectId)).code,
+  ).toBe(0);
+}
 describe.skipIf(!enabled)('real Codex 0.160.0 in the unprivileged workspace container', () => {
   beforeAll(async () => {
+    managedContext = await readFile(
+      new URL('../docker/agent-context/AGENTS.md', import.meta.url),
+      'utf8',
+    );
     temp = await mkdtemp(path.join(os.tmpdir(), 'repellet-agent-docker-'));
     process.env.AGENT_ACCOUNTS_HOME = temp;
     process.env.WORKER_TOKEN ||= 'agent-docker-tests-'.repeat(3);
@@ -76,7 +101,31 @@ describe.skipIf(!enabled)('real Codex 0.160.0 in the unprivileged workspace cont
     expect(
       (await worker.inspect(id))!.Mounts.some((mount) => mount.Name === `repellet-${id}-agent`),
     ).toBe(true);
+    await expectManagedContext();
   });
+  it('refreshes managed context when recreating an existing workspace and initializes duplicates', async () => {
+    expect((await exec('1001:1000', ['rm', managedAgentContextTarget])).code).toBe(0);
+    await worker.stopWorkspace(id);
+    await images.docker.getContainer(worker.containerName(id)).remove();
+    await worker.ensureWorkspace(id, {
+      runtimes: ['node'],
+      limits: defaultLimits,
+      environment: { SHARED_PROJECT_VARIABLE: 'available-to-agent' },
+    });
+    await expectManagedContext();
+    const duplicateId = randomUUID();
+    try {
+      await worker.duplicateWorkspace(id, duplicateId);
+      await worker.ensureWorkspace(duplicateId, {
+        runtimes: ['node'],
+        limits: defaultLimits,
+        environment: {},
+      });
+      await expectManagedContext(duplicateId);
+    } finally {
+      await worker.removeWorkspace(duplicateId);
+    }
+  }, 60000);
   it('initializes a real app-server and streams a response through a custom Responses endpoint', async () => {
     const status = await projects.agentStatus(id, userId);
     expect(status.connected).toBe(true);
@@ -96,7 +145,37 @@ describe.skipIf(!enabled)('real Codex 0.160.0 in the unprivileged workspace cont
       path: '/custom/v1/responses',
       model: 'repellet-test-model',
       authorizationPresent: true,
+      agentContextPresent: true,
     });
+  }, 60000);
+  it('refreshes managed context on agent-process restart and sends it in new model requests', async () => {
+    const old = (await projects.agentStatus(id, userId)).generation;
+    await projects.stopAgent(id);
+    expect(
+      (
+        await exec('1001:1000', [
+          '/bin/sh',
+          '-c',
+          `rm ${managedAgentContextTarget} && printf 'stale context' > ${managedAgentContextTarget}`,
+        ])
+      ).code,
+    ).toBe(0);
+    const next = await projects.agentStatus(id, userId);
+    expect(next.generation).not.toBe(old);
+    await expectManagedContext();
+    const contextThread = (await rpc('thread/start')).thread.id;
+    const requestCount = provider.requests.length;
+    await rpc('turn/start', {
+      threadId: contextThread,
+      input: [{ type: 'text', text: 'Hello again' }],
+    });
+    await vi.waitFor(() => expect(projects.agentActivity(id).active).toBe(false), {
+      timeout: 30000,
+    });
+    expect(provider.requests.length).toBeGreaterThan(requestCount);
+    expect(
+      provider.requests.slice(requestCount).every((request) => request.agentContextPresent),
+    ).toBe(true);
   }, 60000);
   it('uses Codex built-in command tools, excludes the provider key, and shares agent file changes with the bridge', async () => {
     await rpc('turn/start', { threadId, input: [{ type: 'text', text: 'create agent file' }] });
