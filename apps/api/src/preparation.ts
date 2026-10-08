@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, and } from 'drizzle-orm';
 import {
   starterCatalog,
   type Preparation,
@@ -10,7 +10,7 @@ import {
   type WorkflowStep,
 } from '@repellet/shared';
 import { db } from './db.js';
-import { projects, jobs } from './schema.js';
+import { projects, jobs, projectRunProfiles, workspaceProcesses } from './schema.js';
 import { bridge, workerJson } from './worker.js';
 import { flushProject } from './collaboration.js';
 import { serialize } from './lifecycle.js';
@@ -204,6 +204,12 @@ export async function setAppStatus(id: string, appStatus: AppStatus) {
 export async function probePreview(id: string, port: number) {
   const generation = randomUUID();
   probes.set(id, generation);
+  const mainProcesses = await db
+    .select({ id: workspaceProcesses.id })
+    .from(workspaceProcesses)
+    .innerJoin(projectRunProfiles, eq(workspaceProcesses.profileId, projectRunProfiles.id))
+    .where(and(eq(workspaceProcesses.projectId, id), eq(projectRunProfiles.isDefault, true)));
+  const mainIds = new Set(['run', ...mainProcesses.map((process) => process.id)]);
   await setAppStatus(id, { status: 'starting', generation });
   void (async () => {
     const deadline = Date.now() + 60000;
@@ -226,7 +232,7 @@ export async function probePreview(id: string, port: number) {
       if (probes.get(id) !== generation) return;
       if (
         Array.isArray(terminals) &&
-        !terminals.some((t) => (!t.id || t.id === 'run') && t.isRun && t.alive)
+        !terminals.some((t) => (!t.id || mainIds.has(t.id)) && t.isRun && t.alive)
       ) {
         await setAppStatus(id, {
           status: 'failed',

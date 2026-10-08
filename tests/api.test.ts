@@ -57,6 +57,7 @@ describe.skipIf(!enabled)('accounts, project permissions, and live revocation (P
     address = await app.listen({ host: '127.0.0.1', port: 0 });
   });
   beforeEach(async () => {
+    await (await import('../apps/api/src/live.js')).drainWorkspaceEvents();
     await database.pool.query(
       'TRUNCATE users,projects,sessions,documents,jobs,project_members CASCADE',
     );

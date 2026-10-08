@@ -3,13 +3,14 @@ import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import { beforeEach, it, expect, vi } from 'vitest';
 const fake = vi.hoisted(() => ({ children: [] as any[], options: [] as any[] }));
+vi.mock('node:child_process', () => ({ execFile: vi.fn((_cmd, _args, callback) => callback()) }));
 vi.mock('node-pty', () => ({
   spawn: vi.fn((_shell: string, _args: unknown, options: unknown) => {
     const child = {
       pid: 100 + fake.children.length,
       write: vi.fn(),
       resize: vi.fn(),
-      kill: vi.fn(),
+      kill: vi.fn(() => child.exit({ exitCode: 0 })),
       onData: (callback: any) => {
         child.data = callback;
       },
@@ -30,6 +31,8 @@ vi.mock('../packages/bridge/src/files.js', () => ({
 }));
 import {
   createTerminal,
+  closeTerminal,
+  stopTerminal,
   attachTerminal,
   info,
   terminals,
@@ -95,4 +98,25 @@ it('bounds per-process output and replays it to a new collaborator', async () =>
   const client = socket();
   attachTerminal(client as unknown as WebSocket, session.id);
   expect(JSON.parse(client.send.mock.calls[0]![0]).data.length).toBe(1024 * 1024);
+});
+
+it('closing a terminal discards its session and replay and disconnects collaborators', async () => {
+  const session = await createTerminal('Shell');
+  const client = socket();
+  attachTerminal(client as unknown as WebSocket, session.id);
+  await closeTerminal(session.id);
+  expect(info()).toEqual([]);
+  expect(client.close).toHaveBeenCalledWith(1000, 'Terminal closed');
+  await closeTerminal(session.id);
+  expect(info()).toEqual([]);
+});
+it('stopping a managed process retains its output until explicitly closed', async () => {
+  const id = randomUUID();
+  await createTerminal('API', 'npm start', '', { id, kind: 'run' });
+  fake.children[0].data('server output');
+  await stopTerminal(id);
+  expect(info()).toMatchObject([{ id, status: 'stopped', alive: false }]);
+  expect(terminals.get(id)?.buffer).toContain('server output');
+  await closeTerminal(id);
+  expect(info()).toEqual([]);
 });

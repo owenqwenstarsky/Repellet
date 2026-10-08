@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, afterAll, afterEach, describe, it, expect, vi } from 'vitest';
 import pg from 'pg';
+import { eq } from 'drizzle-orm';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { WebSocket } from 'ws';
 import type { FastifyInstance } from 'fastify';
@@ -20,6 +21,21 @@ vi.mock('../apps/api/src/worker.js', () => ({
       return process;
     }
     if (route === '/processes') return fake.processes;
+    if (route === '/terminals')
+      return fake.processes.map((p) => ({
+        ...p,
+        alive: p.status === 'running',
+        isRun: p.kind === 'run',
+      }));
+    if (route.startsWith('/processes/') && route.endsWith('/stop')) {
+      const process = fake.processes.find((p) => p.id === route.split('/')[2]);
+      if (process)
+        Object.assign(process, {
+          status: 'stopped',
+          finishedAt: new Date().toISOString(),
+          exitCode: 0,
+        });
+    }
     if (route.startsWith('/terminals/') && method === 'DELETE') {
       const process = fake.processes.find((p) => p.id === route.split('/')[2]);
       if (process)
@@ -263,6 +279,54 @@ describe.skipIf(!enabled)(
           )
         ).rows[0].n,
       ).toBe(1);
+    });
+    it('shares the default profile with main Run and exposes only one pinned session', async () => {
+      const [profile] = await database.db
+        .select()
+        .from(schema.projectRunProfiles)
+        .where(eq(schema.projectRunProfiles.projectId, projectId));
+      const auto = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/run-profiles/${profile!.id}/start`,
+        headers: headers(editor.cookie),
+        payload: {},
+      });
+      expect(auto.statusCode).toBe(200);
+      fake.processes.unshift({ id: 'run', name: 'Run', kind: 'run', status: 'stopped' });
+      const run = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/run`,
+        headers: headers(editor.cookie),
+      });
+      expect(run.statusCode).toBe(200);
+      const nextId = run.json().terminalId;
+      expect(nextId).not.toBe(auto.json().id);
+      const list = await app.inject({
+        url: `/api/projects/${projectId}/terminals`,
+        headers: headers(editor.cookie),
+      });
+      expect(list.json()).toMatchObject([{ id: nextId, isMainRun: true, alive: true }]);
+      expect(list.json()).toHaveLength(1);
+      const stopped = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/run/stop`,
+        headers: headers(editor.cookie),
+      });
+      expect(stopped.statusCode).toBe(200);
+      expect(fake.processes.find((p) => p.id === nextId).status).toBe('stopped');
+      await (await import('../apps/api/src/preparation.js')).cancelReadiness(projectId);
+    });
+    it('omits closed shells retained by older bridges without hiding completed task output', async () => {
+      fake.processes = [
+        { id: randomUUID(), name: 'Shell', kind: 'terminal', status: 'stopped' },
+        { id: randomUUID(), name: 'Tests', kind: 'task', status: 'exited' },
+      ];
+      const response = await app.inject({
+        url: `/api/projects/${projectId}/terminals`,
+        headers: headers(editor.cookie),
+      });
+      expect(response.json()).toHaveLength(1);
+      expect(response.json()[0].name).toBe('Tests');
     });
     it('persists independent process IDs, flushes documents, and reconciles lost processes', async () => {
       const create = (name: string) =>

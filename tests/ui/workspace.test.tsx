@@ -181,7 +181,7 @@ it('does not let tab-close save replace a newer selected tab', async () => {
 it('makes terminal stop independently keyboard accessible', async () => {
   mount();
   fireEvent.click(await screen.findByLabelText('Toggle bottom panel'));
-  const stop = await screen.findByRole('button', { name: 'Stop Shell' });
+  const stop = await screen.findByRole('button', { name: 'Close Shell' });
   expect(stop.tagName).toBe('BUTTON');
   expect(stop.parentElement?.tagName).not.toBe('BUTTON');
   const keyboard = userEvent.setup();
@@ -368,6 +368,6 @@ it('opens failed preparation for viewers without exposing retry or terminal muta
   expect(screen.queryByRole('button', { name: 'Retry preparation' })).toBeNull();
   fireEvent.click(screen.getByRole('tab', { name: 'Terminal', exact: true }));
   expect(screen.queryByRole('button', { name: 'New terminal' })).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Stop Shell' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Close Shell' })).toBeNull();
   expect(screen.getByText('Terminal rendering')).toBeTruthy();
 });

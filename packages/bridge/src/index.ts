@@ -23,6 +23,7 @@ import {
 import {
   createTerminal,
   stopTerminal,
+  closeTerminal,
   stopAll,
   attachTerminal,
   info,
@@ -88,7 +89,7 @@ app.post('/fingerprint', async (req) => {
 app.get('/health', async () => ({
   ok: true,
   protocolVersion: 1,
-  capabilities: ['processes', 'terminal-readonly'],
+  capabilities: ['processes', 'process-stop', 'terminal-close', 'terminal-readonly'],
 }));
 app.get('/files', async (req) =>
   listFiles(String((req.query as Record<string, string>).path || '')),
@@ -184,6 +185,10 @@ app.post('/terminals', async (req) => {
   return info().find((t) => t.id === session.id);
 });
 app.delete('/terminals/:id', async (req) => {
+  await closeTerminal((req.params as { id: string }).id);
+  return { ok: true };
+});
+app.post('/processes/:id/stop', async (req) => {
   await stopTerminal((req.params as { id: string }).id);
   return { ok: true };
 });

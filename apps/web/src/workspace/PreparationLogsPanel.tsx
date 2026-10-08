@@ -3,8 +3,9 @@ import type { Preparation } from '@repellet/shared';
 import { Button } from '../ui';
 import { errorMessage } from '../api';
 
-const labels: Record<Preparation['status'], string> = {
+export const preparationLabels: Record<Preparation['status'], string> = {
   none: 'No preparation required',
+  required: 'Dependencies need installation',
   pending: 'Preparing files',
   files: 'Preparing files',
   installing: 'Installing dependencies',
@@ -54,11 +55,15 @@ export function PreparationLogsPanel({
     <div className="preparation-panel">
       <div className="preparation-toolbar">
         <span role="status" className={`preparation-status ${failed ? 'failed' : ''}`}>
-          {labels[preparation.status]}
+          {preparationLabels[preparation.status]}
         </span>
-        {editable && failed && (
+        {editable && (failed || preparation.status === 'required') && (
           <Button size="sm" disabled={retrying} onClick={retry}>
-            {retrying ? 'Retrying…' : 'Retry preparation'}
+            {retrying
+              ? 'Starting…'
+              : preparation.status === 'required'
+                ? 'Install dependencies'
+                : 'Retry preparation'}
           </Button>
         )}
       </div>

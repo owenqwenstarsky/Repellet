@@ -14,7 +14,7 @@ import { access } from './routes.js';
 import { workspaceCursor, workspaceActivityFeed } from './workspaceEvents.js';
 import { serialize } from './lifecycle.js';
 import { emit } from './live.js';
-import { startProfile, reconcileProcesses } from './processes.js';
+import { startProfile, reconcileProcesses, stopProcess } from './processes.js';
 import { requireUser } from './security.js';
 import { bridge } from './worker.js';
 
@@ -58,12 +58,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
         .where(and(eq(workspaceProcesses.id, id), eq(workspaceProcesses.projectId, p.id)));
       if (!process) throw Object.assign(new Error('Process not found'), { statusCode: 404 });
       if (['starting', 'running'].includes(process.status)) {
-        await bridge(p.id, `/terminals/${id}`, 'DELETE');
-        await reconcileProcesses(p.id);
-        await db
-          .update(workspaceProcesses)
-          .set({ status: 'stopped', finishedAt: new Date() })
-          .where(and(eq(workspaceProcesses.id, id), eq(workspaceProcesses.status, 'starting')));
+        await stopProcess(p.id, id);
       }
       return { ok: true };
     });

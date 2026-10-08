@@ -197,12 +197,12 @@ export function Workspace({
         !['none', 'ready'].includes(current.preparation.status)
       )
         return;
-      await post(base + '/run');
+      const result = await post<{ terminalId?: string }>(base + '/run');
       layout.setShowTerminal(true);
       setBottomPanelTab('terminal');
-      terminals.setTerminal('run');
+      terminals.setTerminal(result.terminalId || 'run');
       await terminals.reload();
-      terminals.setTerminal('run');
+      terminals.setTerminal(result.terminalId || 'run');
       setPreviewRevision((v) => v + 1);
     } catch (e) {
       ui.notify(errorMessage(e));
@@ -253,6 +253,7 @@ export function Workspace({
   async function stopTerminal(terminalId: string) {
     try {
       await api(base + '/terminals/' + terminalId, { method: 'DELETE' });
+      terminals.didClose(terminalId);
       await terminals.reload();
     } catch (e) {
       ui.notify(errorMessage(e));
@@ -279,7 +280,9 @@ export function Workspace({
       </div>
     );
   if (!project) return <Spinner label="Opening workspace…" />;
-  const running = terminals.terminals.some((t) => t.id === 'run' && t.isRun && t.alive);
+  const running = terminals.terminals.some(
+    (t) => (t.isMainRun ?? t.id === 'run') && t.isRun && t.alive,
+  );
   const url = project.previewPort ? previewUrl(project.previewPort) : '';
   const { dimensions } = layout;
   return (
@@ -543,6 +546,10 @@ export function Workspace({
           project={project}
           onClose={() => setSettings(false)}
           onChanged={load}
+          onViewPreparationLogs={() => {
+            layout.setShowTerminal(true);
+            setBottomPanelTab('preparation');
+          }}
           onDuplicate={(id) => {
             setSettings(false);
             onOpen(id);

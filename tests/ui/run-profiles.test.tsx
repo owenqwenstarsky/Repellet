@@ -36,11 +36,14 @@ it('allows typing several environment names without losing separators', async ()
     </UiProvider>,
   );
   await screen.findByText('API');
+  fireEvent.click(screen.getByText('Additional commands (1)'));
+  fireEvent.click(screen.getByRole('button', { name: 'Add command' }));
+  fireEvent.click(screen.getByText('Advanced'));
   const user = userEvent.setup();
-  await user.type(screen.getByLabelText('Profile name'), 'Frontend');
+  await user.type(screen.getByLabelText('Name'), 'Frontend');
   await user.type(screen.getByLabelText('Command'), 'npm start');
   await user.type(screen.getByLabelText('Environment variable names'), 'PORT, PUBLIC_URL');
-  await user.click(screen.getByRole('button', { name: 'Add profile' }));
+  await user.click(screen.getByRole('button', { name: 'Save command' }));
   await waitFor(() =>
     expect(post).toHaveBeenCalledWith(
       '/projects/project/run-profiles',
@@ -57,13 +60,15 @@ it('flushes collaborative documents before an editor starts a profile', async ()
         <RunProfiles project={{ ...project, role: 'editor' }} />
       </UiProvider>,
     );
-    fireEvent.click(await screen.findByRole('button', { name: 'Run API' }));
+    await screen.findByText('API');
+    fireEvent.click(screen.getByText('Additional commands (1)'));
+    fireEvent.click(screen.getByRole('button', { name: 'Run API' }));
     expect(post).not.toHaveBeenCalled();
     save.resolve();
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith(`/projects/project/run-profiles/${profile.id}/start`),
     );
-    expect(screen.queryByLabelText('Profile name')).toBeNull();
+    expect(screen.queryByLabelText('Name')).toBeNull();
   } finally {
     unregister();
   }
@@ -74,11 +79,14 @@ it('shows viewer process status without allowing execution or configuration', as
       <RunProfiles project={{ ...project, role: 'viewer' }} />
     </UiProvider>,
   );
+  await screen.findByText('API');
+  fireEvent.click(screen.getByText('Additional commands (1)'));
   expect(
     ((await screen.findByRole('button', { name: 'Run API' })) as HTMLButtonElement).disabled,
   ).toBe(true);
-  expect((screen.getByRole('button', { name: 'Task API' }) as HTMLButtonElement).disabled).toBe(
+  fireEvent.click(screen.getByRole('button', { name: 'Actions for API' }));
+  expect((screen.getByRole('button', { name: 'Run as task' }) as HTMLButtonElement).disabled).toBe(
     true,
   );
-  expect(screen.queryByLabelText('Profile name')).toBeNull();
+  expect(screen.queryByLabelText('Name')).toBeNull();
 });

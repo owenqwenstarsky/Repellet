@@ -193,6 +193,14 @@ export async function stopTerminal(id: string) {
     if (session.alive) throw new Error('Previous process did not exit; retry Stop app');
   }
 }
+// Closing a tab is different from stopping a managed process: discard its replay session.
+export async function closeTerminal(id: string) {
+  await stopTerminal(id);
+  const session = terminals.get(id);
+  if (!session) return;
+  for (const client of session.clients) client.close(1000, 'Terminal closed');
+  terminals.delete(id);
+}
 const writableClients = new WeakMap<Session, Set<WebSocket>>();
 export function attachTerminal(ws: WebSocket, id: string, editable = true) {
   const session = terminals.get(id);

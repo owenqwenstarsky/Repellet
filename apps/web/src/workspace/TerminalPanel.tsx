@@ -26,7 +26,7 @@ export function TerminalPanel({
   onRetry: () => void;
 }) {
   const orderedTerminals = [...terminals].sort(
-    (a, b) => Number(b.id === 'run') - Number(a.id === 'run'),
+    (a, b) => Number(b.isMainRun ?? b.id === 'run') - Number(a.isMainRun ?? a.id === 'run'),
   );
   return (
     <section className="terminal-panel">
@@ -63,16 +63,20 @@ export function TerminalPanel({
         <div className="terminal-tabs">
           {orderedTerminals.map((t) => (
             <div
-              className={`terminal-tab ${terminal === t.id ? 'active' : ''} ${t.id === 'run' ? 'pinned' : ''}`}
+              className={`terminal-tab ${terminal === t.id ? 'active' : ''} ${(t.isMainRun ?? t.id === 'run') ? 'pinned' : ''}`}
               key={t.id}
             >
               <button
                 aria-pressed={terminal === t.id}
                 className={terminal === t.id ? 'active' : ''}
                 onClick={() => onSelect(t.id)}
-                title={t.id === 'run' ? `Run output · ${t.alive ? 'Running' : 'Stopped'}` : t.name}
+                title={
+                  (t.isMainRun ?? t.id === 'run')
+                    ? `Run output · ${t.alive ? 'Running' : 'Stopped'}`
+                    : t.name
+                }
               >
-                {t.id === 'run' ? (
+                {(t.isMainRun ?? t.id === 'run') ? (
                   <Play
                     size={13}
                     className="terminal-run-icon"
@@ -87,8 +91,8 @@ export function TerminalPanel({
               {editable && !t.isRun && (
                 <button
                   className="terminal-close"
-                  aria-label={`Stop ${t.name}`}
-                  title={`Stop ${t.name}`}
+                  aria-label={`Close ${t.name}`}
+                  title={`Close ${t.name}`}
                   onClick={() => onStop(t.id)}
                 >
                   <X size={11} />

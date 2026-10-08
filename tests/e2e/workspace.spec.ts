@@ -101,7 +101,7 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
   await unpacked;
   expect(entries.get('nested/note.txt')).toBe('Nested folders survive upload.\n');
   await page.getByRole('button', { name: 'Project settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Run & setup' }).click();
+  await page.getByRole('tab', { name: 'Run' }).click();
   await page.getByLabel('Run command').fill('node server.mjs');
   await page.getByRole('button', { name: 'Save changes' }).click();
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();

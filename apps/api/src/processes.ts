@@ -108,6 +108,7 @@ export async function startProfile(
   if (!profile) throw Object.assign(new Error('Run profile not found'), { statusCode: 404 });
   if (!profile.command.trim())
     throw Object.assign(new Error('Set a command first'), { statusCode: 400 });
+  if (profile.isDefault) await bridge(projectId, '/run/stop', 'POST');
   const health = await bridge<{ protocolVersion?: number; capabilities?: string[] }>(
     projectId,
     '/health',
@@ -184,4 +185,22 @@ export async function autoStartProfiles(projectId: string) {
       and(eq(projectRunProfiles.projectId, projectId), eq(projectRunProfiles.autoStart, true)),
     );
   for (const profile of profiles) await startProfile(projectId, profile.id);
+}
+
+export async function stopProcess(projectId: string, id: string) {
+  const health = await bridge<{ capabilities?: string[] }>(projectId, '/health');
+  if (health.capabilities?.includes('process-stop'))
+    await bridge(projectId, `/processes/${id}/stop`, 'POST');
+  else await bridge(projectId, `/terminals/${id}`, 'DELETE');
+  await reconcileProcesses(projectId);
+  await db
+    .update(workspaceProcesses)
+    .set({ status: 'stopped', finishedAt: new Date() })
+    .where(
+      and(
+        eq(workspaceProcesses.projectId, projectId),
+        eq(workspaceProcesses.id, id),
+        inArray(workspaceProcesses.status, ['starting', 'running']),
+      ),
+    );
 }

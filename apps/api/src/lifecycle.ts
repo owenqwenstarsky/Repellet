@@ -176,26 +176,29 @@ export async function ensureProject(
 }
 export async function stopProject(id: string) {
   await cancelProjectWork(id);
-  return serialize(id, async () => {
-    try {
-      await flushProject(id);
-    } catch (e) {
-      if ((e as { statusCode?: number }).statusCode !== 409) throw e;
-    }
-    await setState(id, 'stopping');
-    await closeDocuments(id);
-    watchers.get(id)?.close();
-    closeProject(id);
-    try {
-      await workerJson(`/projects/${id}/stop`, 'POST');
-      await finishWorkspaceProcesses(id);
-      await setState(id, 'stopped');
-    } catch (e) {
-      await setState(id, 'failed', (e as Error).message);
-      throw e;
-    }
-  });
+  return serialize(id, () => stopProjectWithinOperation(id));
 }
+// Caller must hold the project's operation lock. Public stop cancels before waiting for it.
+export async function stopProjectWithinOperation(id: string) {
+  try {
+    await flushProject(id);
+  } catch (e) {
+    if ((e as { statusCode?: number }).statusCode !== 409) throw e;
+  }
+  await setState(id, 'stopping');
+  await closeDocuments(id);
+  watchers.get(id)?.close();
+  closeProject(id);
+  try {
+    await workerJson(`/projects/${id}/stop`, 'POST');
+    await finishWorkspaceProcesses(id);
+    await setState(id, 'stopped');
+  } catch (e) {
+    await setState(id, 'failed', (e as Error).message);
+    throw e;
+  }
+}
+
 export async function reconcile() {
   const all = await db.select().from(projects);
   await db

@@ -20,7 +20,7 @@ This change implements the first workspace-domain migration and independently ma
 
 Migrations are forward-only, additive SQL files with recorded checksums. Never edit an applied migration. Back up the database, volumes, and installation encryption key before upgrading. Migration `0005_workspace.sql` backfills default profiles/preview metadata and adds event, activity, process, idempotency, and reserved shared-agent tables without rewriting Yjs state or copying personal agent histories.
 
-The workspace base image is now `repellet/workspace-base:0.5.0`. Stop/start or rebuild an existing workspace to install the new bridge. New process APIs return an explicit rebuild message when an old bridge lacks the required capability. Existing Run remains compatible.
+The workspace base image is now `repellet/workspace-base:0.5.1`. Stop/start or rebuild an existing workspace to install the new bridge. New process APIs return an explicit rebuild message when an old bridge lacks the required capability. The main Run button and default profile share a managed process. Terminal close removes the session; stopping a managed process retains output. Older bridges retain stopped shells internally, which the API omits from the session list until the bridge is upgraded.
 
 The normal full PostgreSQL backup includes all new tables, cursor/compaction state, and profiles. Restoring clears process execution state and allocated preview ports; it does not restart commands. Older backups remain accepted and acquire the additive tables when the application migrates them. Automatic profiles run on workspace startup, not during API restart reconciliation.
 
@@ -35,3 +35,14 @@ This implementation assumes one API instance owns workspace event delivery and o
 - Full security review, comprehensive audit semantics, request quotas, operational metrics, feature-flag rollout, load testing, expanded backup/restore acceptance, and native Linux AMD64/ARM64 validation remain release work.
 
 Continue to treat this as trusted, self-hosted development for invitees. Docker is not a hostile-code SaaS sandbox.
+
+## Run settings
+
+Project settings has one Run page. Saving updates the run command, optional install command,
+folder, preview port, and default-profile automatic start without executing commands. Changing
+the install command or folder marks preparation `required`; opening the project does not install
+until an editor requests preparation. Run-only and port-only edits preserve successful preparation.
+A port change stops a running workspace; the user starts it again explicitly.
+
+Additional commands retain their profile IDs and preview associations. Advanced environment
+selection passes only the named saved project variables; an empty selection passes none.
