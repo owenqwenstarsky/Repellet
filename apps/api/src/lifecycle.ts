@@ -9,7 +9,13 @@ import { emit, hasClients, closeProject } from './live.js';
 import { flushProject, closeDocuments, externalChange } from './collaboration.js';
 import type { Runtime, Limits } from '@repellet/shared';
 import { cloneGithub } from './github.js';
-import { prepareProject, cancelProjectWork, setPreparation, setAppStatus } from './preparation.js';
+import {
+  prepareProject,
+  cancelProjectWork,
+  setPreparation,
+  setAppStatus,
+  mainRunProcessIds,
+} from './preparation.js';
 import { WorkspaceQueue } from './workspaceQueue.js';
 import {
   autoStartProfiles,
@@ -279,11 +285,12 @@ export async function monitor() {
           continue;
         }
         if (['available', 'starting', 'timeout'].includes(p.appStatus.status)) {
+          const mainIds = await mainRunProcessIds(p.id);
           const terminals = await bridge<{ id?: string; isRun: boolean; alive: boolean }[]>(
             p.id,
             '/terminals',
           );
-          if (!terminals.some((t) => (!t.id || t.id === 'run') && t.isRun && t.alive))
+          if (!terminals.some((t) => (!t.id || mainIds.has(t.id)) && t.isRun && t.alive))
             await setAppStatus(p.id, {
               status: 'failed',
               error: 'The app process exited. Check the Run terminal, then click Run to retry.',

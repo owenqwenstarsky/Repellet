@@ -201,15 +201,18 @@ export async function setAppStatus(id: string, appStatus: AppStatus) {
   await db.update(projects).set({ appStatus }).where(eq(projects.id, id));
   await emit(id, { type: 'app', appStatus });
 }
-export async function probePreview(id: string, port: number) {
-  const generation = randomUUID();
-  probes.set(id, generation);
+export async function mainRunProcessIds(id: string) {
   const mainProcesses = await db
     .select({ id: workspaceProcesses.id })
     .from(workspaceProcesses)
     .innerJoin(projectRunProfiles, eq(workspaceProcesses.profileId, projectRunProfiles.id))
     .where(and(eq(workspaceProcesses.projectId, id), eq(projectRunProfiles.isDefault, true)));
-  const mainIds = new Set(['run', ...mainProcesses.map((process) => process.id)]);
+  return new Set(['run', ...mainProcesses.map((process) => process.id)]);
+}
+export async function probePreview(id: string, port: number) {
+  const generation = randomUUID();
+  probes.set(id, generation);
+  const mainIds = await mainRunProcessIds(id);
   await setAppStatus(id, { status: 'starting', generation });
   void (async () => {
     const deadline = Date.now() + 60000;

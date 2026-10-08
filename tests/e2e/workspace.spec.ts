@@ -346,10 +346,24 @@ for (const starter of [
     });
     await writeFile('.cache/workflow-timings.json', JSON.stringify(timingReport, null, 2));
     // Run replacement must wait for the previous server to release its fixed port.
+    const previousGeneration = (await (await page.request.get(`/api/projects/${id}`)).json())
+      .appStatus.generation;
+    const restarted = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/api/projects/${id}/run`) &&
+        response.request().method() === 'POST',
+    );
     await page
       .locator('.workspace-header')
       .getByRole('button', { name: 'Run', exact: true })
       .click();
+    expect((await restarted).ok()).toBe(true);
+    await expect
+      .poll(async () => {
+        const { appStatus } = await (await page.request.get(`/api/projects/${id}`)).json();
+        return appStatus.status === 'available' && appStatus.generation !== previousGeneration;
+      })
+      .toBe(true);
     await expect(
       page
         .frameLocator('iframe[title="Project preview"]')

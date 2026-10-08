@@ -421,6 +421,86 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
       vi.useRealTimers();
     }
   });
+  it.each(['available', 'starting', 'timeout'] as const)(
+    'preserves %s preview status while the managed default Run process is alive',
+    async (status) => {
+      await db.db.insert(schema.installation).values({ id: 1, limits: defaultLimits });
+      const [profile] = await db.db
+        .select()
+        .from(schema.projectRunProfiles)
+        .where(eq(schema.projectRunProfiles.projectId, id));
+      const [process] = await db.db
+        .insert(schema.workspaceProcesses)
+        .values({ projectId: id, profileId: profile!.id, kind: 'run', status: 'running' })
+        .returning();
+      const appStatus = { status, generation: process!.id };
+      await preparation.setAppStatus(id, appStatus);
+      fake.bridge.mockResolvedValue([{ id: process!.id, isRun: true, alive: true }]);
+      fake.workerJson.mockImplementation(async (route: string) => {
+        if (route.endsWith('/agent/usage')) return { bytes: 0, exceeded: false };
+        if (route.endsWith('/agent/activity')) return { executing: true };
+        return { running: true, oomKilled: false };
+      });
+      await (await import('../apps/api/src/lifecycle.js')).monitor();
+      expect((await project()).appStatus).toEqual(appStatus);
+    },
+  );
+  it.each(['run', undefined])('keeps legacy Run session %s previewable', async (terminalId) => {
+    await db.db.insert(schema.installation).values({ id: 1, limits: defaultLimits });
+    await preparation.setAppStatus(id, { status: 'available', generation: 'legacy' });
+    fake.bridge.mockResolvedValue([{ id: terminalId, isRun: true, alive: true }]);
+    fake.workerJson.mockImplementation(async (route: string) => {
+      if (route.endsWith('/agent/usage')) return { bytes: 0, exceeded: false };
+      if (route.endsWith('/agent/activity')) return { executing: true };
+      return { running: true, oomKilled: false };
+    });
+    await (await import('../apps/api/src/lifecycle.js')).monitor();
+    expect((await project()).appStatus.status).toBe('available');
+  });
+  it.each(['exited', 'missing', 'unrelated profile', 'shell'])(
+    'marks the preview failed when its main Run process is %s',
+    async (scenario) => {
+      await db.db.insert(schema.installation).values({ id: 1, limits: defaultLimits });
+      const [profile] = await db.db
+        .select()
+        .from(schema.projectRunProfiles)
+        .where(eq(schema.projectRunProfiles.projectId, id));
+      const [main] = await db.db
+        .insert(schema.workspaceProcesses)
+        .values({ projectId: id, profileId: profile!.id, kind: 'run', status: 'running' })
+        .returning();
+      const [otherProfile] = await db.db
+        .insert(schema.projectRunProfiles)
+        .values({ projectId: id, name: 'Other server', command: 'node other.js' })
+        .returning();
+      const [other] = await db.db
+        .insert(schema.workspaceProcesses)
+        .values({ projectId: id, profileId: otherProfile!.id, kind: 'run', status: 'running' })
+        .returning();
+      await preparation.setAppStatus(id, { status: 'available', generation: main!.id });
+      fake.bridge.mockResolvedValue(
+        scenario === 'missing'
+          ? []
+          : [
+              {
+                id: scenario === 'unrelated profile' ? other!.id : main!.id,
+                isRun: scenario !== 'shell',
+                alive: scenario !== 'exited',
+              },
+            ],
+      );
+      fake.workerJson.mockImplementation(async (route: string) => {
+        if (route.endsWith('/agent/usage')) return { bytes: 0, exceeded: false };
+        if (route.endsWith('/agent/activity')) return { executing: true };
+        return { running: true, oomKilled: false };
+      });
+      await (await import('../apps/api/src/lifecycle.js')).monitor();
+      expect((await project()).appStatus).toMatchObject({
+        status: 'failed',
+        error: expect.stringContaining('The app process exited'),
+      });
+    },
+  );
   it('shows troubleshooting after 60 seconds without stopping the app or updating idle activity', async () => {
     const before = (await project()).lastActiveAt.getTime();
     fake.bridge.mockResolvedValue([{ isRun: true, alive: true }]);
