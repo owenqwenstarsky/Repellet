@@ -21,6 +21,7 @@ COPY --from=bridge /opt/language-tools /opt/language-tools
 COPY --from=bridge /opt/codex/runtime /opt/codex-runtime
 RUN ln -s /opt/codex-runtime/bin/codex /usr/local/bin/codex
 COPY docker/agent-launch.cjs /opt/repellet/agent-launch.cjs
+COPY --chmod=0444 docker/agent-context/AGENTS.md /opt/repellet/agent-context/AGENTS.md
 ENV HOME=/home/workspace
 USER workspace
 WORKDIR /workspace

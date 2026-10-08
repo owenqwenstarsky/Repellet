@@ -1,5 +1,6 @@
 import { docker, ensureImage, BASE_IMAGE } from './images.js';
 import { config, bridgeToken, projectId } from './config.js';
+import { installManagedAgentContext } from './agent-context.js';
 import type { Limits, Runtime } from '@repellet/shared';
 export const containerName = (id: string) => `repellet-project-${projectId(id)}`;
 export const volumeName = (id: string, kind = 'files') => `repellet-${projectId(id)}-${kind}`;
@@ -78,7 +79,7 @@ async function initVolumes(id: string) {
     User: 'root',
     Entrypoint: ['/bin/sh', '-c'],
     Cmd: [
-      'chown 1000:1000 /workspace /home/workspace && chown 1001:1001 /home/agent && chmod 700 /home/agent && chmod 2775 /workspace && setfacl -m g:1000:rwx,d:g:1000:rwx,d:m:rwx /workspace',
+      `chown 1000:1000 /workspace /home/workspace && ${installManagedAgentContext} && chmod 2775 /workspace && setfacl -m g:1000:rwx,d:g:1000:rwx,d:m:rwx /workspace`,
     ],
     HostConfig: {
       AutoRemove: false,

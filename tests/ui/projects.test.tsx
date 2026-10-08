@@ -262,6 +262,8 @@ it('ignores runtime detection after a source change and after unmount', async ()
   expect(screen.queryByText('Late detection')).toBeNull();
 });
 it('edits run settings in one place and keeps General saves to project details', async () => {
+  const pending = deferred<void>();
+  vi.mocked(patch).mockReturnValueOnce(pending.promise);
   render(
     <UiProvider>
       <ProjectSettings
@@ -287,12 +289,11 @@ it('edits run settings in one place and keeps General saves to project details',
       setupCommand: project.setupCommand,
     }),
   );
-  await waitFor(() =>
-    expect((screen.getByRole('tab', { name: 'General' }) as HTMLButtonElement).disabled).toBe(
-      false,
-    ),
-  );
-  fireEvent.click(screen.getByRole('tab', { name: 'General' }));
+  const general = screen.getByRole('tab', { name: 'General' }) as HTMLButtonElement;
+  expect(general.disabled).toBe(true);
+  await act(async () => pending.resolve());
+  await waitFor(() => expect(general.disabled).toBe(false));
+  fireEvent.click(general);
   fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
   await waitFor(() =>
     expect(patch).toHaveBeenLastCalledWith('/projects/project', {

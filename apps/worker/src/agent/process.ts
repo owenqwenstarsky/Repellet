@@ -1,6 +1,7 @@
 import { PassThrough } from 'node:stream';
 import { docker, BASE_IMAGE } from '../images.js';
 import { containerName, volumeName, inspect, bridgeRequest } from '../workspaces.js';
+import { installManagedAgentContext } from '../agent-context.js';
 import type { AgentPrivateSettings } from '@repellet/shared';
 import { CodexConnection } from './connection.js';
 const toml = (value: string) => JSON.stringify(value);
@@ -88,7 +89,7 @@ export async function startProjectProcess(id: string, settings: AgentPrivateSett
     },
     Labels: { 'repellet.helper': 'true' },
     Cmd: [
-      'mkdir -p /home/agent/.codex && chown 1001:1001 /home/agent /home/agent/.codex && chmod 700 /home/agent /home/agent/.codex && chgrp -R 1000 /workspace && chmod g+rwX /workspace && find /workspace -type d -exec chmod g+s {} + && setfacl -R -m g:1000:rwX /workspace && find /workspace -type d -exec setfacl -m d:g:1000:rwx,d:m:rwx {} +',
+      `${installManagedAgentContext} && chgrp -R 1000 /workspace && chmod g+rwX /workspace && find /workspace -type d -exec chmod g+s {} + && setfacl -R -m g:1000:rwX /workspace && find /workspace -type d -exec setfacl -m d:g:1000:rwx,d:m:rwx {} +`,
     ],
   });
   try {

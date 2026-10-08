@@ -32,6 +32,7 @@ COPY --from=build /app/packages/shared ./packages/shared
 COPY --from=build /app/packages/codex-protocol ./packages/codex-protocol
 COPY --from=build /app/apps/worker ./apps/worker
 COPY packages/bridge /opt/workspace-context/packages/bridge
+COPY docker/agent-context /opt/workspace-context/docker/agent-context
 COPY tsconfig.base.json /opt/workspace-context/tsconfig.base.json
 COPY docker/agent-launch.cjs /opt/workspace-context/docker/agent-launch.cjs
 COPY docker/workspace.Dockerfile /opt/workspace-context/docker/workspace.Dockerfile

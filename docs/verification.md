@@ -62,7 +62,7 @@ Live ChatGPT OAuth and paid upstream model requests were not exercised: authenti
 
 ## Static HTML projects
 
-Static HTML support was validated on macOS ARM64 with Node.js 22.22.3 and Docker Desktop 29.2.1, using a disposable Compose database and separate test workspaces. The workspace base image is `repellet/workspace-base:0.4.0`. Stop and start an existing workspace to rebuild its environment with the bundled static server; no database migration is added.
+Static HTML support was validated on macOS ARM64 with Node.js 22.22.3 and Docker Desktop 29.2.1, using a disposable Compose database and separate test workspaces. The workspace base image is `repellet/workspace-base:0.4.1`. Stop and start an existing workspace to rebuild its environment with the bundled static server; no database migration is added.
 
 `npm run check` passes type checks, 219 unit/database/UI tests, and production builds. The default suite skips 17 Docker-dependent tests; `npm run test:docker` exercises those tests alongside the backup corruption check. `npm run format:check` and high-severity dependency audits pass; the existing two low-severity Monaco/DOMPurify findings remain.
 
@@ -83,3 +83,9 @@ Validated locally on macOS ARM64 with a disposable PostgreSQL database and Docke
 - Root and React starter dependency audits report **zero vulnerabilities**. Formatting and whitespace checks pass.
 
 The full browser, backup/restore, agent-Docker, failure/load, and native Linux release matrix has not been rerun for this change. See [implementation scope](workspace-domain.md) for remaining roadmap items and the event transaction boundary limitation.
+
+## Managed agent container context
+
+The merged workspace base image advances to `repellet/workspace-base:0.5.2` to include both the workspace process APIs and the immutable managed context source, rebuilding cached images from either branch. Both project-volume initialization and agent-process startup install `/home/agent/.codex/AGENTS.md`; startup refreshes existing persistent agent volumes without a database migration. The worker image includes the source in its workspace build context.
+
+`tests/agent-docker.test.ts` checks exact context contents, agent readability, workspace-user denial, ownership/modes, placement outside `/workspace`, refresh after container recreation and agent-process replacement, and initialization of duplicated workspaces. The local Responses fixture captures whether the stable `REPELLET_AGENT_CONTEXT_MARKER=repellet-agent-context-v1` marker reached the model request, and the real Codex tests assert its presence before and after process replacement. These tests require `RUN_DOCKER_TESTS=1` and an available Docker daemon; default skips do not establish Docker integration coverage.
