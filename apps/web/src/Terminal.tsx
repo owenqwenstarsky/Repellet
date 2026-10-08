@@ -8,12 +8,17 @@ export function Terminal({
   projectId,
   id,
   editable,
+  visible = true,
 }: {
   projectId: string;
   id: string;
   editable: boolean;
+  visible?: boolean;
 }) {
   const element = useRef<HTMLDivElement>(null);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const refit = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (!element.current) return;
     const terminal = new XTerminal({
@@ -28,17 +33,20 @@ export function Terminal({
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(element.current);
-    fit.fit();
     let socket: WebSocket | null = null,
       timer: ReturnType<typeof setTimeout> | undefined,
       disposed = false;
     const resize = () => {
+      if (!visibleRef.current || !element.current?.clientWidth || !element.current?.clientHeight)
+        return;
       try {
         fit.fit();
         if (editable && socket?.readyState === 1)
           socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
       } catch {}
     };
+    refit.current = resize;
+    resize();
     function connect() {
       if (disposed) return;
       socket = new WebSocket(
@@ -74,13 +82,14 @@ export function Terminal({
     }
     connect();
     const input = terminal.onData((data) => {
-      if (editable && socket?.readyState === 1)
+      if (editable && visibleRef.current && socket?.readyState === 1)
         socket.send(JSON.stringify({ type: 'input', data }));
     });
     const observer = new ResizeObserver(resize);
     observer.observe(element.current);
     return () => {
       disposed = true;
+      refit.current = null;
       clearTimeout(timer);
       socket?.close();
       observer.disconnect();
@@ -88,5 +97,8 @@ export function Terminal({
       terminal.dispose();
     };
   }, [projectId, id, editable]);
+  useEffect(() => {
+    if (visible) refit.current?.();
+  }, [visible]);
   return <div className="terminal-canvas" ref={element} aria-label="Shared terminal" />;
 }

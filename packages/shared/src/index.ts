@@ -269,6 +269,7 @@ export type WorkspacePreferences = {
   showPreview: boolean;
   rightPanel?: 'preview' | 'agent';
   agentThread?: string;
+  bottomPanelTab?: 'terminal' | 'preparation';
   showTerminal: boolean;
   leftWidth: number;
   previewWidth: number;

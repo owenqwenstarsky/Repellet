@@ -14,7 +14,7 @@ export function ResizeHandle({
     <div
       className={`resize-handle ${horizontal ? 'horizontal' : ''}`}
       role="separator"
-      aria-label={horizontal ? 'Resize terminal' : 'Resize panel'}
+      aria-label={horizontal ? 'Resize bottom panel' : 'Resize panel'}
       aria-orientation={horizontal ? 'horizontal' : 'vertical'}
       tabIndex={0}
       onKeyDown={(e) => {

@@ -267,7 +267,17 @@ for (const starter of [
       .getByRole('dialog')
       .getByRole('button', { name: 'Create project', exact: true })
       .click();
-    await expect(page.getByText('Ready to run', { exact: true })).toBeVisible({ timeout: 300000 });
+    await expect(page.getByRole('button', { name: 'Toggle bottom panel' })).toBeVisible({
+      timeout: 300000,
+    });
+    if (!(await page.getByRole('tab', { name: 'Preparation Logs' }).isVisible()))
+      await page.getByRole('button', { name: 'Toggle bottom panel' }).click();
+    await page.getByRole('tab', { name: 'Preparation Logs' }).click();
+    await expect(
+      page
+        .getByRole('tabpanel', { name: 'Preparation Logs' })
+        .getByText('Ready to run', { exact: true }),
+    ).toBeVisible({ timeout: 300000 });
     const id = page.url().split('/').pop()!;
     const before = await (await page.request.get(`/api/projects/${id}/terminals`)).json();
     expect(before.some((t: any) => t.isRun && t.alive)).toBe(false);

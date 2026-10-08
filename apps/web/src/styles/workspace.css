@@ -88,9 +88,6 @@
 .workspace-banners .load-error {
   margin: 0;
 }
-.workspace-banners details {
-  margin-top: var(--space-1);
-}
 .log {
   max-height: 260px;
   margin: var(--space-2) 0 0;
@@ -490,8 +487,93 @@
   color: var(--color-text-subtle);
 }
 
+/* Bottom panel */
+.workspace-bottom-panel {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-height: 0;
+  background: var(--color-bg);
+}
+.workspace-bottom-panel[hidden],
+.bottom-panel-content[hidden] {
+  display: none;
+}
+.bottom-panel-toolbar {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-height: var(--pane-header-h);
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+.bottom-panel-tabs {
+  display: flex;
+  align-self: stretch;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+.bottom-panel-tabs > button {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 2px solid transparent;
+  color: var(--color-text-subtle);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.bottom-panel-tabs > button[aria-selected='true'] {
+  color: var(--color-text);
+  border-bottom-color: var(--color-accent);
+}
+.bottom-panel-tabs > button:hover {
+  color: var(--color-text);
+}
+.bottom-panel-content,
+.preparation-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.preparation-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+}
+.preparation-status {
+  color: var(--color-text-muted);
+}
+.preparation-status.failed,
+.preparation-error {
+  color: var(--color-danger);
+}
+.preparation-error {
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-2);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.preparation-log {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  overflow: auto;
+  white-space: pre;
+  font: var(--text-xs) / var(--leading-relaxed) var(--font-mono);
+  color: var(--color-text-muted);
+}
+
 /* Terminal */
 .terminal-panel {
+  flex: 1;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -506,10 +588,6 @@
   height: var(--pane-header-h);
   padding: 0 var(--space-2) 0 var(--space-4);
   border-bottom: 1px solid var(--color-border);
-}
-.terminal-label {
-  flex-shrink: 0;
-  margin-right: var(--space-3);
 }
 .terminal-tabs {
   display: flex;

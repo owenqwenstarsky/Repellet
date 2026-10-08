@@ -4,7 +4,7 @@ import { IconButton, LoadError } from '../ui';
 import { Terminal } from '../Terminal';
 export function TerminalPanel({
   projectId,
-  height,
+  visible,
   terminals,
   terminal,
   error,
@@ -12,11 +12,10 @@ export function TerminalPanel({
   onSelect,
   onStop,
   onCreate,
-  onHide,
   onRetry,
 }: {
   projectId: string;
-  height: number;
+  visible: boolean;
   terminals: TerminalInfo[];
   terminal: string;
   error: string;
@@ -24,13 +23,11 @@ export function TerminalPanel({
   onSelect: (id: string) => void;
   onStop: (id: string) => void;
   onCreate: () => void;
-  onHide: () => void;
   onRetry: () => void;
 }) {
   return (
-    <section className="terminal-panel" style={{ height }}>
+    <section className="terminal-panel">
       <div className="terminal-toolbar">
-        <h2 className="pane-title terminal-label">Terminal</h2>
         <div className="terminal-tabs">
           {terminals.map((t) => (
             <div className={`terminal-tab ${terminal === t.id ? 'active' : ''}`} key={t.id}>
@@ -59,11 +56,16 @@ export function TerminalPanel({
         {editable && (
           <IconButton size="sm" label="New terminal" icon={<Plus size={14} />} onClick={onCreate} />
         )}
-        <IconButton size="sm" label="Hide terminal" icon={<X size={14} />} onClick={onHide} />
       </div>
       {error && <LoadError message={error} onRetry={onRetry} />}
       {terminal ? (
-        <Terminal key={terminal} projectId={projectId} id={terminal} editable={editable} />
+        <Terminal
+          key={terminal}
+          projectId={projectId}
+          id={terminal}
+          editable={editable}
+          visible={visible}
+        />
       ) : (
         <div className="terminal-empty">
           {editable

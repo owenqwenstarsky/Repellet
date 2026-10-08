@@ -377,6 +377,7 @@ describe('workspace state recovery', () => {
     );
     workspace();
     await flush();
+    fireEvent.click(screen.getByLabelText('Toggle bottom panel'));
     expect(screen.getByText('Terminal failed')).toBeTruthy();
     await act(async () => vi.advanceTimersByTimeAsync(2500));
     expect(attempts).toBe(2);
@@ -528,11 +529,12 @@ describe('pane loading feedback and deferred mutations', () => {
     );
     workspace();
     await flush();
+    fireEvent.click(screen.getByLabelText('Toggle bottom panel'));
     const stop = screen.getByRole('button', { name: 'Stop Shell' });
     expect(stop.parentElement?.tagName).toBe('DIV');
     expect(stop.closest('.terminal-tab')).toBeTruthy();
     expect(screen.getByLabelText('New terminal').closest('.terminal-tabs')).toBeNull();
-    expect(screen.getByLabelText('Hide terminal').closest('.terminal-tabs')).toBeNull();
+    expect(screen.getByLabelText('Hide bottom panel').closest('.terminal-tabs')).toBeNull();
   });
   it('remaps consecutive structure events even when React batches them', async () => {
     const props = {
@@ -732,9 +734,10 @@ it('resizes from effective panel dimensions when requested sizes are constrained
     key: 'ArrowLeft',
   });
   expect(explorer.style.width).toBe('195px');
-  const resize = screen.getByRole('separator', { name: 'Resize terminal' });
+  fireEvent.click(screen.getByLabelText('Toggle bottom panel'));
+  const resize = screen.getByRole('separator', { name: 'Resize bottom panel' });
   for (let i = 0; i < 20; i++) fireEvent.keyDown(resize, { key: 'ArrowUp' });
-  const terminal = view.container.querySelector('.terminal-panel') as HTMLElement;
+  const terminal = view.container.querySelector('.workspace-bottom-panel') as HTMLElement;
   expect(terminal.style.height).toBe('335px');
   fireEvent.keyDown(resize, { key: 'ArrowDown' });
   expect(terminal.style.height).toBe('325px');

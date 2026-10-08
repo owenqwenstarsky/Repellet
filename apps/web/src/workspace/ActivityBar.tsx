@@ -67,8 +67,8 @@ export function ActivityBar({
       <div className="activity-spacer" />
       <button
         aria-pressed={showTerminal}
-        aria-label="Toggle terminal"
-        title="Toggle terminal"
+        aria-label="Toggle bottom panel"
+        title="Toggle bottom panel"
         className={showTerminal ? 'active-subtle' : ''}
         onClick={onToggleTerminal}
       >
