@@ -10,16 +10,17 @@ import { flushProject, closeDocuments, externalChange } from './collaboration.js
 import type { Runtime, Limits } from '@repellet/shared';
 import { cloneGithub } from './github.js';
 import { prepareProject, cancelProjectWork, setPreparation, setAppStatus } from './preparation.js';
-const operations = new Map<string, Promise<unknown>>();
+import { WorkspaceQueue } from './workspaceQueue.js';
+import {
+  autoStartProfiles,
+  recordProcess,
+  finishWorkspaceProcesses,
+  reconcileProcesses,
+} from './processes.js';
+const operations = new WorkspaceQueue();
 const watchers = new Map<string, WebSocket>();
 export async function serialize<T>(id: string, fn: () => Promise<T>): Promise<T> {
-  const operation = (operations.get(id) || Promise.resolve()).catch(() => {}).then(fn);
-  operations.set(id, operation);
-  try {
-    return await operation;
-  } finally {
-    if (operations.get(id) === operation) operations.delete(id);
-  }
+  return operations.run(id, fn);
 }
 export async function limits() {
   const [row] = await db.select().from(installation).where(eq(installation.id, 1));
@@ -32,7 +33,7 @@ export async function setState(
   error: string | null = null,
 ) {
   await db.update(projects).set({ state, error, updatedAt: new Date() }).where(eq(projects.id, id));
-  emit(id, { type: 'state', state, error });
+  await emit(id, { type: 'state', state, error });
 }
 export async function watch(id: string) {
   if (watchers.get(id)?.readyState === 1) return;
@@ -45,7 +46,8 @@ export async function watch(id: string) {
   ws.on('message', (raw) => {
     try {
       const event = JSON.parse(String(raw));
-      emit(id, event);
+      if (event.type === 'process') void recordProcess(id, event.process).catch(() => {});
+      else emit(id, event);
       if (event.type === 'file')
         void externalChange(id, event.path).catch((e) =>
           emit(id, { type: 'error', message: e.message }),
@@ -158,6 +160,9 @@ export async function ensureProject(
           .set({ state: 'succeeded', finishedAt: new Date() })
           .where(eq(jobs.id, job.id));
       await watch(id);
+      await autoStartProfiles(id).catch((error) =>
+        emit(id, { type: 'error', message: `Automatic Run failed: ${(error as Error).message}` }),
+      );
     } catch (e) {
       await setState(id, 'failed', (e as Error).message);
       if (job)
@@ -183,6 +188,7 @@ export async function stopProject(id: string) {
     closeProject(id);
     try {
       await workerJson(`/projects/${id}/stop`, 'POST');
+      await finishWorkspaceProcesses(id);
       await setState(id, 'stopped');
     } catch (e) {
       await setState(id, 'failed', (e as Error).message);
@@ -212,6 +218,7 @@ export async function reconcile() {
     try {
       const state = await workerJson<{ running: boolean; oomKilled: boolean }>(`/projects/${p.id}`);
       if (state.running) {
+        await reconcileProcesses(p.id).catch(() => {}); // Older bridges upgrade on rebuild.
         await db
           .update(projects)
           .set({ state: 'running', error: null })
@@ -228,12 +235,15 @@ export async function reconcile() {
             error:
               'Readiness checking was interrupted by a restart. Retry readiness to check the running app.',
           });
-      } else if (p.state !== 'stopped')
-        await setState(
-          p.id,
-          state.oomKilled ? 'failed' : 'stopped',
-          state.oomKilled ? 'Workspace exceeded its memory limit' : null,
-        );
+      } else {
+        await finishWorkspaceProcesses(p.id);
+        if (p.state !== 'stopped')
+          await setState(
+            p.id,
+            state.oomKilled ? 'failed' : 'stopped',
+            state.oomKilled ? 'Workspace exceeded its memory limit' : null,
+          );
+      }
     } catch (e) {
       console.error('Reconciliation failed', p.id, (e as Error).message);
     }
@@ -254,6 +264,7 @@ export async function monitor() {
           `/projects/${p.id}`,
         );
         if (!status.running) {
+          await finishWorkspaceProcesses(p.id);
           await setState(
             p.id,
             'failed',
@@ -265,8 +276,11 @@ export async function monitor() {
           continue;
         }
         if (['available', 'starting', 'timeout'].includes(p.appStatus.status)) {
-          const terminals = await bridge<{ isRun: boolean; alive: boolean }[]>(p.id, '/terminals');
-          if (!terminals.some((t) => t.isRun && t.alive))
+          const terminals = await bridge<{ id?: string; isRun: boolean; alive: boolean }[]>(
+            p.id,
+            '/terminals',
+          );
+          if (!terminals.some((t) => (!t.id || t.id === 'run') && t.isRun && t.alive))
             await setAppStatus(p.id, {
               status: 'failed',
               error: 'The app process exited. Check the Run terminal, then click Run to retry.',

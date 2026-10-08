@@ -425,3 +425,5 @@ export function suggestSetup(
 
 export * from './agent.js';
 export * from './agentProjection.js';
+
+export * from './workspace.js';

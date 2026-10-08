@@ -7,7 +7,7 @@ import { promises as fs } from 'node:fs';
 import { WebSocket } from 'ws';
 import { z, ZodError } from 'zod';
 import { eq } from 'drizzle-orm';
-import { safeRelativePath } from '@repellet/shared';
+import { safeRelativePath, workspaceCursorSchema } from '@repellet/shared';
 import { config, allowedOrigins } from './config.js';
 import { db, pool } from './db.js';
 import { installation, projects } from './schema.js';
@@ -15,18 +15,35 @@ import { agentRoutes } from './agent.js';
 import { githubRoutes } from './github.js';
 import { routes } from './routes.js';
 import { requireUser, projectAccess, SESSION_COOKIE } from './security.js';
-import { track } from './live.js';
+import {
+  track,
+  subscribeWorkspaceEvents,
+  enableWorkspaceJournal,
+  closeWorkspaceConnections,
+} from './live.js';
 import { attachDocument } from './collaboration.js';
 import { workerJson } from './worker.js';
+import { workspaceContext } from './workspaceContext.js';
+import { workspaceRoutes } from './workspaceRoutes.js';
+import { idempotencyHooks } from './idempotency.js';
+import { auditHooks } from './audit.js';
 export async function createApp(options: { static?: boolean; logger?: boolean } = {}) {
   const app = Fastify({
     logger: options.logger ?? true,
     bodyLimit: 12 * 1024 * 1024,
     trustProxy: process.env.TRUST_PROXY === 'true',
   });
+  enableWorkspaceJournal();
+  app.addHook('onClose', closeWorkspaceConnections);
+  app.addHook('onRequest', (req, reply, done) => {
+    reply.header('x-request-id', req.id);
+    workspaceContext.run({ requestId: req.id }, done);
+  });
   await app.register(cookie);
   await app.register(rateLimit, { global: false });
   await app.register(websocket, { options: { maxPayload: 4 * 1024 * 1024 } });
+  idempotencyHooks(app);
+  auditHooks(app);
   app.setErrorHandler((error, req, reply) => {
     const e = error as Error & { statusCode?: number; code?: string; completedFiles?: string[] };
     if (e instanceof ZodError)
@@ -69,6 +86,7 @@ export async function createApp(options: { static?: boolean; logger?: boolean } 
     return { ok: true, worker, version: '0.1.0' };
   });
   await routes(app);
+  await workspaceRoutes(app);
   await githubRoutes(app);
   await agentRoutes(app);
   app.get('/ws/projects/:id/events', { websocket: true }, async (ws, req) => {
@@ -78,14 +96,23 @@ export async function createApp(options: { static?: boolean; logger?: boolean } 
         .string()
         .uuid()
         .parse((req.params as { id: string }).id);
-      await projectAccess(user, id);
-      track(ws, {
+      const p = await projectAccess(user, id);
+      const query = req.query as { cursor?: string; protocol?: string };
+      if (query.protocol && query.protocol !== '1')
+        throw new Error('Unsupported workspace protocol');
+      const sequenced = query.protocol === '1' || query.cursor !== undefined;
+      const cursor =
+        query.cursor === undefined ? undefined : workspaceCursorSchema.parse(query.cursor);
+      const connection = {
+        role: p.role,
         userId: user.id,
         projectId: id,
         token: req.cookies[SESSION_COOKIE]!,
         events: true,
         displayName: user.displayName,
-      });
+      };
+      if (sequenced) await subscribeWorkspaceEvents(ws, connection, cursor);
+      else track(ws, connection);
       ws.on('message', () => {});
     } catch (e) {
       ws.close(1008, (e as Error).message.slice(0, 120));
@@ -164,7 +191,7 @@ export async function createApp(options: { static?: boolean; logger?: boolean } 
         displayName: user.displayName,
       });
       upstream = new WebSocket(
-        `${config.workerUrl.replace(/^http/, 'ws')}/projects/${id}/ws?path=${encodeURIComponent(channel)}`,
+        `${config.workerUrl.replace(/^http/, 'ws')}/projects/${id}/ws?path=${encodeURIComponent(channel)}&readOnly=${!editable}`,
         { headers: { authorization: `Bearer ${config.workerToken}` } },
       );
       upstream.on('open', () => {

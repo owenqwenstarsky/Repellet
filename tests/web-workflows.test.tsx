@@ -344,7 +344,7 @@ describe('workspace state recovery', () => {
     fireEvent.click(screen.getByText('a.ts'));
     await flush();
     await waitFor(() => screen.getByText('Editing a.ts'));
-    const events = FakeSocket.instances.find((s) => s.url.endsWith('/events'))!;
+    const events = FakeSocket.instances.find((s) => new URL(s.url).pathname.endsWith('/events'))!;
     await act(async () => events.message({ type: 'structure', from: 'a.ts' }));
     expect(screen.getByText('Editing b.ts')).toBeTruthy();
   });
@@ -811,7 +811,7 @@ it.each(['a.ts', 'src'])(
     fireEvent.click(screen.getByText('b.ts'));
     await screen.findByText('Editing b.ts');
     fireEvent.click(screen.getByText(path));
-    const events = FakeSocket.instances.find((s) => s.url.endsWith('/events'))!;
+    const events = FakeSocket.instances.find((s) => new URL(s.url).pathname.endsWith('/events'))!;
     await act(async () =>
       events.message({
         type: 'file',

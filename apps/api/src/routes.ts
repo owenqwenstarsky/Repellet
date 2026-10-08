@@ -216,14 +216,35 @@ export async function routes(app: FastifyInstance) {
     return { ok: true };
   });
   app.get('/api/admin/projects', async (req) => {
-    await requireOwner(req);
+    const admin = await requireOwner(req);
     return (
       await db
-        .select({ project: projects, ownerName: users.displayName })
+        .select({
+          id: projects.id,
+          name: projects.name,
+          ownerId: projects.ownerId,
+          state: projects.state,
+          storageBytes: projects.storageBytes,
+          storageExceeded: projects.storageExceeded,
+          ownerName: users.displayName,
+          memberId: members.userId,
+        })
         .from(projects)
         .innerJoin(users, eq(projects.ownerId, users.id))
+        .leftJoin(members, and(eq(members.projectId, projects.id), eq(members.userId, admin.id)))
         .orderBy(desc(projects.updatedAt))
-    ).map((p) => viewProject({ ...p.project, role: 'owner', ownerName: p.ownerName }));
+    ).map(({ ownerId, memberId, ...p }) => ({ ...p, canOpen: ownerId === admin.id || !!memberId }));
+  });
+  app.post('/api/admin/projects/:id/stop', async (req) => {
+    await requireOwner(req);
+    const id = idFrom(req);
+    const [project] = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.id, id));
+    if (!project) throw Object.assign(new Error('Project not found'), { statusCode: 404 });
+    await stopProject(id);
+    return { ok: true };
   });
   app.get('/api/projects', async (req) => {
     const user = await requireUser(req);

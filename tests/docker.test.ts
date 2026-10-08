@@ -116,6 +116,29 @@ describe.skipIf(!enabled)('real Docker workspace integration', () => {
     ws.close();
     expect(output).toContain('RECONNECT_OK');
   });
+  it('runs independent profile processes and preserves IDs across duplicate start requests', async () => {
+    const first = randomUUID(),
+      second = randomUUID();
+    const create = (processId: string, name: string) =>
+      json('/processes', 'POST', {
+        id: processId,
+        name,
+        command: 'node -e "setInterval(() => console.log(123), 1000)"',
+        cwd: '',
+        kind: 'run',
+        environmentKeys: [],
+      });
+    const a = await create(first, 'API'),
+      b = await create(second, 'Frontend');
+    expect(a.status).toBe('running');
+    expect(b.status).toBe('running');
+    expect((await create(first, 'API')).pid).toBe(a.pid);
+    await json(`/terminals/${first}`, 'DELETE');
+    const processes = await json('/processes');
+    expect(processes.find((p: any) => p.id === first).status).toBe('stopped');
+    expect(processes.find((p: any) => p.id === second).status).toBe('running');
+    await json(`/terminals/${second}`, 'DELETE');
+  });
   it('rejects external symlinks and stale writes', async () => {
     await command("ln -s /etc /workspace/escape; printf 'SYMLINK_%s\\n' READY", 'SYMLINK_READY');
     await expect(json('/file?path=escape/passwd')).rejects.toMatchObject({ statusCode: 403 });

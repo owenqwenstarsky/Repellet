@@ -61,3 +61,5 @@ See [starters, workspace preferences, GitHub setup, and recovery](docs/workflows
 - [Architecture and security boundaries](docs/architecture.md)
 
 Repellet is a single-host application for trusted invitees. Docker isolation is not a hostile-code sandbox. Custom Dockerfiles, public previews, publishing, debugger integration, extension marketplaces, mobile-first editing, and multiple hosts are outside this release.
+
+The workspace-domain migration and Run profiles are documented in [Workspace domain implementation](docs/workspace-domain.md), including compatibility, recovery, and the remaining private IDE roadmap.

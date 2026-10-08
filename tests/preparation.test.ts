@@ -40,6 +40,8 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
     ).createApp({ static: false, logger: false });
   });
   beforeEach(async () => {
+    if (id) await preparation.cancelReadiness(id);
+    await (await import('../apps/api/src/live.js')).drainWorkspaceEvents();
     await db.pool.query('TRUNCATE users, projects, installation CASCADE');
     const [user] = await db.db
       .insert(schema.users)

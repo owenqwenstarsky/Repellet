@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import { workspaceEventSchema } from '@repellet/shared';
 import { wsUrl } from '../api';
+import { WorkspaceSession } from './session';
 export type WorkspaceEvent = { type: string; [key: string]: any };
-// Project event stream with reconnect. Handlers live in a ref so they never go stale.
+// Keep the cursor through disconnects. Initial attachment and expired cursors refresh the snapshot.
 export function useWorkspaceSocket(
   id: string,
   enabled: boolean,
@@ -13,17 +15,37 @@ export function useWorkspaceSocket(
   latest.current = handlers;
   useEffect(() => {
     if (!enabled) return;
+    const session = new WorkspaceSession(id);
     let socket: WebSocket | null = null,
       reconnect: ReturnType<typeof setTimeout> | undefined,
       disposed = false;
     function connect() {
       if (disposed) return;
-      socket = new WebSocket(wsUrl(`/ws/projects/${id}/events`));
+      const query = `?protocol=1${session.cursor === undefined ? '' : `&cursor=${session.cursor}`}`;
+      socket = new WebSocket(wsUrl(`/ws/projects/${id}/events${query}`));
       socket.onopen = () => setConnected(true);
       socket.onmessage = (event) => {
         try {
-          latest.current.onMessage(JSON.parse(event.data));
-        } catch {}
+          const message = JSON.parse(event.data);
+          if (message.type === 'event') {
+            const parsed = workspaceEventSchema.parse(message.event);
+            const result = session.accept(parsed, (current) =>
+              latest.current.onMessage(current.payload as WorkspaceEvent),
+            );
+            if (result === 'resync') {
+              session.cursor = undefined;
+              socket?.close(4000, 'Workspace sequence changed');
+            }
+          } else if (message.type === 'resync-required' || message.type === 'ready') {
+            if (!Number.isSafeInteger(message.cursor) || message.cursor < 0)
+              throw new Error('Invalid workspace cursor');
+            session.cursor = message.cursor;
+            latest.current.onMessage({ type: 'resync', reason: message.reason });
+          } else latest.current.onMessage(message); // Compatibility with pre-migration servers.
+        } catch {
+          session.cursor = undefined;
+          socket?.close(4000, 'Workspace event could not be applied');
+        }
       };
       socket.onclose = (e) => {
         if (disposed) return;

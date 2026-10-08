@@ -71,3 +71,15 @@ The 18 Docker/backup tests include static-site inspection in a subdirectory, ser
 Static-server unit tests cover MIME types, GET/HEAD, nested indexes and redirects, missing resources, malformed/traversal paths, hidden files and escaping symlinks, unchanged source HTML and inline script strings, debounced upload/rename/delete notifications, ignored dependencies, HTTPS origins behind the gateway, and release of sockets and ports on shutdown. Full-page refresh waits for atomic renames and write stabilization. HTML over 2 MiB streams without reload injection and requires manual refresh.
 
 Linux and non-Chromium browser coverage remain unverified locally.
+
+## Workspace domain foundation
+
+Validated locally on macOS ARM64 with a disposable PostgreSQL database and Docker workspaces:
+
+- `npm run check`: type checks, **280 passing tests**, and production builds. **25 gated tests skipped**; this is not a complete release-matrix run.
+- Existing Docker workspace suite: **16 passed**. Added independent profile-process test: **passed**, including a repeat against the final `0.5.0` bridge image.
+- New PostgreSQL coverage includes pre-0005 migration/backfill, preserved document identity/Yjs state, concurrent event sequencing, replay, compaction/resync, administrator denial, independent processes, missing-process reconciliation, and lifecycle idempotency.
+- New client/bridge coverage includes cursor deduplication/gaps, document identity remapping, queue recovery, viewer terminal enforcement, resize arbitration, bounded output, environment filtering, save-before-profile-launch, and viewer profile controls.
+- Root and React starter dependency audits report **zero vulnerabilities**. Formatting and whitespace checks pass.
+
+The full browser, backup/restore, agent-Docker, failure/load, and native Linux release matrix has not been rerun for this change. See [implementation scope](workspace-domain.md) for remaining roadmap items and the event transaction boundary limitation.

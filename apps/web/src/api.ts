@@ -12,6 +12,10 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
     ...options,
     headers: {
       ...(options.body ? { 'content-type': 'application/json' } : {}),
+      ...(['POST', 'PUT', 'DELETE'].includes(options.method || '') &&
+      /^\/projects\/[0-9a-f-]+(?:\/(?:open|stop|duplicate|environment))?$/.test(path)
+        ? { 'idempotency-key': crypto.randomUUID() }
+        : {}),
       ...options.headers,
     },
   });

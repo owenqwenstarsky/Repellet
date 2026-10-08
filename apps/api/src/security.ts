@@ -11,6 +11,8 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from './config.js';
 import { db } from './db.js';
 import { users, sessions, projects, members } from './schema.js';
+import { hasProjectCapability, type ProjectCapability } from '@repellet/shared';
+import { workspaceContext } from './workspaceContext.js';
 export const SESSION_COOKIE = 'repellet_session';
 export const tokenHash = (value: string) => createHash('sha256').update(value).digest('hex');
 export function encrypt(value: string, key = config.encryptionKey) {
@@ -71,12 +73,12 @@ export async function requireOwner(req: FastifyRequest) {
 export async function projectAccess(
   user: AuthUser,
   id: string,
-  mode: 'view' | 'edit' | 'manage' = 'view',
+  mode: Exclude<ProjectCapability, 'agent.execute'> = 'view',
 ) {
   const [project] = await db.select().from(projects).where(eq(projects.id, id));
   if (!project) throw Object.assign(new Error('Project not found'), { statusCode: 404 });
   let role: 'owner' | 'editor' | 'viewer';
-  if (user.isOwner || project.ownerId === user.id) role = 'owner';
+  if (project.ownerId === user.id) role = 'owner';
   else {
     const [membership] = await db
       .select()
@@ -85,8 +87,13 @@ export async function projectAccess(
     if (!membership) throw Object.assign(new Error('Project not found'), { statusCode: 404 });
     role = membership.role;
   }
-  if ((mode === 'manage' && role !== 'owner') || (mode === 'edit' && role === 'viewer'))
+  if (!hasProjectCapability(role, mode))
     throw Object.assign(new Error('Insufficient project permissions'), { statusCode: 403 });
+  const context = workspaceContext.getStore();
+  if (context) {
+    context.projectId = id;
+    context.actor = { id: user.id, name: user.displayName, role };
+  }
   return { ...project, role };
 }
 export async function issueSession(user: AuthUser, reply: FastifyReply) {

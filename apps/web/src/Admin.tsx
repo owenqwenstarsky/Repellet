@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { userCreateSchema } from '@repellet/shared';
-import type { User, Project, Limits } from '@repellet/shared';
+import type { User, OperationalProject, Limits } from '@repellet/shared';
 import {
   UserPlus,
   Users,
@@ -42,7 +42,7 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
   const [tab, setTab] = useState<Tab>('people');
   const [users, setUsers] = useState<User[]>([]);
   const [limits, setLimits] = useState<Limits | null>(null);
-  const [projects, setProjects] = useState<Project[]>([]);
+  const [projects, setProjects] = useState<OperationalProject[]>([]);
   const [creating, setCreating] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -59,7 +59,7 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
       const [u, s, p] = await Promise.all([
         api<User[]>('/admin/users'),
         api<{ limits: Limits }>('/admin/settings'),
-        api<Project[]>('/admin/projects'),
+        api<OperationalProject[]>('/admin/projects'),
       ]);
       setUsers(u);
       setLimits(s.limits);
@@ -230,7 +230,11 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
             <div className="list">
               {projects.map((p) => (
                 <div className="list-row" key={p.id}>
-                  <button className="project-name list-row-main" onClick={() => onOpen(p.id)}>
+                  <button
+                    className="project-name list-row-main"
+                    disabled={!p.canOpen}
+                    onClick={() => onOpen(p.id)}
+                  >
                     <span className="project-icon">
                       <Box size={17} />
                     </span>
@@ -252,7 +256,7 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
                         icon={<Square size={11} />}
                         onClick={async () => {
                           try {
-                            await post(`/projects/${p.id}/stop`);
+                            await post(`/admin/projects/${p.id}/stop`);
                             await load();
                           } catch (e) {
                             ui.notify(errorMessage(e));

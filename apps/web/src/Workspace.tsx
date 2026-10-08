@@ -78,6 +78,14 @@ export function Workspace({
     !busy;
   const { connected } = useWorkspaceSocket(id, !!ready, project?.role, {
     onMessage(message) {
+      if (message.type === 'resync') {
+        void editor.reconcileRegistry().catch((error) => ui.notify(errorMessage(error)));
+        void load();
+        void terminals.reload();
+        setRevision((v) => v + 1);
+        setIndexRevision((v) => v + 1);
+      }
+      if (message.type === 'document') editor.observeDocument(message.document);
       if (message.type === 'presence') setPeers(message.peers);
       if (message.type === 'file' || message.type === 'files') setRevision((v) => v + 1);
       if (
@@ -88,7 +96,7 @@ export function Workspace({
         setIndexRevision((v) => v + 1);
       if (message.type === 'file' && ['unlink', 'unlinkDir'].includes(message.event))
         editor.dropPath(message.path);
-      if (message.type === 'terminals') void terminals.reload();
+      if (message.type === 'terminals' || message.type === 'process') void terminals.reload();
       if (message.type === 'state') void load();
       if (message.type === 'structure') {
         setIndexRevision((v) => v + 1);
@@ -244,7 +252,7 @@ export function Workspace({
       </div>
     );
   if (!project) return <Spinner label="Opening workspace…" />;
-  const running = terminals.terminals.some((t) => t.isRun && t.alive);
+  const running = terminals.terminals.some((t) => t.id === 'run' && t.isRun && t.alive);
   const url = project.previewPort ? previewUrl(project.previewPort) : '';
   const { dimensions } = layout;
   return (

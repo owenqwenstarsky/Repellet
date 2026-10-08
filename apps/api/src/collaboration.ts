@@ -6,7 +6,7 @@ import {
   removeAwarenessStates,
 } from 'y-protocols/awareness';
 import * as decoding from 'lib0/decoding';
-import { or, and, eq } from 'drizzle-orm';
+import { or, and, eq, sql } from 'drizzle-orm';
 import type { WebSocket } from 'ws';
 import { db } from './db.js';
 import { documents } from './schema.js';
@@ -22,6 +22,7 @@ type Document = {
   diskHash: string | null;
   dirty: boolean;
   conflict: boolean;
+  revision: number;
   clients: Set<WebSocket>;
   queue: Promise<unknown>;
   timer?: NodeJS.Timeout;
@@ -40,16 +41,29 @@ export function enqueue<T>(d: Document, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 async function store(d: Document) {
-  await db
+  const [saved] = await db
     .update(documents)
     .set({
       state: Buffer.from(Y.encodeStateAsUpdate(d.doc)).toString('base64'),
       diskHash: d.diskHash,
       dirty: d.dirty,
       conflict: d.conflict,
+      revision: sql`${documents.revision} + 1`,
       updatedAt: new Date(),
     })
-    .where(eq(documents.id, d.id));
+    .where(eq(documents.id, d.id))
+    .returning({ revision: documents.revision });
+  d.revision = saved!.revision;
+  await emit(d.projectId, {
+    type: 'document',
+    document: {
+      id: d.id,
+      path: d.path,
+      revision: d.revision,
+      dirty: d.dirty,
+      conflict: d.conflict,
+    },
+  });
 }
 async function load(projectId: string, path: string): Promise<Document> {
   const existing = opened.get(key(projectId, path));
@@ -99,6 +113,7 @@ async function load(projectId: string, path: string): Promise<Document> {
       diskHash: row.diskHash,
       dirty: row.dirty,
       conflict: row.conflict,
+      revision: row.revision,
       clients: new Set(),
       queue: Promise.resolve(),
       closing: false,
@@ -190,6 +205,8 @@ export async function attachDocument(
       update: Buffer.from(Y.encodeStateAsUpdate(d.doc)).toString('base64'),
       conflict: d.conflict,
       dirty: d.dirty,
+      documentId: d.id,
+      revision: d.revision,
     }),
   );
   if (d.awareness.getStates().size)
@@ -233,7 +250,14 @@ export async function attachDocument(
             ws,
           );
           if (ws.readyState === 1)
-            ws.send(JSON.stringify({ type: 'ack', requestId: message.requestId }));
+            ws.send(
+              JSON.stringify({
+                type: 'ack',
+                requestId: message.requestId,
+                documentId: d.id,
+                revision: d.revision,
+              }),
+            );
           schedule(d);
         } catch (e) {
           opened.delete(key(d.projectId, d.path));
@@ -392,12 +416,16 @@ export async function structure<T>(
           if (to)
             await tx
               .update(documents)
-              .set({ path: to + row.path.slice(from.length) })
+              .set({
+                path: to + row.path.slice(from.length),
+                revision: sql`${documents.revision} + 1`,
+                updatedAt: new Date(),
+              })
               .where(eq(documents.id, row.id));
           else await tx.delete(documents).where(eq(documents.id, row.id));
         }
     });
-    emit(projectId, { type: 'structure', from, to: to || null });
+    await emit(projectId, { type: 'structure', from, to: to || null });
     return result;
   } finally {
     releaseFileEvents();

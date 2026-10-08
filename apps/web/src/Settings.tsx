@@ -37,7 +37,8 @@ import { RuntimePicker } from './Projects';
 import { RepositorySetupForm, useRunSettings } from './RepositorySetup';
 import { GitHubPicker } from './GitHub';
 import { usePollingField } from './usePollingField';
-type Tab = 'general' | 'run' | 'environment' | 'members';
+import { RunProfiles } from './RunProfiles';
+type Tab = 'general' | 'run' | 'profiles' | 'environment' | 'members';
 export function ProjectSettings({
   project,
   onClose,
@@ -77,11 +78,13 @@ export function ProjectSettings({
         items={[
           { id: 'general', label: 'General', icon: SlidersHorizontal },
           { id: 'run', label: 'Run & setup', icon: Play },
+          { id: 'profiles', label: 'Run profiles', icon: Play },
           ...(manage ? [{ id: 'environment' as const, label: 'Environment', icon: Layers }] : []),
           { id: 'members', label: 'People', icon: Users },
         ]}
       />
       <TabPanel>
+        {tab === 'profiles' && <RunProfiles project={project} />}
         {tab === 'general' && (
           <General
             details={details}

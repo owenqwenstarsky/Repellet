@@ -20,7 +20,7 @@ const cancellations = new Map<string, number>();
 const probes = new Map<string, string>();
 export async function setPreparation(id: string, preparation: Preparation) {
   await db.update(projects).set({ preparation }).where(eq(projects.id, id));
-  emit(id, { type: 'preparation', preparation });
+  await emit(id, { type: 'preparation', preparation });
 }
 export async function preparationJobs(id: string) {
   return db
@@ -84,7 +84,7 @@ export async function prepareProject(id: string) {
         .update(jobs)
         .set({ step, steps, ...(log === undefined ? {} : { log: log.slice(-65536) }) })
         .where(eq(jobs.id, job.id));
-      emit(id, { type: 'preparation-log', jobId: job.id, step, log });
+      await emit(id, { type: 'preparation-log', jobId: job.id, step, log: log?.slice(-65536) });
     };
     const check = () => {
       if ((cancellations.get(id) || 0) !== generation)
@@ -199,7 +199,7 @@ export async function cancelProjectWork(id: string) {
 }
 export async function setAppStatus(id: string, appStatus: AppStatus) {
   await db.update(projects).set({ appStatus }).where(eq(projects.id, id));
-  emit(id, { type: 'app', appStatus });
+  await emit(id, { type: 'app', appStatus });
 }
 export async function probePreview(id: string, port: number) {
   const generation = randomUUID();
@@ -219,11 +219,15 @@ export async function probePreview(id: string, port: number) {
         probes.delete(id);
         return;
       }
-      const terminals = await bridge<{ isRun: boolean; alive: boolean }[]>(id, '/terminals').catch(
-        () => null,
-      );
+      const terminals = await bridge<{ id?: string; isRun: boolean; alive: boolean }[]>(
+        id,
+        '/terminals',
+      ).catch(() => null);
       if (probes.get(id) !== generation) return;
-      if (Array.isArray(terminals) && !terminals.some((t) => t.isRun && t.alive)) {
+      if (
+        Array.isArray(terminals) &&
+        !terminals.some((t) => (!t.id || t.id === 'run') && t.isRun && t.alive)
+      ) {
         await setAppStatus(id, {
           status: 'failed',
           generation,
