@@ -61,7 +61,11 @@ export async function userForToken(token: string | undefined) {
 }
 export async function requireUser(req: FastifyRequest) {
   const user = await userForToken(req.cookies[SESSION_COOKIE]);
-  if (!user) throw Object.assign(new Error('Sign in to continue'), { statusCode: 401 });
+  if (!user)
+    throw Object.assign(new Error('Sign in to continue'), {
+      statusCode: 401,
+      code: 'SESSION_UNAUTHORIZED',
+    });
   return user;
 }
 export async function requireOwner(req: FastifyRequest) {
@@ -120,7 +124,10 @@ export async function projectAgentAccess(user: AuthUser, id: string) {
     .from(users)
     .where(eq(users.id, user.id));
   if (!currentUser?.enabled)
-    throw Object.assign(new Error('Sign in to continue'), { statusCode: 401 });
+    throw Object.assign(new Error('Sign in to continue'), {
+      statusCode: 401,
+      code: 'SESSION_UNAUTHORIZED',
+    });
   const [project] = await db.select().from(projects).where(eq(projects.id, id));
   if (!project || project.ownerId !== user.id)
     throw Object.assign(new Error('Project owner access required for agents'), { statusCode: 403 });
