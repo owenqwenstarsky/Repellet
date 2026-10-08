@@ -23,6 +23,8 @@ import { WorkspaceStartScreen } from './workspace/WorkspaceStartScreen';
 import { ActivityBar } from './workspace/ActivityBar';
 import { EditorArea } from './workspace/EditorArea';
 import { PreviewPanel } from './workspace/PreviewPanel';
+import { WorkspaceBottomPanel } from './workspace/WorkspaceBottomPanel';
+import { PreparationLogsPanel } from './workspace/PreparationLogsPanel';
 import { TerminalPanel } from './workspace/TerminalPanel';
 import { StatusBar } from './workspace/StatusBar';
 import { ResizeHandle } from './workspace/ResizeHandle';
@@ -50,6 +52,26 @@ export function Workspace({
   const terminals = useTerminals(base, saved.terminal, editable, mounted);
   const editor = useEditorTabs(id, saved, project, mounted);
   const layout = useWorkspaceLayout(saved, project?.state);
+  const [bottomPanelTab, setBottomPanelTab] = useState<'terminal' | 'preparation'>(
+    saved.bottomPanelTab || 'terminal',
+  );
+  const preparationPhase = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ready) {
+      preparationPhase.current = null;
+      return;
+    }
+    const status = project.preparation.status;
+    const phase = ['pending', 'files', 'installing'].includes(status) ? 'preparing' : status;
+    if (
+      phase !== preparationPhase.current &&
+      ['preparing', 'failed', 'interrupted'].includes(phase)
+    ) {
+      setBottomPanelTab('preparation');
+      layout.setShowTerminal(true);
+    }
+    preparationPhase.current = phase;
+  }, [ready, project?.preparation.status]);
   const agentOwner = project?.ownerId === user.id;
   const [rightPanel, setRightPanel] = useState<'preview' | 'agent'>(saved.rightPanel || 'preview');
   const [agentThread, setAgentThread] = useState(saved.agentThread || '');
@@ -78,6 +100,14 @@ export function Workspace({
     !busy;
   const { connected } = useWorkspaceSocket(id, !!ready, project?.role, {
     onMessage(message) {
+      if (message.type === 'resync') {
+        void editor.reconcileRegistry().catch((error) => ui.notify(errorMessage(error)));
+        void load();
+        void terminals.reload();
+        setRevision((v) => v + 1);
+        setIndexRevision((v) => v + 1);
+      }
+      if (message.type === 'document') editor.observeDocument(message.document);
       if (message.type === 'presence') setPeers(message.peers);
       if (message.type === 'file' || message.type === 'files') setRevision((v) => v + 1);
       if (
@@ -88,7 +118,7 @@ export function Workspace({
         setIndexRevision((v) => v + 1);
       if (message.type === 'file' && ['unlink', 'unlinkDir'].includes(message.event))
         editor.dropPath(message.path);
-      if (message.type === 'terminals') void terminals.reload();
+      if (message.type === 'terminals' || message.type === 'process') void terminals.reload();
       if (message.type === 'state') void load();
       if (message.type === 'structure') {
         setIndexRevision((v) => v + 1);
@@ -123,6 +153,7 @@ export function Workspace({
       showPreview: layout.showPreview,
       rightPanel: selectedRightPanel,
       agentThread,
+      bottomPanelTab,
       showTerminal: layout.showTerminal,
       leftWidth: layout.leftWidth,
       previewWidth: layout.previewWidth,
@@ -138,6 +169,7 @@ export function Workspace({
     layout.showPreview,
     selectedRightPanel,
     agentThread,
+    bottomPanelTab,
     layout.showTerminal,
     layout.leftWidth,
     layout.previewWidth,
@@ -165,11 +197,12 @@ export function Workspace({
         !['none', 'ready'].includes(current.preparation.status)
       )
         return;
-      await post(base + '/run');
+      const result = await post<{ terminalId?: string }>(base + '/run');
       layout.setShowTerminal(true);
-      terminals.setTerminal('run');
+      setBottomPanelTab('terminal');
+      terminals.setTerminal(result.terminalId || 'run');
       await terminals.reload();
-      terminals.setTerminal('run');
+      terminals.setTerminal(result.terminalId || 'run');
       setPreviewRevision((v) => v + 1);
     } catch (e) {
       ui.notify(errorMessage(e));
@@ -211,6 +244,8 @@ export function Workspace({
       const created = await post<TerminalInfo>(base + '/terminals', { name });
       await terminals.reload();
       terminals.setTerminal(created.id);
+      setBottomPanelTab('terminal');
+      layout.setShowTerminal(true);
     } catch (e) {
       ui.notify(errorMessage(e));
     }
@@ -218,6 +253,7 @@ export function Workspace({
   async function stopTerminal(terminalId: string) {
     try {
       await api(base + '/terminals/' + terminalId, { method: 'DELETE' });
+      terminals.didClose(terminalId);
       await terminals.reload();
     } catch (e) {
       ui.notify(errorMessage(e));
@@ -244,7 +280,9 @@ export function Workspace({
       </div>
     );
   if (!project) return <Spinner label="Opening workspace…" />;
-  const running = terminals.terminals.some((t) => t.isRun && t.alive);
+  const running = terminals.terminals.some(
+    (t) => (t.isMainRun ?? t.id === 'run') && t.isRun && t.alive,
+  );
   const url = project.previewPort ? previewUrl(project.previewPort) : '';
   const { dimensions } = layout;
   return (
@@ -276,14 +314,7 @@ export function Workspace({
           }
         }}
       />
-      <WorkspaceBanners
-        project={project}
-        loadError={loadError}
-        preparationLog={preparationLog}
-        editable={editable}
-        onRetryLoad={load}
-        onRetryPreparation={() => post(base + '/prepare').catch((e) => ui.notify(errorMessage(e)))}
-      />
+      <WorkspaceBanners project={project} loadError={loadError} onRetryLoad={load} />
       {!ready ? (
         <WorkspaceStartScreen
           project={project}
@@ -449,29 +480,57 @@ export function Workspace({
                 )}
               </div>
               {layout.showTerminal && (
-                <>
-                  <ResizeHandle
-                    horizontal
-                    onStart={() => layout.setTerminalHeight(dimensions.terminal)}
-                    onDelta={(delta) =>
-                      layout.setTerminalHeight((v) => Math.max(100, Math.min(550, v - delta)))
-                    }
-                  />
-                  <TerminalPanel
-                    projectId={id}
-                    height={dimensions.terminal}
-                    terminals={terminals.terminals}
-                    terminal={terminals.terminal}
-                    error={terminals.error}
-                    editable={editable}
-                    onSelect={terminals.setTerminal}
-                    onStop={stopTerminal}
-                    onCreate={createTerminal}
-                    onHide={() => layout.setShowTerminal(false)}
-                    onRetry={terminals.reload}
-                  />
-                </>
+                <ResizeHandle
+                  horizontal
+                  onStart={() => layout.setTerminalHeight(dimensions.terminal)}
+                  onDelta={(delta) =>
+                    layout.setTerminalHeight((v) => Math.max(100, Math.min(550, v - delta)))
+                  }
+                />
               )}
+              <WorkspaceBottomPanel
+                active={bottomPanelTab}
+                visible={layout.showTerminal}
+                height={dimensions.terminal}
+                onSelect={(tab) => setBottomPanelTab(tab as 'terminal' | 'preparation')}
+                onHide={() => layout.setShowTerminal(false)}
+                tabs={[
+                  {
+                    id: 'terminal',
+                    label: 'Terminal',
+                    content: (
+                      <TerminalPanel
+                        projectId={id}
+                        visible={layout.showTerminal && bottomPanelTab === 'terminal'}
+                        terminals={terminals.terminals}
+                        terminal={terminals.terminal}
+                        error={terminals.error}
+                        editable={editable}
+                        onSelect={terminals.setTerminal}
+                        onStop={stopTerminal}
+                        onCreate={createTerminal}
+                        onRetry={terminals.reload}
+                      />
+                    ),
+                  },
+                  {
+                    id: 'preparation',
+                    label: 'Preparation Logs',
+                    content: (
+                      <PreparationLogsPanel
+                        preparation={project.preparation}
+                        log={preparationLog}
+                        visible={layout.showTerminal && bottomPanelTab === 'preparation'}
+                        editable={editable}
+                        onRetry={async () => {
+                          await post(base + '/prepare');
+                          await load();
+                        }}
+                      />
+                    ),
+                  },
+                ]}
+              />
             </section>
           </div>
           <StatusBar
@@ -487,6 +546,10 @@ export function Workspace({
           project={project}
           onClose={() => setSettings(false)}
           onChanged={load}
+          onViewPreparationLogs={() => {
+            layout.setShowTerminal(true);
+            setBottomPanelTab('preparation');
+          }}
           onDuplicate={(id) => {
             setSettings(false);
             onOpen(id);

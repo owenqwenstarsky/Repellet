@@ -37,17 +37,20 @@ import { RuntimePicker } from './Projects';
 import { RepositorySetupForm, useRunSettings } from './RepositorySetup';
 import { GitHubPicker } from './GitHub';
 import { usePollingField } from './usePollingField';
+import { RunProfiles } from './RunProfiles';
 type Tab = 'general' | 'run' | 'environment' | 'members';
 export function ProjectSettings({
   project,
   onClose,
   onChanged,
   onDuplicate,
+  onViewPreparationLogs,
 }: {
   project: Project;
   onClose: () => void;
   onChanged: () => void;
   onDuplicate: (id: string) => void;
+  onViewPreparationLogs?: () => void;
 }) {
   const manage = project.role === 'owner';
   const [tab, setTab] = useState<Tab>(manage && !project.runConfig.command ? 'run' : 'general');
@@ -76,7 +79,7 @@ export function ProjectSettings({
         className="modal-tabs"
         items={[
           { id: 'general', label: 'General', icon: SlidersHorizontal },
-          { id: 'run', label: 'Run & setup', icon: Play },
+          { id: 'run', label: 'Run', icon: Play },
           ...(manage ? [{ id: 'environment' as const, label: 'Environment', icon: Layers }] : []),
           { id: 'members', label: 'People', icon: Users },
         ]}
@@ -93,9 +96,22 @@ export function ProjectSettings({
             onDuplicate={onDuplicate}
           />
         )}
-        {tab === 'run' && (
-          <RepositorySetupForm project={project} onChanged={onChanged} settings={runSettings} />
-        )}
+        <div hidden={tab !== 'run'}>
+          <RepositorySetupForm
+            project={project}
+            onChanged={onChanged}
+            settings={runSettings}
+            onViewLogs={
+              onViewPreparationLogs
+                ? () => {
+                    dismiss();
+                    onViewPreparationLogs();
+                  }
+                : undefined
+            }
+          />
+          <RunProfiles project={project} />
+        </div>
         {manage && tab === 'environment' && (
           <Environment
             environment={environment}

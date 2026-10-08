@@ -433,7 +433,7 @@ function CreateProject({
                         setRuntimeSuggestion(
                           'Detected: ' +
                             s.runtimes.join(', ') +
-                            '. Review Run & setup after import.',
+                            '. Review Run settings after import.',
                         );
                       }
                     })

@@ -162,7 +162,9 @@ it('prevents editing or saving environment variables until loading succeeds, and
   );
   fireEvent.click(screen.getByText('Environment'));
   expect((screen.getByText('Add variable') as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByText('Save changes') as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Save changes' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
   await act(async () => pending.reject(new Error('Secrets unavailable')));
   expect(screen.getByText('Retry environment')).toBeTruthy();
   vi.mocked(api).mockImplementation(async (path) =>
@@ -171,7 +173,7 @@ it('prevents editing or saving environment variables until loading succeeds, and
   fireEvent.click(screen.getByText('Retry environment'));
   await screen.findByLabelText('Variable name 1');
   expect((screen.getByLabelText('Variable value 1') as HTMLInputElement).value).toBe('secret');
-  fireEvent.click(screen.getByText('Save changes'));
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
   await waitFor(() =>
     expect(put).toHaveBeenCalledWith('/projects/project/environment', {
       runtimes: ['node'],
@@ -197,7 +199,7 @@ it('refreshes untouched settings from polling while keeping edits', async () => 
   );
   expect((screen.getByLabelText('Project name') as HTMLInputElement).value).toBe('Unsaved');
   expect((screen.getByLabelText('Description') as HTMLInputElement).value).toBe('Updated');
-  fireEvent.click(screen.getByText('Save changes'));
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
   await waitFor(() =>
     expect(patch).toHaveBeenCalledWith('/projects/project', {
       name: 'Unsaved',
@@ -213,22 +215,21 @@ it('invalidates pending manifest suggestions when cwd changes and applies the fu
       <RepositorySetup project={project} onChanged={vi.fn()} />
     </UiProvider>,
   );
-  fireEvent.click(screen.getByText('Inspect manifests'));
-  fireEvent.change(screen.getByLabelText('Working directory'), {
+  fireEvent.click(screen.getByText('Detect commands'));
+  fireEvent.change(screen.getByLabelText('Project folder'), {
     target: { value: 'other' },
   });
   await act(async () => pending.resolve(suggestion));
   expect(screen.queryByText('Use suggestions')).toBeNull();
-  fireEvent.click(screen.getByText('Inspect manifests'));
+  fireEvent.click(screen.getByText('Detect commands'));
   await screen.findByText('Use suggestions');
   fireEvent.click(screen.getByText('Use suggestions'));
-  expect((screen.getByLabelText('Working directory') as HTMLInputElement).value).toBe('server');
-  fireEvent.click(screen.getByText('Confirm and prepare'));
+  expect((screen.getByLabelText('Project folder') as HTMLInputElement).value).toBe('server');
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
   await waitFor(() =>
-    expect(put).toHaveBeenCalledWith('/projects/project/setup', {
+    expect(patch).toHaveBeenCalledWith('/projects/project', {
       setupCommand: suggestion.setupCommand,
       runConfig: suggestion.runConfig,
-      confirmed: true,
     }),
   );
 });
@@ -273,18 +274,19 @@ it('edits run settings in one place and keeps General saves to project details',
       />
     </UiProvider>,
   );
-  expect(screen.queryByLabelText('Run command')).toBeNull();
-  fireEvent.click(screen.getByText('Run & setup'));
+  expect(screen.queryByRole('textbox', { name: 'Run command' })).toBeNull();
+  fireEvent.click(screen.getByRole('tab', { name: 'Run', exact: true }));
   fireEvent.change(screen.getByLabelText('Run command'), {
     target: { value: 'new command' },
   });
-  fireEvent.change(screen.getByLabelText('Working directory'), {
+  fireEvent.change(screen.getByLabelText('Project folder'), {
     target: { value: 'server' },
   });
-  fireEvent.click(screen.getByText('Save changes'));
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
   await waitFor(() =>
     expect(patch).toHaveBeenCalledWith('/projects/project', {
       runConfig: { command: 'new command', cwd: 'server', port: 3000 },
+      setupCommand: project.setupCommand,
     }),
   );
   const general = screen.getByRole('tab', { name: 'General' }) as HTMLButtonElement;
@@ -292,7 +294,7 @@ it('edits run settings in one place and keeps General saves to project details',
   await act(async () => pending.resolve());
   await waitFor(() => expect(general.disabled).toBe(false));
   fireEvent.click(general);
-  fireEvent.click(screen.getByText('Save changes'));
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
   await waitFor(() =>
     expect(patch).toHaveBeenLastCalledWith('/projects/project', {
       name: project.name,
@@ -307,7 +309,7 @@ it('keeps dirty run fields stable during polling and refreshes them after a conf
       <ProjectSettings project={project} {...props} />
     </UiProvider>,
   );
-  fireEvent.click(screen.getByText('Run & setup'));
+  fireEvent.click(screen.getByRole('tab', { name: 'Run', exact: true }));
   fireEvent.change(screen.getByLabelText('Run command'), { target: { value: 'manual' } });
   view.rerender(
     <UiProvider>
@@ -318,7 +320,7 @@ it('keeps dirty run fields stable during polling and refreshes them after a conf
     </UiProvider>,
   );
   expect((screen.getByLabelText('Run command') as HTMLInputElement).value).toBe('manual');
-  fireEvent.click(screen.getByText('Save changes'));
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
   await waitFor(() => expect(patch).toHaveBeenCalled());
   view.rerender(
     <UiProvider>
@@ -380,7 +382,9 @@ it('refreshes untouched repository fields during polling without losing edits', 
       <RepositorySetup project={project} onChanged={vi.fn()} />
     </UiProvider>,
   );
-  fireEvent.change(screen.getByLabelText('Setup command'), { target: { value: 'manual install' } });
+  fireEvent.change(screen.getByLabelText('Install command (optional)'), {
+    target: { value: 'manual install' },
+  });
   view.rerender(
     <UiProvider>
       <RepositorySetup
@@ -389,27 +393,29 @@ it('refreshes untouched repository fields during polling without losing edits', 
       />
     </UiProvider>,
   );
-  expect((screen.getByLabelText('Setup command') as HTMLInputElement).value).toBe('manual install');
+  expect((screen.getByLabelText('Install command (optional)') as HTMLInputElement).value).toBe(
+    'manual install',
+  );
   expect((screen.getByLabelText('Run command') as HTMLInputElement).value).toBe(
     suggestion.runConfig.command,
   );
 });
 it('serializes repository setup actions', async () => {
   const pending = deferred<any>();
-  vi.mocked(put).mockReturnValue(pending.promise);
+  vi.mocked(post).mockReturnValue(pending.promise);
   render(
     <UiProvider>
-      <RepositorySetup project={project} onChanged={vi.fn()} />
+      <RepositorySetup project={{ ...project, setupCommand: 'npm ci' }} onChanged={vi.fn()} />
     </UiProvider>,
   );
-  const confirm = screen.getByText('Confirm and prepare');
+  const confirm = screen.getByText('Install dependencies');
   act(() => {
     fireEvent.click(confirm);
     fireEvent.click(confirm);
   });
-  await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
 });
-it.each(['Inspect manifests', 'Confirm and prepare'])(
+it.each(['Detect commands', 'Install dependencies'])(
   'waits for editor saves before %s',
   async (action) => {
     const pending = deferred<void>();
@@ -418,7 +424,7 @@ it.each(['Inspect manifests', 'Confirm and prepare'])(
     try {
       render(
         <UiProvider>
-          <RepositorySetup project={project} onChanged={vi.fn()} />
+          <RepositorySetup project={{ ...project, setupCommand: 'npm ci' }} onChanged={vi.fn()} />
         </UiProvider>,
       );
       fireEvent.click(screen.getByText(action));
@@ -426,15 +432,12 @@ it.each(['Inspect manifests', 'Confirm and prepare'])(
       expect(post).not.toHaveBeenCalled();
       expect(put).not.toHaveBeenCalled();
       await act(async () => pending.resolve());
-      if (action === 'Inspect manifests') {
+      if (action === 'Detect commands') {
         expect(post).toHaveBeenCalledWith('/projects/project/setup/suggest', { cwd: '' });
         expect(screen.getByText('Use suggestions')).toBeTruthy();
       } else {
-        expect(put).toHaveBeenCalledWith('/projects/project/setup', {
-          setupCommand: project.setupCommand,
-          runConfig: project.runConfig,
-          confirmed: true,
-        });
+        expect(post).toHaveBeenCalledWith('/projects/project/prepare');
+        expect(put).not.toHaveBeenCalled();
       }
     } finally {
       unregister();
@@ -451,8 +454,8 @@ it('invalidates manifest inspection when cwd changes during an editor save', asy
         <RepositorySetup project={project} onChanged={vi.fn()} />
       </UiProvider>,
     );
-    fireEvent.click(screen.getByText('Inspect manifests'));
-    fireEvent.change(screen.getByLabelText('Working directory'), {
+    fireEvent.click(screen.getByText('Detect commands'));
+    fireEvent.change(screen.getByLabelText('Project folder'), {
       target: { value: 'other' },
     });
     await act(async () => pending.resolve());

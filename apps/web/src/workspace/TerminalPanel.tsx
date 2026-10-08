@@ -1,10 +1,10 @@
-import { Plus, X } from 'lucide-react';
+import { Play, Plus, X } from 'lucide-react';
 import type { TerminalInfo } from '@repellet/shared';
 import { IconButton, LoadError } from '../ui';
 import { Terminal } from '../Terminal';
 export function TerminalPanel({
   projectId,
-  height,
+  visible,
   terminals,
   terminal,
   error,
@@ -12,11 +12,10 @@ export function TerminalPanel({
   onSelect,
   onStop,
   onCreate,
-  onHide,
   onRetry,
 }: {
   projectId: string;
-  height: number;
+  visible: boolean;
   terminals: TerminalInfo[];
   terminal: string;
   error: string;
@@ -24,30 +23,76 @@ export function TerminalPanel({
   onSelect: (id: string) => void;
   onStop: (id: string) => void;
   onCreate: () => void;
-  onHide: () => void;
   onRetry: () => void;
 }) {
+  const orderedTerminals = [...terminals].sort(
+    (a, b) => Number(b.isMainRun ?? b.id === 'run') - Number(a.isMainRun ?? a.id === 'run'),
+  );
   return (
-    <section className="terminal-panel" style={{ height }}>
-      <div className="terminal-toolbar">
-        <h2 className="pane-title terminal-label">Terminal</h2>
+    <section className="terminal-panel">
+      <div className="terminal-content">
+        {error && <LoadError message={error} onRetry={onRetry} />}
+        {terminal ? (
+          <Terminal
+            key={terminal}
+            projectId={projectId}
+            id={terminal}
+            editable={editable}
+            visible={visible}
+          />
+        ) : (
+          <div className="terminal-empty">
+            {editable
+              ? 'Create a terminal with + to get started.'
+              : 'No terminal sessions are running.'}
+          </div>
+        )}
+      </div>
+      <aside className="terminal-sidebar" aria-label="Terminal sessions">
+        <div className="terminal-toolbar">
+          <span className="pane-title">Sessions</span>
+          {editable && (
+            <IconButton
+              size="sm"
+              label="New terminal"
+              icon={<Plus size={14} />}
+              onClick={onCreate}
+            />
+          )}
+        </div>
         <div className="terminal-tabs">
-          {terminals.map((t) => (
-            <div className={`terminal-tab ${terminal === t.id ? 'active' : ''}`} key={t.id}>
+          {orderedTerminals.map((t) => (
+            <div
+              className={`terminal-tab ${terminal === t.id ? 'active' : ''} ${(t.isMainRun ?? t.id === 'run') ? 'pinned' : ''}`}
+              key={t.id}
+            >
               <button
                 aria-pressed={terminal === t.id}
                 className={terminal === t.id ? 'active' : ''}
                 onClick={() => onSelect(t.id)}
-                title={t.name}
+                title={
+                  (t.isMainRun ?? t.id === 'run')
+                    ? `Run output · ${t.alive ? 'Running' : 'Stopped'}`
+                    : t.name
+                }
               >
-                <span className={`terminal-dot ${t.alive ? 'alive' : ''}`} />
-                {t.name}
+                {(t.isMainRun ?? t.id === 'run') ? (
+                  <Play
+                    size={13}
+                    className="terminal-run-icon"
+                    fill={t.alive ? 'currentColor' : 'none'}
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <span className={`terminal-dot ${t.alive ? 'alive' : ''}`} />
+                )}
+                <span className="terminal-name">{t.name}</span>
               </button>
               {editable && !t.isRun && (
                 <button
                   className="terminal-close"
-                  aria-label={`Stop ${t.name}`}
-                  title={`Stop ${t.name}`}
+                  aria-label={`Close ${t.name}`}
+                  title={`Close ${t.name}`}
                   onClick={() => onStop(t.id)}
                 >
                   <X size={11} />
@@ -56,21 +101,7 @@ export function TerminalPanel({
             </div>
           ))}
         </div>
-        {editable && (
-          <IconButton size="sm" label="New terminal" icon={<Plus size={14} />} onClick={onCreate} />
-        )}
-        <IconButton size="sm" label="Hide terminal" icon={<X size={14} />} onClick={onHide} />
-      </div>
-      {error && <LoadError message={error} onRetry={onRetry} />}
-      {terminal ? (
-        <Terminal key={terminal} projectId={projectId} id={terminal} editable={editable} />
-      ) : (
-        <div className="terminal-empty">
-          {editable
-            ? 'Create a terminal with + to get started.'
-            : 'No terminal sessions are running.'}
-        </div>
-      )}
+      </aside>
     </section>
   );
 }

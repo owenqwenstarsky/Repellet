@@ -41,7 +41,8 @@ export function readPreferences(key: string): WorkspacePreferences {
       typeof value.agentThread === 'string' && /^[a-zA-Z0-9_-]{1,200}$/.test(value.agentThread)
         ? value.agentThread
         : '',
-    showTerminal: value.showTerminal !== false,
+    bottomPanelTab: value.bottomPanelTab === 'preparation' ? 'preparation' : 'terminal',
+    showTerminal: value.showTerminal === true,
     leftWidth: clamp(value.leftWidth, 232, 150, Math.max(150, innerWidth * 0.35)),
     previewWidth: clamp(value.previewWidth, 420, 200, Math.max(200, innerWidth * 0.45)),
     terminalHeight: clamp(value.terminalHeight, 230, 100, Math.max(100, innerHeight * 0.6)),

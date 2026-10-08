@@ -40,6 +40,8 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
     ).createApp({ static: false, logger: false });
   });
   beforeEach(async () => {
+    if (id) await preparation.cancelReadiness(id);
+    await (await import('../apps/api/src/live.js')).drainWorkspaceEvents();
     await db.pool.query('TRUNCATE users, projects, installation CASCADE');
     const [user] = await db.db
       .insert(schema.users)
@@ -109,6 +111,125 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
   });
   const project = async () =>
     (await db.db.select().from(schema.projects).where(eq(schema.projects.id, id)))[0]!;
+  async function settingsRequest(payload: unknown, role: 'owner' | 'editor' | 'viewer' = 'owner') {
+    const { tokenHash } = await import('../apps/api/src/security.js');
+    let userId = (await project()).ownerId;
+    if (role !== 'owner') {
+      const [member] = await db.db
+        .insert(schema.users)
+        .values({ username: role, displayName: role, passwordHash: 'unused' })
+        .returning();
+      userId = member!.id;
+      await db.db.insert(schema.members).values({ projectId: id, userId, role });
+    }
+    const token = randomBytes(16).toString('hex');
+    await db.db
+      .insert(schema.sessions)
+      .values({ userId, tokenHash: tokenHash(token), expiresAt: new Date(Date.now() + 60000) });
+    return app.inject({
+      method: 'PATCH',
+      url: `/api/projects/${id}`,
+      headers: {
+        origin: process.env.PUBLIC_URL || 'http://localhost:3000',
+        cookie: `repellet_session=${token}`,
+      },
+      payload,
+    });
+  }
+  it('atomically saves run, install and startup configuration while stopped without execution', async () => {
+    await db.db.update(schema.projects).set({ state: 'stopped' }).where(eq(schema.projects.id, id));
+    const runConfig = { command: 'npm start', cwd: 'frontend', port: 4000 };
+    const response = await settingsRequest({
+      runConfig,
+      setupCommand: ' npm install ',
+      runAutoStart: true,
+    });
+    expect(response.statusCode).toBe(200);
+    const saved = await project();
+    expect(saved.runConfig).toEqual(runConfig);
+    expect(saved.setupCommand).toBe('npm install');
+    expect(saved.preparation.status).toBe('required');
+    expect(saved.state).toBe('stopped');
+    const [profile] = await db.db
+      .select()
+      .from(schema.projectRunProfiles)
+      .where(eq(schema.projectRunProfiles.projectId, id));
+    expect(profile).toMatchObject({
+      command: 'npm start',
+      cwd: 'frontend',
+      autoStart: true,
+      isDefault: true,
+    });
+    expect(fake.bridge).not.toHaveBeenCalled();
+    expect(fake.workerJson).not.toHaveBeenCalled();
+  });
+  it('preserves installation for run-only edits and no-op saves', async () => {
+    await preparation.prepareProject(id);
+    const before = (await project()).preparation;
+    const runConfig = { ...(await project()).runConfig, command: 'npm start' };
+    expect((await settingsRequest({ runConfig, setupCommand: 'npm ci' })).statusCode).toBe(200);
+    expect((await project()).preparation).toEqual(before);
+    expect(installCalls).toBe(1);
+  });
+  it('invalidates installation on folder changes and permits explicit preparation afterward', async () => {
+    await preparation.prepareProject(id);
+    expect(
+      (await settingsRequest({ runConfig: { ...(await project()).runConfig, cwd: 'frontend' } }))
+        .statusCode,
+    ).toBe(200);
+    expect((await project()).preparation).toMatchObject({
+      status: 'required',
+      fingerprint: null,
+      error: null,
+    });
+    await expect(preparation.assertPrepared(id)).rejects.toThrow(/preparation/);
+    expect(installCalls).toBe(1);
+    await preparation.prepareProject(id);
+    expect((await project()).preparation.status).toBe('ready');
+    expect(installCalls).toBe(2);
+  });
+  it.each([true, false])(
+    'clearing installation respects unfinished scaffolding (%s)',
+    async (scaffolded) => {
+      await db.db
+        .update(schema.projects)
+        .set({ preparation: { status: 'ready', scaffolded, fingerprint: 'old', error: null } })
+        .where(eq(schema.projects.id, id));
+      expect((await settingsRequest({ setupCommand: '' })).statusCode).toBe(200);
+      expect((await project()).preparation.status).toBe(scaffolded ? 'none' : 'required');
+    },
+  );
+  it('stops on a preview port change without invalidating installation or restarting', async () => {
+    await preparation.prepareProject(id);
+    const before = (await project()).preparation;
+    fake.workerJson.mockResolvedValue({});
+    expect(
+      (await settingsRequest({ runConfig: { ...(await project()).runConfig, port: 4000 } }))
+        .statusCode,
+    ).toBe(200);
+    expect((await project()).state).toBe('stopped');
+    expect((await project()).preparation).toEqual(before);
+    expect(fake.workerJson.mock.calls.map((call) => call[0])).toEqual([`/projects/${id}/stop`]);
+    expect(installCalls).toBe(1);
+  });
+  it('rejects configuration changes while installation is active', async () => {
+    await db.db
+      .update(schema.projects)
+      .set({
+        preparation: { status: 'installing', scaffolded: true, fingerprint: null, error: null },
+      })
+      .where(eq(schema.projects.id, id));
+    const response = await settingsRequest({ setupCommand: 'npm install' });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error).toContain('Wait for it to finish');
+    expect((await project()).setupCommand).toBe('npm ci');
+  });
+  it.each(['editor', 'viewer'] as const)('rejects Run settings changes by %s', async (role) => {
+    expect(
+      (await settingsRequest({ setupCommand: 'npm install', runAutoStart: true }, role)).statusCode,
+    ).toBe(403);
+    expect((await project()).setupCommand).toBe('npm ci');
+  });
   it('flushes accepted editor changes before inspecting repository manifests', async () => {
     const { tokenHash } = await import('../apps/api/src/security.js');
     await db.db.insert(schema.sessions).values({
@@ -280,6 +401,106 @@ describe.skipIf(!process.env.DATABASE_URL)('durable preparation and readiness', 
     expect((await preparation.preparationJobs(id))[0]?.state).toBe('failed');
     expect(installCalls).toBe(0);
   });
+  it('tracks managed default-profile Run processes during preview readiness', async () => {
+    const [profile] = await db.db
+      .select()
+      .from(schema.projectRunProfiles)
+      .where(eq(schema.projectRunProfiles.projectId, id));
+    const [process] = await db.db
+      .insert(schema.workspaceProcesses)
+      .values({ projectId: id, profileId: profile!.id, kind: 'run', status: 'running' })
+      .returning();
+    fake.bridge.mockResolvedValue([{ id: process!.id, isRun: true, alive: true }]);
+    fake.workerJson.mockResolvedValue({ responding: false });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await preparation.probePreview(id, 3000);
+      vi.setSystemTime(Date.now() + 61000);
+      await expect.poll(async () => (await project()).appStatus.status).toBe('timeout');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each(['available', 'starting', 'timeout'] as const)(
+    'preserves %s preview status while the managed default Run process is alive',
+    async (status) => {
+      await db.db.insert(schema.installation).values({ id: 1, limits: defaultLimits });
+      const [profile] = await db.db
+        .select()
+        .from(schema.projectRunProfiles)
+        .where(eq(schema.projectRunProfiles.projectId, id));
+      const [process] = await db.db
+        .insert(schema.workspaceProcesses)
+        .values({ projectId: id, profileId: profile!.id, kind: 'run', status: 'running' })
+        .returning();
+      const appStatus = { status, generation: process!.id };
+      await preparation.setAppStatus(id, appStatus);
+      fake.bridge.mockResolvedValue([{ id: process!.id, isRun: true, alive: true }]);
+      fake.workerJson.mockImplementation(async (route: string) => {
+        if (route.endsWith('/agent/usage')) return { bytes: 0, exceeded: false };
+        if (route.endsWith('/agent/activity')) return { executing: true };
+        return { running: true, oomKilled: false };
+      });
+      await (await import('../apps/api/src/lifecycle.js')).monitor();
+      expect((await project()).appStatus).toEqual(appStatus);
+    },
+  );
+  it.each(['run', undefined])('keeps legacy Run session %s previewable', async (terminalId) => {
+    await db.db.insert(schema.installation).values({ id: 1, limits: defaultLimits });
+    await preparation.setAppStatus(id, { status: 'available', generation: 'legacy' });
+    fake.bridge.mockResolvedValue([{ id: terminalId, isRun: true, alive: true }]);
+    fake.workerJson.mockImplementation(async (route: string) => {
+      if (route.endsWith('/agent/usage')) return { bytes: 0, exceeded: false };
+      if (route.endsWith('/agent/activity')) return { executing: true };
+      return { running: true, oomKilled: false };
+    });
+    await (await import('../apps/api/src/lifecycle.js')).monitor();
+    expect((await project()).appStatus.status).toBe('available');
+  });
+  it.each(['exited', 'missing', 'unrelated profile', 'shell'])(
+    'marks the preview failed when its main Run process is %s',
+    async (scenario) => {
+      await db.db.insert(schema.installation).values({ id: 1, limits: defaultLimits });
+      const [profile] = await db.db
+        .select()
+        .from(schema.projectRunProfiles)
+        .where(eq(schema.projectRunProfiles.projectId, id));
+      const [main] = await db.db
+        .insert(schema.workspaceProcesses)
+        .values({ projectId: id, profileId: profile!.id, kind: 'run', status: 'running' })
+        .returning();
+      const [otherProfile] = await db.db
+        .insert(schema.projectRunProfiles)
+        .values({ projectId: id, name: 'Other server', command: 'node other.js' })
+        .returning();
+      const [other] = await db.db
+        .insert(schema.workspaceProcesses)
+        .values({ projectId: id, profileId: otherProfile!.id, kind: 'run', status: 'running' })
+        .returning();
+      await preparation.setAppStatus(id, { status: 'available', generation: main!.id });
+      fake.bridge.mockResolvedValue(
+        scenario === 'missing'
+          ? []
+          : [
+              {
+                id: scenario === 'unrelated profile' ? other!.id : main!.id,
+                isRun: scenario !== 'shell',
+                alive: scenario !== 'exited',
+              },
+            ],
+      );
+      fake.workerJson.mockImplementation(async (route: string) => {
+        if (route.endsWith('/agent/usage')) return { bytes: 0, exceeded: false };
+        if (route.endsWith('/agent/activity')) return { executing: true };
+        return { running: true, oomKilled: false };
+      });
+      await (await import('../apps/api/src/lifecycle.js')).monitor();
+      expect((await project()).appStatus).toMatchObject({
+        status: 'failed',
+        error: expect.stringContaining('The app process exited'),
+      });
+    },
+  );
   it('shows troubleshooting after 60 seconds without stopping the app or updating idle activity', async () => {
     const before = (await project()).lastActiveAt.getTime();
     fake.bridge.mockResolvedValue([{ isRun: true, alive: true }]);

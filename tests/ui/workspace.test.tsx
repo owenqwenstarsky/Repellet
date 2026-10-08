@@ -6,7 +6,7 @@ import { Workspace } from '../../apps/web/src/Workspace';
 import { UiProvider } from '../../apps/web/src/ui';
 import { api, post } from '../../apps/web/src/api';
 import { flushOpenDocuments } from '../../apps/web/src/documentSaves';
-import { preferenceKey } from '../../apps/web/src/preferences';
+import { preferenceKey, readPreferences } from '../../apps/web/src/preferences';
 import { deferred, project, user } from './helpers';
 vi.mock('../../apps/web/src/api', () => ({
   api: vi.fn(),
@@ -180,7 +180,8 @@ it('does not let tab-close save replace a newer selected tab', async () => {
 });
 it('makes terminal stop independently keyboard accessible', async () => {
   mount();
-  const stop = await screen.findByRole('button', { name: 'Stop Shell' });
+  fireEvent.click(await screen.findByLabelText('Toggle bottom panel'));
+  const stop = await screen.findByRole('button', { name: 'Close Shell' });
   expect(stop.tagName).toBe('BUTTON');
   expect(stop.parentElement?.tagName).not.toBe('BUTTON');
   const keyboard = userEvent.setup();
@@ -229,4 +230,144 @@ it('uses settings for a missing owner run command, and explains it to an editor'
   fireEvent.click(screen.getByRole('button', { name: 'Run' }));
   expect(screen.getByText('The project owner needs to set a run command.')).toBeTruthy();
   expect(post).not.toHaveBeenCalledWith('/projects/project/run');
+});
+
+it('defaults the bottom panel to hidden and restores its saved tab, visibility and height', async () => {
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(700);
+  const key = preferenceKey(user.id, 'project');
+  expect(readPreferences(key).showTerminal).toBe(false);
+  expect(readPreferences(key).bottomPanelTab).toBe('terminal');
+  localStorage.setItem(
+    key,
+    JSON.stringify({
+      version: 1,
+      showTerminal: true,
+      terminalHeight: 280,
+      bottomPanelTab: 'preparation',
+    }),
+  );
+  mount();
+  expect(await screen.findByRole('tab', { name: 'Preparation Logs' })).toHaveProperty(
+    'ariaSelected',
+    'true',
+  );
+  expect(screen.getByRole('region', { name: 'Bottom panel' }).style.height).toBe('280px');
+  expect(screen.getByText('No preparation output yet.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('tab', { name: 'Terminal', exact: true }));
+  await waitFor(() => expect(readPreferences(key).bottomPanelTab).toBe('terminal'));
+  fireEvent.click(screen.getByLabelText('Hide bottom panel'));
+  expect(readPreferences(key).showTerminal).toBe(false);
+});
+
+it('opens preparation once per attempt, updates hidden logs, and preserves the terminal across tab and panel switches', async () => {
+  vi.useFakeTimers();
+  let p = {
+    ...project,
+    preparation: { ...project.preparation, status: 'pending' as const },
+  } as typeof project;
+  let log = 'Installing packages';
+  vi.mocked(api).mockImplementation(async (path) =>
+    path === '/projects/project'
+      ? p
+      : path.endsWith('/preparation')
+        ? { jobs: [{ step: 'installing', log }] }
+        : path.endsWith('/terminals')
+          ? terminals
+          : [],
+  );
+  const view = mount();
+  await act(async () => {});
+  expect(screen.getByRole('tab', { name: 'Preparation Logs' }).getAttribute('aria-selected')).toBe(
+    'true',
+  );
+  expect(view.container.querySelector('.workspace-banners')?.textContent).toBe('');
+  fireEvent.click(screen.getByRole('tab', { name: 'Terminal', exact: true }));
+  const terminal = screen.getByText('Terminal rendering');
+  fireEvent.click(screen.getByLabelText('Hide bottom panel'));
+  p = { ...p, preparation: { ...p.preparation, status: 'installing' } };
+  log = 'Packages installed';
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(screen.queryByRole('region', { name: 'Bottom panel' })).toBeNull();
+  expect(screen.getByText('Terminal rendering')).toBe(terminal);
+  fireEvent.click(screen.getByLabelText('Toggle bottom panel'));
+  expect(
+    screen.getByRole('tab', { name: 'Terminal', exact: true }).getAttribute('aria-selected'),
+  ).toBe('true');
+  fireEvent.click(screen.getByRole('tab', { name: 'Preparation Logs' }));
+  expect(screen.getByLabelText('Preparation output').textContent).toBe(log);
+  p = { ...p, preparation: { ...p.preparation, status: 'ready' } };
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(screen.getByText('Ready to run')).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Preparation Logs' }).getAttribute('aria-selected')).toBe(
+    'true',
+  );
+  fireEvent.click(screen.getByRole('tab', { name: 'Terminal', exact: true }));
+  expect(screen.getByText('Terminal rendering')).toBe(terminal);
+  p = { ...p, preparation: { ...p.preparation, status: 'failed', error: 'Install failed' } };
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(screen.getByRole('button', { name: 'Retry preparation' })).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Preparation Logs' }).getAttribute('aria-selected')).toBe(
+    'true',
+  );
+});
+
+it('reveals Terminal after Run from the preparation tab', async () => {
+  mount();
+  fireEvent.click(await screen.findByLabelText('Toggle bottom panel'));
+  fireEvent.click(screen.getByRole('tab', { name: 'Preparation Logs' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Run', exact: true }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole('tab', { name: 'Terminal', exact: true }).getAttribute('aria-selected'),
+    ).toBe('true'),
+  );
+});
+
+it('keeps terminal creation and session selection independent of the panel tab', async () => {
+  const list = [...terminals];
+  const fallback = vi.mocked(api).getMockImplementation()!;
+  vi.mocked(api).mockImplementation((path, options) =>
+    path.endsWith('/terminals') ? Promise.resolve(list) : fallback(path, options),
+  );
+  vi.mocked(post).mockImplementation(async (path) => {
+    if (path.endsWith('/terminals')) {
+      const terminal = { id: 'second', name: 'Terminal 2', alive: true, isRun: false };
+      list.push(terminal);
+      return terminal as any;
+    }
+    return {} as any;
+  });
+  mount();
+  fireEvent.click(await screen.findByLabelText('Toggle bottom panel'));
+  fireEvent.click(screen.getByRole('button', { name: 'New terminal' }));
+  // Change panel selection while the asynchronous create dialog is open.
+  fireEvent.click(screen.getByRole('tab', { name: 'Preparation Logs' }));
+  fireEvent.submit(screen.getByRole('dialog').querySelector('form')!);
+  await waitFor(() =>
+    expect(
+      screen.getByRole('tab', { name: 'Terminal', exact: true }).getAttribute('aria-selected'),
+    ).toBe('true'),
+  );
+  expect(
+    screen.getByRole('button', { name: 'Terminal 2', exact: true }).getAttribute('aria-pressed'),
+  ).toBe('true');
+  fireEvent.click(screen.getByRole('button', { name: 'Shell', exact: true }));
+  expect(
+    screen.getByRole('button', { name: 'Shell', exact: true }).getAttribute('aria-pressed'),
+  ).toBe('true');
+});
+
+it('opens failed preparation for viewers without exposing retry or terminal mutations', async () => {
+  defaults({
+    ...project,
+    role: 'viewer',
+    preparation: { ...project.preparation, status: 'interrupted', error: 'Interrupted' },
+  });
+  mount();
+  expect(await screen.findByText('Preparation interrupted')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Retry preparation' })).toBeNull();
+  fireEvent.click(screen.getByRole('tab', { name: 'Terminal', exact: true }));
+  expect(screen.queryByRole('button', { name: 'New terminal' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Close Shell' })).toBeNull();
+  expect(screen.getByText('Terminal rendering')).toBeTruthy();
 });

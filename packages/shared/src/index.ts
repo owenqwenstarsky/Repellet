@@ -200,7 +200,13 @@ export type FileContent = {
   binary?: boolean;
   size: number;
 };
-export type TerminalInfo = { id: string; name: string; alive: boolean; isRun: boolean };
+export type TerminalInfo = {
+  id: string;
+  name: string;
+  alive: boolean;
+  isRun: boolean;
+  isMainRun?: boolean;
+};
 export type GitStatus = {
   branch: string;
   entries: { path: string; index: string; worktree: string }[];
@@ -227,7 +233,8 @@ export function safeRelativePath(value: string): string {
 }
 
 export type Preparation = {
-  status: 'none' | 'pending' | 'files' | 'installing' | 'ready' | 'failed' | 'interrupted';
+  status:
+    'none' | 'required' | 'pending' | 'files' | 'installing' | 'ready' | 'failed' | 'interrupted';
   scaffolded: boolean;
   fingerprint: string | null;
   error: string | null;
@@ -269,6 +276,7 @@ export type WorkspacePreferences = {
   showPreview: boolean;
   rightPanel?: 'preview' | 'agent';
   agentThread?: string;
+  bottomPanelTab?: 'terminal' | 'preparation';
   showTerminal: boolean;
   leftWidth: number;
   previewWidth: number;
@@ -425,3 +433,5 @@ export function suggestSetup(
 
 export * from './agent.js';
 export * from './agentProjection.js';
+
+export * from './workspace.js';

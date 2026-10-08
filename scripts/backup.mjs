@@ -222,6 +222,15 @@ try {
     await query(
       "UPDATE installation SET maintenance=false; DELETE FROM sessions; UPDATE projects SET state='stopped', preview_port=NULL; UPDATE jobs SET state='failed', error='Restored from backup' WHERE state IN ('pending','running')",
     );
+    // Older backups do not contain the additive workspace tables yet. New metadata
+    // is restored by pg_restore, but a restored process cannot still be running.
+    await query(`DO $$ BEGIN
+      IF to_regclass('workspace_processes') IS NOT NULL THEN
+        UPDATE workspace_processes SET status='stopped', finished_at=now() WHERE status IN ('starting','running');
+        UPDATE project_preview_targets SET allocated_port=NULL, status='stopped', http_status=NULL, last_probe=NULL;
+        DELETE FROM workspace_idempotency;
+      END IF;
+    END $$`);
     console.log(
       `Restored ${manifest.volumes.length} volumes. Review .env (including PUBLIC_URL), then run docker compose up -d --force-recreate database worker app. Existing sessions were revoked.`,
     );

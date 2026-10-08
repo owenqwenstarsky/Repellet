@@ -89,9 +89,10 @@ describe('environment snapshots and validation', () => {
     expect((screen.getByText('Add variable').closest('button') as HTMLButtonElement).disabled).toBe(
       true,
     );
-    expect((screen.getByText('Save changes').closest('button') as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    expect(
+      (screen.getByRole('button', { name: 'Save changes' }).closest('button') as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
     await act(async () => initial.reject(new Error('Snapshot failed')));
     expect(screen.getByRole('alert').textContent).toContain('Snapshot failed');
     mockedApi.mockImplementation((path) =>
@@ -102,7 +103,7 @@ describe('environment snapshots and validation', () => {
     fireEvent.click(screen.getByText('Retry environment'));
     await flush();
     expect((screen.getByLabelText('Variable name 1') as HTMLInputElement).value).toBe('EXISTING');
-    fireEvent.click(screen.getByText('Save changes'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await flush();
     expect(put).toHaveBeenCalledWith('/projects/project/environment', {
       runtimes: ['node'],
@@ -112,14 +113,14 @@ describe('environment snapshots and validation', () => {
   it('validates reserved variable names and port constraints before making a request', async () => {
     settings();
     await flush();
-    fireEvent.click(screen.getByText('Run & setup'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Run', exact: true }));
     fireEvent.change(screen.getByLabelText('Preview port'), { target: { value: '80' } });
-    fireEvent.click(screen.getByText('Save changes'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(patch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText('Environment'));
     fireEvent.click(screen.getByText('Add variable'));
     fireEvent.change(screen.getByLabelText('Variable name 1'), { target: { value: 'PATH' } });
-    fireEvent.click(screen.getByText('Save changes'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await flush();
     expect(screen.getByText('Reserved variable')).toBeTruthy();
     expect(put).not.toHaveBeenCalled();
@@ -344,7 +345,7 @@ describe('workspace state recovery', () => {
     fireEvent.click(screen.getByText('a.ts'));
     await flush();
     await waitFor(() => screen.getByText('Editing a.ts'));
-    const events = FakeSocket.instances.find((s) => s.url.endsWith('/events'))!;
+    const events = FakeSocket.instances.find((s) => new URL(s.url).pathname.endsWith('/events'))!;
     await act(async () => events.message({ type: 'structure', from: 'a.ts' }));
     expect(screen.getByText('Editing b.ts')).toBeTruthy();
   });
@@ -377,6 +378,7 @@ describe('workspace state recovery', () => {
     );
     workspace();
     await flush();
+    fireEvent.click(screen.getByLabelText('Toggle bottom panel'));
     expect(screen.getByText('Terminal failed')).toBeTruthy();
     await act(async () => vi.advanceTimersByTimeAsync(2500));
     expect(attempts).toBe(2);
@@ -446,7 +448,7 @@ describe('loading recovery and keyboard feedback', () => {
     await flush();
     fireEvent.click(screen.getByText('Environment'));
     fireEvent.click(screen.getByText('Python'));
-    const save = screen.getByText('Save changes').closest('button')!;
+    const save = screen.getByRole('button', { name: 'Save changes' }).closest('button')!;
     save.focus();
     fireEvent.click(save);
     await flush();
@@ -528,11 +530,12 @@ describe('pane loading feedback and deferred mutations', () => {
     );
     workspace();
     await flush();
-    const stop = screen.getByRole('button', { name: 'Stop Shell' });
+    fireEvent.click(screen.getByLabelText('Toggle bottom panel'));
+    const stop = screen.getByRole('button', { name: 'Close Shell' });
     expect(stop.parentElement?.tagName).toBe('DIV');
     expect(stop.closest('.terminal-tab')).toBeTruthy();
     expect(screen.getByLabelText('New terminal').closest('.terminal-tabs')).toBeNull();
-    expect(screen.getByLabelText('Hide terminal').closest('.terminal-tabs')).toBeNull();
+    expect(screen.getByLabelText('Hide bottom panel').closest('.terminal-tabs')).toBeNull();
   });
   it('remaps consecutive structure events even when React batches them', async () => {
     const props = {
@@ -732,9 +735,10 @@ it('resizes from effective panel dimensions when requested sizes are constrained
     key: 'ArrowLeft',
   });
   expect(explorer.style.width).toBe('195px');
-  const resize = screen.getByRole('separator', { name: 'Resize terminal' });
+  fireEvent.click(screen.getByLabelText('Toggle bottom panel'));
+  const resize = screen.getByRole('separator', { name: 'Resize bottom panel' });
   for (let i = 0; i < 20; i++) fireEvent.keyDown(resize, { key: 'ArrowUp' });
-  const terminal = view.container.querySelector('.terminal-panel') as HTMLElement;
+  const terminal = view.container.querySelector('.workspace-bottom-panel') as HTMLElement;
   expect(terminal.style.height).toBe('335px');
   fireEvent.keyDown(resize, { key: 'ArrowDown' });
   expect(terminal.style.height).toBe('325px');
@@ -744,12 +748,12 @@ describe('run settings drafts', () => {
   it('keeps every unsaved run field when switching tabs and receiving server updates', async () => {
     const view = settings();
     await flush();
-    fireEvent.click(screen.getByRole('tab', { name: 'Run & setup' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Run' }));
     for (const [label, value] of [
       ['Run command', 'node custom.mjs'],
-      ['Working directory', 'src'],
+      ['Project folder', 'src'],
       ['Preview port', '4000'],
-      ['Setup command', 'npm install'],
+      ['Install command (optional)', 'npm install'],
     ]) {
       fireEvent.change(screen.getByLabelText(label), { target: { value } });
     }
@@ -764,19 +768,20 @@ describe('run settings drafts', () => {
         />
       </UiProvider>,
     );
-    fireEvent.click(screen.getByRole('tab', { name: 'Run & setup' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Run' }));
     for (const [label, value] of [
       ['Run command', 'node custom.mjs'],
-      ['Working directory', 'src'],
+      ['Project folder', 'src'],
       ['Preview port', '4000'],
-      ['Setup command', 'npm install'],
+      ['Install command (optional)', 'npm install'],
     ]) {
       expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(value);
     }
-    fireEvent.click(screen.getByText('Save changes'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await flush();
     expect(patch).toHaveBeenCalledWith('/projects/project', {
       runConfig: { command: 'node custom.mjs', cwd: 'src', port: 4000 },
+      setupCommand: 'npm install',
     });
   });
   it('disables tab switching during a pending run settings save', async () => {
@@ -784,8 +789,9 @@ describe('run settings drafts', () => {
     vi.mocked(patch).mockReturnValueOnce(pending.promise);
     settings();
     await flush();
-    fireEvent.click(screen.getByRole('tab', { name: 'Run & setup' }));
-    fireEvent.click(screen.getByText('Save changes'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Run' }));
+    fireEvent.change(screen.getByLabelText('Run command'), { target: { value: 'npm start' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     expect((screen.getByRole('tab', { name: 'General' }) as HTMLButtonElement).disabled).toBe(true);
     await act(async () => pending.resolve({}));
     expect((screen.getByRole('tab', { name: 'General' }) as HTMLButtonElement).disabled).toBe(
@@ -811,7 +817,7 @@ it.each(['a.ts', 'src'])(
     fireEvent.click(screen.getByText('b.ts'));
     await screen.findByText('Editing b.ts');
     fireEvent.click(screen.getByText(path));
-    const events = FakeSocket.instances.find((s) => s.url.endsWith('/events'))!;
+    const events = FakeSocket.instances.find((s) => new URL(s.url).pathname.endsWith('/events'))!;
     await act(async () =>
       events.message({
         type: 'file',

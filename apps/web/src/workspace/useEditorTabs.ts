@@ -1,11 +1,17 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { editor as MonacoEditor } from 'monaco-editor';
-import type { FileContent, Project, WorkspacePreferences } from '@repellet/shared';
+import type {
+  FileContent,
+  Project,
+  WorkspacePreferences,
+  DocumentIdentity,
+} from '@repellet/shared';
 import { starterCatalog } from '@repellet/shared';
 import { api, errorMessage } from '../api';
 import { useUi } from '../ui';
 import { flushOpenDocuments } from '../documentSaves';
 import { remapPath, type StructureChange } from '../workspaceState';
+import { WorkspaceSession, type WorkspaceSnapshot } from './session';
 // Open editor tabs, the active file and per-file view state, including restore after reload.
 export function useEditorTabs(
   id: string,
@@ -24,6 +30,7 @@ export function useEditorTabs(
   const viewStates = useRef(new Map<string, MonacoEditor.ICodeEditorViewState>());
   const fileIntent = useRef(0);
   const tabsRef = useRef(tabs);
+  const registry = useRef(new WorkspaceSession(id));
   tabsRef.current = tabs;
   function commit(next: string[]) {
     tabsRef.current = next;
@@ -123,6 +130,23 @@ export function useEditorTabs(
       }),
     );
   }
+  function observeDocument(doc: DocumentIdentity) {
+    const previous = registry.current.documents.get(doc.id);
+    if (previous && previous.revision > doc.revision) return;
+    if (previous && previous.path !== doc.path)
+      applyStructure({ from: previous.path, to: doc.path });
+    registry.current.documents.set(doc.id, doc);
+  }
+  async function reconcileRegistry() {
+    const next = await api<WorkspaceSnapshot>(base + '/workspace');
+    if (!mounted.current || !Array.isArray(next.documents)) return;
+    // A live document event can overtake this HTTP response. Never remap a newer identity backwards.
+    const merged = next.documents.map((doc) => {
+      const current = registry.current.documents.get(doc.id);
+      return current && current.revision > doc.revision ? current : doc;
+    });
+    registry.current.reconcileDocuments(merged, (from, to) => applyStructure({ from, to }));
+  }
   return {
     tabs,
     active,
@@ -136,5 +160,7 @@ export function useEditorTabs(
     selectTab,
     dropPath,
     applyStructure,
+    observeDocument,
+    reconcileRegistry,
   };
 }

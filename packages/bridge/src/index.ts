@@ -23,11 +23,13 @@ import {
 import {
   createTerminal,
   stopTerminal,
+  closeTerminal,
   stopAll,
   attachTerminal,
   info,
   setEnvironment,
   projectEnvironment,
+  processEvents,
 } from './terminals.js';
 import { attachLanguage, stopLanguages } from './language.js';
 import { formatFile } from './format.js';
@@ -84,7 +86,11 @@ app.post('/fingerprint', async (req) => {
   const b = req.body as { cwd: string; command: string };
   return dependencyFingerprint(b.cwd, b.command);
 });
-app.get('/health', async () => ({ ok: true }));
+app.get('/health', async () => ({
+  ok: true,
+  protocolVersion: 1,
+  capabilities: ['processes', 'process-stop', 'terminal-close', 'terminal-readonly'],
+}));
 app.get('/files', async (req) =>
   listFiles(String((req.query as Record<string, string>).path || '')),
 );
@@ -179,12 +185,57 @@ app.post('/terminals', async (req) => {
   return info().find((t) => t.id === session.id);
 });
 app.delete('/terminals/:id', async (req) => {
+  await closeTerminal((req.params as { id: string }).id);
+  return { ok: true };
+});
+app.post('/processes/:id/stop', async (req) => {
   await stopTerminal((req.params as { id: string }).id);
   return { ok: true };
 });
 app.get('/terminals/:id/connect', { websocket: true }, (ws, req) =>
-  attachTerminal(ws, (req.params as { id: string }).id),
+  attachTerminal(
+    ws,
+    (req.params as { id: string }).id,
+    req.headers['x-repellet-readonly'] !== 'true',
+  ),
 );
+app.get('/processes', async () => info());
+app.post('/processes', async (req) => {
+  measured = (await usage()) + agentBytes;
+  await checkWrite();
+  if (suspended)
+    throw Object.assign(new Error('Execution suspended: storage limit exceeded'), {
+      statusCode: 507,
+    });
+  const b = req.body as {
+    id: string;
+    name: string;
+    command: string;
+    cwd: string;
+    kind: 'run' | 'task';
+    actorId?: string;
+    environmentKeys?: string[];
+  };
+  if (
+    !/^[0-9a-f-]{36}$/.test(b.id) ||
+    !['run', 'task'].includes(b.kind) ||
+    typeof b.command !== 'string' ||
+    !b.command.trim() ||
+    b.command.length > 4096 ||
+    typeof b.name !== 'string' ||
+    b.name.length > 80 ||
+    typeof b.cwd !== 'string' ||
+    (b.environmentKeys !== undefined &&
+      (!Array.isArray(b.environmentKeys) ||
+        b.environmentKeys.length > 100 ||
+        b.environmentKeys.some(
+          (key) => typeof key !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key),
+        )))
+  )
+    throw Object.assign(new Error('Invalid process configuration'), { statusCode: 400 });
+  await createTerminal(b.name, b.command, b.cwd, b);
+  return info().find((entry) => entry.id === b.id);
+});
 app.post('/run', async (req) => {
   if (suspended)
     throw Object.assign(new Error('Execution suspended: storage limit exceeded'), {
@@ -231,6 +282,15 @@ app.get('/events', { websocket: true }, (ws) => {
 const emit = (event: unknown) => {
   for (const ws of events) if (ws.readyState === 1) ws.send(JSON.stringify(event));
 };
+processEvents.on('change', (process) => {
+  emit({ type: 'process', process });
+  if (process.finishedAt)
+    void usage()
+      .then((bytes) => {
+        measured = bytes + agentBytes;
+      })
+      .catch(() => {});
+});
 const watcher = chokidar.watch(root, {
   ignoreInitial: true,
   followSymlinks: false,

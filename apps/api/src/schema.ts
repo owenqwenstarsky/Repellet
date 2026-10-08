@@ -9,6 +9,7 @@ import {
   bigint,
   primaryKey,
   index,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import type {
   Runtime,
@@ -107,9 +108,144 @@ export const documents = pgTable(
     diskHash: text('disk_hash'),
     dirty: boolean().notNull().default(false),
     conflict: boolean().notNull().default(false),
+    revision: bigint({ mode: 'number' }).notNull().default(0),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('documents_project_idx').on(t.projectId)],
+);
+export const workspaceStreams = pgTable('workspace_streams', {
+  projectId: uuid('project_id')
+    .primaryKey()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  seq: bigint({ mode: 'number' }).notNull().default(0),
+  retainedAfter: bigint('retained_after', { mode: 'number' }).notNull().default(0),
+});
+export const workspaceEvents = pgTable(
+  'workspace_events',
+  {
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    seq: bigint({ mode: 'number' }).notNull(),
+    version: integer().notNull().default(1),
+    type: text().notNull(),
+    actor: jsonb().$type<{ id: string; name: string; role: ProjectRole }>(),
+    payload: jsonb().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.projectId, t.seq] })],
+);
+export const workspaceActivity = pgTable(
+  'workspace_activity',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    actor: jsonb().$type<{ id: string; name: string; role: ProjectRole }>(),
+    action: text().notNull(),
+    metadata: jsonb().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('workspace_activity_project_idx').on(t.projectId, t.createdAt)],
+);
+export const projectPreviewTargets = pgTable(
+  'project_preview_targets',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    name: text().notNull(),
+    targetPort: integer('target_port').notNull(),
+    allocatedPort: integer('allocated_port'),
+    status: text().notNull().default('stopped'),
+    httpStatus: integer('http_status'),
+    lastProbe: timestamp('last_probe', { withTimezone: true }),
+    generation: bigint({ mode: 'number' }).notNull().default(0),
+    isDefault: boolean('is_default').notNull().default(false),
+  },
+  (t) => [uniqueIndex('project_preview_name_idx').on(t.projectId, t.name)],
+);
+export const projectRunProfiles = pgTable(
+  'project_run_profiles',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    name: text().notNull(),
+    command: text().notNull(),
+    cwd: text().notNull().default(''),
+    environmentKeys: jsonb('environment_keys').$type<string[]>().notNull().default([]),
+    previewTargetId: uuid('preview_target_id').references(() => projectPreviewTargets.id, {
+      onDelete: 'set null',
+    }),
+    autoStart: boolean('auto_start').notNull().default(false),
+    isDefault: boolean('is_default').notNull().default(false),
+  },
+  (t) => [uniqueIndex('project_run_profile_name_idx').on(t.projectId, t.name)],
+);
+export const workspaceProcesses = pgTable(
+  'workspace_processes',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    profileId: uuid('profile_id').references(() => projectRunProfiles.id, { onDelete: 'set null' }),
+    kind: text().notNull(),
+    status: text().notNull(),
+    pid: integer(),
+    exitCode: integer('exit_code'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('workspace_processes_project_idx').on(t.projectId, t.createdAt)],
+);
+export const projectAgentPolicies = pgTable('project_agent_policies', {
+  projectId: uuid('project_id')
+    .primaryKey()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  enabled: boolean().notNull().default(false),
+  provider: text().$type<'custom'>().notNull().default('custom'),
+  model: text().notNull().default(''),
+  reasoningEffort: text('reasoning_effort'),
+  encryptedCredential: text('encrypted_credential'),
+  baseUrl: text('base_url'),
+  editorsCanExecute: boolean('editors_can_execute').notNull().default(true),
+  viewersCanObserve: boolean('viewers_can_observe').notNull().default(true),
+  credentialVersion: integer('credential_version').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+export const projectAgentThreads = pgTable(
+  'project_agent_threads',
+  {
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    threadId: text('thread_id').notNull(),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.projectId, t.threadId] })],
+);
+export const workspaceIdempotency = pgTable(
+  'workspace_idempotency',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    key: text().notNull(),
+    requestHash: text('request_hash').notNull(),
+    state: text().notNull(),
+    statusCode: integer('status_code'),
+    response: jsonb(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.key] })],
 );
 export const jobs = pgTable('jobs', {
   id: uuid().primaryKey().defaultRandom(),

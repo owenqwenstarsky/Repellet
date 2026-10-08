@@ -72,8 +72,20 @@ Static-server unit tests cover MIME types, GET/HEAD, nested indexes and redirect
 
 Linux and non-Chromium browser coverage remain unverified locally.
 
+## Workspace domain foundation
+
+Validated locally on macOS ARM64 with a disposable PostgreSQL database and Docker workspaces:
+
+- `npm run check`: type checks, **280 passing tests**, and production builds. **25 gated tests skipped**; this is not a complete release-matrix run.
+- Existing Docker workspace suite: **16 passed**. Added independent profile-process test: **passed**, including a repeat against the final `0.5.0` bridge image.
+- New PostgreSQL coverage includes pre-0005 migration/backfill, preserved document identity/Yjs state, concurrent event sequencing, replay, compaction/resync, administrator denial, independent processes, missing-process reconciliation, and lifecycle idempotency.
+- New client/bridge coverage includes cursor deduplication/gaps, document identity remapping, queue recovery, viewer terminal enforcement, resize arbitration, bounded output, environment filtering, save-before-profile-launch, and viewer profile controls.
+- Root and React starter dependency audits report **zero vulnerabilities**. Formatting and whitespace checks pass.
+
+The full browser, backup/restore, agent-Docker, failure/load, and native Linux release matrix has not been rerun for this change. See [implementation scope](workspace-domain.md) for remaining roadmap items and the event transaction boundary limitation.
+
 ## Managed agent container context
 
-The workspace base image advances to `repellet/workspace-base:0.4.1` to include the immutable managed context source. Both project-volume initialization and agent-process startup install `/home/agent/.codex/AGENTS.md`; startup refreshes existing persistent agent volumes without a database migration. The worker image includes the source in its workspace build context.
+The merged workspace base image advances to `repellet/workspace-base:0.5.2` to include both the workspace process APIs and the immutable managed context source, rebuilding cached images from either branch. Both project-volume initialization and agent-process startup install `/home/agent/.codex/AGENTS.md`; startup refreshes existing persistent agent volumes without a database migration. The worker image includes the source in its workspace build context.
 
 `tests/agent-docker.test.ts` checks exact context contents, agent readability, workspace-user denial, ownership/modes, placement outside `/workspace`, refresh after container recreation and agent-process replacement, and initialization of duplicated workspaces. The local Responses fixture captures whether the stable `REPELLET_AGENT_CONTEXT_MARKER=repellet-agent-context-v1` marker reached the model request, and the real Codex tests assert its presence before and after process replacement. These tests require `RUN_DOCKER_TESTS=1` and an available Docker daemon; default skips do not establish Docker integration coverage.

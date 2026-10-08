@@ -116,6 +116,29 @@ describe.skipIf(!enabled)('real Docker workspace integration', () => {
     ws.close();
     expect(output).toContain('RECONNECT_OK');
   });
+  it('runs independent profile processes and preserves IDs across duplicate start requests', async () => {
+    const first = randomUUID(),
+      second = randomUUID();
+    const create = (processId: string, name: string) =>
+      json('/processes', 'POST', {
+        id: processId,
+        name,
+        command: 'node -e "setInterval(() => console.log(123), 1000)"',
+        cwd: '',
+        kind: 'run',
+        environmentKeys: [],
+      });
+    const a = await create(first, 'API'),
+      b = await create(second, 'Frontend');
+    expect(a.status).toBe('running');
+    expect(b.status).toBe('running');
+    expect((await create(first, 'API')).pid).toBe(a.pid);
+    await json(`/processes/${first}/stop`, 'POST');
+    const processes = await json('/processes');
+    expect(processes.find((p: any) => p.id === first).status).toBe('stopped');
+    expect(processes.find((p: any) => p.id === second).status).toBe('running');
+    await json(`/processes/${second}/stop`, 'POST');
+  });
   it('rejects external symlinks and stale writes', async () => {
     await command("ln -s /etc /workspace/escape; printf 'SYMLINK_%s\\n' READY", 'SYMLINK_READY');
     await expect(json('/file?path=escape/passwd')).rejects.toMatchObject({ statusCode: 403 });
@@ -132,6 +155,26 @@ describe.skipIf(!enabled)('real Docker workspace integration', () => {
         expectedHash: before.hash,
       }),
     ).rejects.toMatchObject({ statusCode: 409 });
+  });
+  it('closes terminal tabs and retains managed output until explicitly closed', async () => {
+    const shell = await json('/terminals', 'POST', { name: 'Close me' });
+    await json(`/terminals/${shell.id}`, 'DELETE');
+    expect((await json<any[]>('/terminals')).some((t) => t.id === shell.id)).toBe(false);
+    const processId = randomUUID();
+    await json('/processes', 'POST', {
+      id: processId,
+      name: 'Managed',
+      command: 'printf retained-output; sleep 60',
+      cwd: '',
+      kind: 'run',
+    });
+    await json(`/processes/${processId}/stop`, 'POST');
+    expect((await json<any[]>('/terminals')).find((t) => t.id === processId)).toMatchObject({
+      alive: false,
+      status: 'stopped',
+    });
+    await json(`/terminals/${processId}`, 'DELETE');
+    expect((await json<any[]>('/terminals')).some((t) => t.id === processId)).toBe(false);
   });
   it('runs an app, serves its port, and stops its process group', async () => {
     await json('/run', 'POST', { command: 'python -m http.server 8000 --bind 0.0.0.0', cwd: '' });

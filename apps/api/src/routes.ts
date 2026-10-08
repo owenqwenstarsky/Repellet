@@ -16,7 +16,19 @@ import {
   safeRelativePath,
 } from '@repellet/shared';
 import { db } from './db.js';
-import { users, sessions, installation, projects, members, documents, jobs } from './schema.js';
+import { startProfile, stopProcess } from './processes.js';
+import type { TerminalInfo } from '@repellet/shared';
+import {
+  users,
+  sessions,
+  installation,
+  projects,
+  members,
+  documents,
+  jobs,
+  projectRunProfiles,
+  workspaceProcesses,
+} from './schema.js';
 import { config } from './config.js';
 import {
   requireUser,
@@ -34,7 +46,14 @@ import {
   userForToken,
 } from './security.js';
 import { bridge, workerJson, workerRequest } from './worker.js';
-import { ensureProject, stopProject, serialize, limits, setState } from './lifecycle.js';
+import {
+  ensureProject,
+  stopProject,
+  stopProjectWithinOperation,
+  serialize,
+  limits,
+  setState,
+} from './lifecycle.js';
 import {
   flushProject,
   resolveConflict,
@@ -216,14 +235,35 @@ export async function routes(app: FastifyInstance) {
     return { ok: true };
   });
   app.get('/api/admin/projects', async (req) => {
-    await requireOwner(req);
+    const admin = await requireOwner(req);
     return (
       await db
-        .select({ project: projects, ownerName: users.displayName })
+        .select({
+          id: projects.id,
+          name: projects.name,
+          ownerId: projects.ownerId,
+          state: projects.state,
+          storageBytes: projects.storageBytes,
+          storageExceeded: projects.storageExceeded,
+          ownerName: users.displayName,
+          memberId: members.userId,
+        })
         .from(projects)
         .innerJoin(users, eq(projects.ownerId, users.id))
+        .leftJoin(members, and(eq(members.projectId, projects.id), eq(members.userId, admin.id)))
         .orderBy(desc(projects.updatedAt))
-    ).map((p) => viewProject({ ...p.project, role: 'owner', ownerName: p.ownerName }));
+    ).map(({ ownerId, memberId, ...p }) => ({ ...p, canOpen: ownerId === admin.id || !!memberId }));
+  });
+  app.post('/api/admin/projects/:id/stop', async (req) => {
+    await requireOwner(req);
+    const id = idFrom(req);
+    const [project] = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.id, id));
+    if (!project) throw Object.assign(new Error('Project not found'), { statusCode: 404 });
+    await stopProject(id);
+    return { ok: true };
   });
   app.get('/api/projects', async (req) => {
     const user = await requireUser(req);
@@ -304,15 +344,68 @@ export async function routes(app: FastifyInstance) {
         name: z.string().trim().min(1).max(80).optional(),
         description: z.string().max(500).optional(),
         runConfig: runConfigSchema.optional(),
+        setupCommand: z.string().trim().max(4096).optional(),
+        runAutoStart: z.boolean().optional(),
       })
       .parse(req.body);
-    if (b.runConfig) safeRelativePath(b.runConfig.cwd);
-    if (b.runConfig && b.runConfig.port !== p.runConfig.port && p.state === 'running')
-      await stopProject(p.id);
-    await db
-      .update(projects)
-      .set({ ...b, updatedAt: new Date() })
-      .where(eq(projects.id, p.id));
+    if (b.runConfig) b.runConfig.cwd = safeRelativePath(b.runConfig.cwd);
+    const configuring =
+      b.runConfig !== undefined || b.setupCommand !== undefined || b.runAutoStart !== undefined;
+    const assertIdle = (current: typeof projects.$inferSelect) => {
+      if (configuring && ['files', 'installing'].includes(current.preparation.status))
+        throw Object.assign(
+          new Error(
+            'Installation is in progress. Wait for it to finish before saving Run settings.',
+          ),
+          { statusCode: 409 },
+        );
+    };
+    assertIdle(p);
+    await serialize(p.id, async () => {
+      const current = await access(req, 'manage');
+      assertIdle(current);
+      if (
+        b.runConfig &&
+        b.runConfig.port !== current.runConfig.port &&
+        current.state === 'running'
+      ) {
+        await cancelProjectWork(p.id);
+        await stopProjectWithinOperation(p.id);
+      }
+      const { runAutoStart, ...fields } = b;
+      const setupChanged = b.setupCommand !== undefined && b.setupCommand !== current.setupCommand;
+      const folderChanged = b.runConfig !== undefined && b.runConfig.cwd !== current.runConfig.cwd;
+      const installationRequired =
+        !!(b.setupCommand ?? current.setupCommand).trim() ||
+        !!(current.starterId && !current.preparation.scaffolded);
+      await db.transaction(async (tx) => {
+        await tx
+          .update(projects)
+          .set({
+            ...fields,
+            ...(setupChanged || folderChanged
+              ? {
+                  preparation: {
+                    ...current.preparation,
+                    status: installationRequired ? ('required' as const) : ('none' as const),
+                    fingerprint: null,
+                    error: null,
+                  },
+                }
+              : {}),
+            updatedAt: new Date(),
+          })
+          .where(eq(projects.id, p.id));
+        if (runAutoStart !== undefined)
+          await tx
+            .update(projectRunProfiles)
+            .set({ autoStart: runAutoStart })
+            .where(
+              and(eq(projectRunProfiles.projectId, p.id), eq(projectRunProfiles.isDefault, true)),
+            );
+      });
+      await emit(p.id, { type: 'project', action: 'settings.updated' });
+    });
     return { ok: true };
   });
   app.post('/api/projects/:id/open', async (req, reply) => {
@@ -332,22 +425,54 @@ export async function routes(app: FastifyInstance) {
   });
   app.post('/api/projects/:id/run', async (req) => {
     const p = await ready(req, 'edit');
-    await serialize(p.id, async () => {
+    const actor = await requireUser(req);
+    return serialize(p.id, async () => {
+      await access(req, 'edit');
       await flushProject(p.id);
       const current = await assertPrepared(p.id);
-      await bridge(p.id, '/run', 'POST', current.runConfig);
+      const [profile] = await db
+        .select()
+        .from(projectRunProfiles)
+        .where(and(eq(projectRunProfiles.projectId, p.id), eq(projectRunProfiles.isDefault, true)));
+      if (!profile)
+        throw Object.assign(new Error('Main Run command is unavailable'), { statusCode: 409 });
+      const active = await db
+        .select()
+        .from(workspaceProcesses)
+        .where(
+          and(
+            eq(workspaceProcesses.projectId, p.id),
+            eq(workspaceProcesses.profileId, profile.id),
+            inArray(workspaceProcesses.status, ['starting', 'running']),
+          ),
+        );
+      for (const process of active) await stopProcess(p.id, process.id);
+      const process = await startProfile(p.id, profile.id, actor.id);
       await probePreview(p.id, current.runConfig.port);
+      await emit(p.id, { type: 'terminals' });
+      return { ok: true, terminalId: process.id };
     });
-    emit(p.id, { type: 'terminals' });
-    return { ok: true };
   });
   app.post('/api/projects/:id/run/stop', async (req) => {
     const p = await ready(req, 'edit');
     await serialize(p.id, async () => {
+      await access(req, 'edit');
+      const active = await db
+        .select({ id: workspaceProcesses.id })
+        .from(workspaceProcesses)
+        .innerJoin(projectRunProfiles, eq(workspaceProcesses.profileId, projectRunProfiles.id))
+        .where(
+          and(
+            eq(workspaceProcesses.projectId, p.id),
+            eq(projectRunProfiles.isDefault, true),
+            inArray(workspaceProcesses.status, ['starting', 'running']),
+          ),
+        );
+      for (const process of active) await stopProcess(p.id, process.id);
       await bridge(p.id, '/run/stop', 'POST');
       await cancelReadiness(p.id);
     });
-    emit(p.id, { type: 'terminals' });
+    await emit(p.id, { type: 'terminals' });
     return { ok: true };
   });
   app.post('/api/projects/:id/setup/suggest', async (req) => {
@@ -625,7 +750,23 @@ export async function routes(app: FastifyInstance) {
   });
   app.get('/api/projects/:id/terminals', async (req) => {
     const p = await ready(req);
-    return bridge(p.id, '/terminals');
+    const terminals = await bridge<(TerminalInfo & { kind?: string })[]>(p.id, '/terminals');
+    const records = await db
+      .select({ id: workspaceProcesses.id })
+      .from(workspaceProcesses)
+      .innerJoin(projectRunProfiles, eq(workspaceProcesses.profileId, projectRunProfiles.id))
+      .where(and(eq(workspaceProcesses.projectId, p.id), eq(projectRunProfiles.isDefault, true)));
+    const mainIds = new Set(records.map((record) => record.id));
+    const main = terminals.filter((terminal) => terminal.id === 'run' || mainIds.has(terminal.id));
+    // Retain only the current main Run output, preferring a live session over retired output.
+    const selected = main.filter((terminal) => terminal.alive).at(-1) || main.at(-1);
+    return terminals
+      .filter((terminal) => {
+        if (main.includes(terminal)) return terminal === selected;
+        // Older installed bridges retain explicitly stopped shells; omit those as well.
+        return terminal.alive || terminal.kind !== 'terminal';
+      })
+      .map((terminal) => ({ ...terminal, isMainRun: terminal === selected }));
   });
   app.post('/api/projects/:id/terminals', async (req) => {
     const p = await ready(req, 'edit');
@@ -640,9 +781,19 @@ export async function routes(app: FastifyInstance) {
       .string()
       .regex(/^[a-z0-9-]+$/)
       .parse((req.params as { terminalId: string }).terminalId);
-    const result = await bridge(p.id, `/terminals/${terminalId}`, 'DELETE');
-    emit(p.id, { type: 'terminals' });
-    return result;
+    return serialize(p.id, async () => {
+      await access(req, 'edit');
+      const result = await bridge(p.id, `/terminals/${terminalId}`, 'DELETE');
+      if (z.string().uuid().safeParse(terminalId).success)
+        await db
+          .update(workspaceProcesses)
+          .set({ status: 'stopped', finishedAt: new Date() })
+          .where(
+            and(eq(workspaceProcesses.projectId, p.id), eq(workspaceProcesses.id, terminalId)),
+          );
+      await emit(p.id, { type: 'terminals' });
+      return result;
+    });
   });
   app.post('/api/projects/:id/format', async (req) => {
     const p = await ready(req, 'edit');

@@ -101,7 +101,7 @@ test('owner setup, IDE workflows, private previews, collaboration, and viewers',
   await unpacked;
   expect(entries.get('nested/note.txt')).toBe('Nested folders survive upload.\n');
   await page.getByRole('button', { name: 'Project settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Run & setup' }).click();
+  await page.getByRole('tab', { name: 'Run' }).click();
   await page.getByLabel('Run command').fill('node server.mjs');
   await page.getByRole('button', { name: 'Save changes' }).click();
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
@@ -267,7 +267,17 @@ for (const starter of [
       .getByRole('dialog')
       .getByRole('button', { name: 'Create project', exact: true })
       .click();
-    await expect(page.getByText('Ready to run', { exact: true })).toBeVisible({ timeout: 300000 });
+    await expect(page.getByRole('button', { name: 'Toggle bottom panel' })).toBeVisible({
+      timeout: 300000,
+    });
+    if (!(await page.getByRole('tab', { name: 'Preparation Logs' }).isVisible()))
+      await page.getByRole('button', { name: 'Toggle bottom panel' }).click();
+    await page.getByRole('tab', { name: 'Preparation Logs' }).click();
+    await expect(
+      page
+        .getByRole('tabpanel', { name: 'Preparation Logs' })
+        .getByText('Ready to run', { exact: true }),
+    ).toBeVisible({ timeout: 300000 });
     const id = page.url().split('/').pop()!;
     const before = await (await page.request.get(`/api/projects/${id}/terminals`)).json();
     expect(before.some((t: any) => t.isRun && t.alive)).toBe(false);
@@ -336,10 +346,24 @@ for (const starter of [
     });
     await writeFile('.cache/workflow-timings.json', JSON.stringify(timingReport, null, 2));
     // Run replacement must wait for the previous server to release its fixed port.
+    const previousGeneration = (await (await page.request.get(`/api/projects/${id}`)).json())
+      .appStatus.generation;
+    const restarted = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/api/projects/${id}/run`) &&
+        response.request().method() === 'POST',
+    );
     await page
       .locator('.workspace-header')
       .getByRole('button', { name: 'Run', exact: true })
       .click();
+    expect((await restarted).ok()).toBe(true);
+    await expect
+      .poll(async () => {
+        const { appStatus } = await (await page.request.get(`/api/projects/${id}`)).json();
+        return appStatus.status === 'available' && appStatus.generation !== previousGeneration;
+      })
+      .toBe(true);
     await expect(
       page
         .frameLocator('iframe[title="Project preview"]')

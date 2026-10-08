@@ -22,7 +22,7 @@ jobs:
       - run: docker compose -f compose.yaml -f compose.dev.yaml up -d database
       - run: npm run check
       - run: npm run format:check
-      - run: docker build -f docker/workspace.Dockerfile -t repellet/workspace-base:0.4.0 .
+      - run: docker build -f docker/workspace.Dockerfile -t repellet/workspace-base:0.5.2 .
       - run: npm run test:docker
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
