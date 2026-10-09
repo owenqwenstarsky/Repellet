@@ -790,6 +790,26 @@ test('owner Pi settings, streamed tools, threads, steering, interruption, and re
     )
     .toBe('created by agent\n');
   await expect(page.locator('.agent-activity')).toContainText('PROVIDER_KEY_HIDDEN');
+  const changedFile = page.getByRole('button', { name: 'agent-result.txt', exact: true });
+  await expect(changedFile).toBeVisible({ timeout: 60000 });
+  await changedFile.click();
+  await expect(page.locator('.editor-tab.active')).toContainText('agent-result.txt');
+  await page.getByRole('button', { name: '← Threads', exact: true }).click();
+  const threadList = page.getByRole('list', { name: 'Threads', exact: true });
+  await threadList.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  const bottomActions = page.getByRole('button', { name: /Actions for/ }).last();
+  await bottomActions.click();
+  const portaledMenu = page.getByRole('menu');
+  await expect(portaledMenu).toBeVisible();
+  expect(await portaledMenu.evaluate((element) => element.parentElement === document.body)).toBe(
+    true,
+  );
+  const menuBox = await portaledMenu.boundingBox();
+  expect(menuBox && menuBox.y + menuBox.height).toBeLessThanOrEqual(900);
+  await page.keyboard.press('Escape');
+  await page.locator('.agent-thread-row').last().click();
   const actions = async (name: string) => {
     await page.getByRole('button', { name: 'Thread actions', exact: true }).click();
     await page.getByRole('menuitem', { name, exact: true }).click();

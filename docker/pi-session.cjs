@@ -89,8 +89,21 @@ function redactStreaming(value, secrets, final = true) {
 }
 function toolItem(name, id, args, result, running = false) {
   const status = running ? 'inProgress' : result?.isError ? 'failed' : 'completed';
-  if (['plan', 'plan_edit'].includes(name) && !result?.isError)
+  if (['plan', 'plan_read', 'plan_edit', 'todo_edit'].includes(name) && !result?.isError)
     return { type: 'plan', id, text: text(result?.content) || args?.plan || '' };
+  if (name === 'edit' && !running && !result?.isError && typeof result?.details?.diff === 'string')
+    return {
+      type: 'fileChange',
+      id,
+      status,
+      changes: [
+        {
+          path: args?.path || args?.file || args?.filePath || '',
+          kind: { type: 'update', move_path: null },
+          diff: result.details.diff,
+        },
+      ],
+    };
   if (name === 'bash')
     return {
       type: 'commandExecution',
