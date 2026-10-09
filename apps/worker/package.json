@@ -19,7 +19,8 @@
     "tar-fs": "^3.1.1",
     "tar-stream": "^3.1.7",
     "ws": "^8.18.3",
-    "@repellet/codex-protocol": "*"
+    "@repellet/agent-protocol": "*",
+    "@earendil-works/pi-coding-agent": "1.1.0"
   },
   "devDependencies": {
     "@types/dockerode": "^3.3.43",

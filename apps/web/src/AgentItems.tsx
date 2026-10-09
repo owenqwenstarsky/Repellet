@@ -1,7 +1,7 @@
 import ReactMarkdown from 'react-markdown';
 import { ChevronRight } from 'lucide-react';
 import { safeRelativePath } from '@repellet/shared';
-import type { ThreadItem } from '@repellet/codex-protocol';
+import type { ThreadItem } from '@repellet/agent-protocol';
 import { Button } from './ui';
 import { groupAgentTools, type AgentTranscriptEntry } from './agentTranscript';
 import {

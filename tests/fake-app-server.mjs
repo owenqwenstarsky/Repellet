@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { mkdir, readFile, writeFile, unlink, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-const home = process.env.CODEX_HOME;
+const home = process.env.AGENT_ACCOUNT_HOME;
 await mkdir(home, { recursive: true, mode: 0o700 });
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\n');
 const notify = (method, params) => send({ method, params });
@@ -148,7 +148,7 @@ rl.on('line', async (line) => {
       const thread = {
         id: randomUUID(),
         name: null,
-        cwd: params.cwd,
+        cwd: '/workspace',
         modelProvider: params.modelProvider,
         parentThreadId: null,
         turns: [],
@@ -189,10 +189,6 @@ rl.on('line', async (line) => {
       if (!thread) throw new Error('Thread not found in this project');
     }
     if (method === 'thread/read' || method === 'thread/resume') {
-      if (method === 'thread/read' && params.includeTurns && !thread.turns.length)
-        throw new Error(
-          `thread ${thread.id} is not materialized yet; includeTurns is unavailable before first user message`,
-        );
       result(id, { thread });
       return;
     }

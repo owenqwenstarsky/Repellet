@@ -3,35 +3,8 @@ import { docker, BASE_IMAGE } from '../images.js';
 import { containerName, volumeName, inspect, bridgeRequest } from '../workspaces.js';
 import { installManagedAgentContext } from '../agent-context.js';
 import type { AgentPrivateSettings } from '@repellet/shared';
-import { CodexConnection } from './connection.js';
-const toml = (value: string) => JSON.stringify(value);
-export function codexArguments(settings: AgentPrivateSettings) {
-  const args = [
-    'app-server',
-    '-c',
-    'cli_auth_credentials_store="ephemeral"',
-    '-c',
-    'approval_policy="never"',
-    '-c',
-    'sandbox_mode="danger-full-access"',
-    '-c',
-    'shell_environment_policy.inherit="all"',
-    '-c',
-    'shell_environment_policy.exclude=["REPELLET_AGENT_API_KEY","BRIDGE_TOKEN","CODEX_HOME"]',
-  ];
-  if (settings.mode === 'custom')
-    args.push(
-      '-c',
-      'model_provider="repellet"',
-      '-c',
-      'model=' + toml(settings.model),
-      '-c',
-      'model_providers.repellet=' +
-        `{name="Repellet custom API",base_url=${toml(settings.baseUrl)},env_key="REPELLET_AGENT_API_KEY",wire_api="responses"}`,
-    );
-  if (settings.effort) args.push('-c', 'model_reasoning_effort=' + toml(settings.effort));
-  return args;
-}
+import type { ChatgptAuthTokensRefreshResponse } from '@repellet/agent-protocol';
+import { AgentConnection } from './connection.js';
 async function execAgent(id: string, command: string[], allowMissing = false) {
   const execution = await docker
     .getContainer(containerName(id))
@@ -67,7 +40,11 @@ export async function killProjectAgent(id: string) {
     if (kills.get(id) === current) kills.delete(id);
   }
 }
-export async function startProjectProcess(id: string, settings: AgentPrivateSettings) {
+export async function startProjectProcess(
+  id: string,
+  settings: AgentPrivateSettings,
+  tokens?: ChatgptAuthTokensRefreshResponse,
+) {
   if (!(await inspect(id))?.State.Running)
     throw Object.assign(new Error('Start the workspace to load agent conversations'), {
       statusCode: 409,
@@ -111,20 +88,26 @@ export async function startProjectProcess(id: string, settings: AgentPrivateSett
       return [entry.slice(0, index), entry.slice(index + 1)];
     }),
   );
-  for (const key of [
-    'BRIDGE_TOKEN',
-    'REPELLET_AGENT_API_KEY',
-    'WORKER_TOKEN',
-    'CODEX_HOME',
-    'HOME',
-    'CARGO_HOME',
-  ])
-    delete environment[key];
+  for (const key of Object.keys(environment))
+    if (/^(REPELLET_|PI_CODING_AGENT_|BRIDGE_TOKEN$|WORKER_TOKEN$|HOME$|CARGO_HOME$)/.test(key))
+      delete environment[key];
   const safeEnv = {
     ...environment,
     PATH: base.PATH || '/usr/local/bin:/usr/bin:/bin',
     HOME: '/home/agent',
-    CODEX_HOME: '/home/agent/.codex',
+    PI_CODING_AGENT_DIR: '/home/agent/.pi/agent',
+    PI_CODING_AGENT_SESSION_DIR: '/home/agent/.pi/sessions',
+    REPELLET_PI_PROVIDER: settings.mode === 'custom' ? 'repellet' : 'openai-codex',
+    ...(settings.mode === 'custom'
+      ? { REPELLET_PI_BASE_URL: settings.baseUrl, REPELLET_PI_MODEL: settings.model }
+      : {}),
+    ...(settings.effort ? { REPELLET_PI_EFFORT: settings.effort } : {}),
+    ...(tokens
+      ? {
+          REPELLET_CHATGPT_ACCESS_TOKEN: tokens.accessToken,
+          REPELLET_CHATGPT_ACCOUNT_ID: tokens.chatgptAccountId,
+        }
+      : {}),
     ...(base.RUSTUP_HOME
       ? { RUSTUP_HOME: base.RUSTUP_HOME, CARGO_HOME: '/home/agent/.cargo' }
       : {}),
@@ -135,11 +118,7 @@ export async function startProjectProcess(id: string, settings: AgentPrivateSett
   const execution = await container.exec({
     User: '1001:1000',
     WorkingDir: '/workspace',
-    Cmd: [
-      '/opt/repellet/node/bin/node',
-      '/opt/repellet/agent-launch.cjs',
-      ...codexArguments(settings),
-    ],
+    Cmd: ['/opt/repellet/node/bin/node', '/opt/repellet/pi-host.cjs'],
     Env: Object.entries(safeEnv).map(([key, value]) => `${key}=${value}`),
     AttachStdin: true,
     AttachStdout: true,
@@ -152,7 +131,7 @@ export async function startProjectProcess(id: string, settings: AgentPrivateSett
   docker.modem.demuxStream(stream, output, errors);
   stream.on('end', () => output.end());
   stream.on('error', () => output.destroy(new Error('Docker exec disconnected')));
-  return new CodexConnection(
+  return new AgentConnection(
     {
       input: stream,
       output,
@@ -162,7 +141,7 @@ export async function startProjectProcess(id: string, settings: AgentPrivateSett
         await killProjectAgent(id);
       },
     },
-    settings.apiKey ? [settings.apiKey] : [],
+    [settings.apiKey, tokens?.accessToken].filter((value): value is string => !!value),
   );
 }
 export async function projectAgentBytes(id: string) {

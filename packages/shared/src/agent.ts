@@ -3,7 +3,7 @@ import type {
   ServerNotification,
   ThreadItem,
   ToolRequestUserInputParams,
-} from '@repellet/codex-protocol';
+} from '@repellet/agent-protocol';
 export const reasoningEffortSchema = z.enum([
   'none',
   'minimal',
@@ -64,11 +64,13 @@ const methods = {
       cursor: z.string().max(1000).optional(),
       limit: z.number().int().min(1).max(100).optional(),
       archived: z.boolean().optional(),
+      search: z.string().trim().max(200).optional(),
     })
     .strict(),
   'thread/read': thread.extend({ includeTurns: z.boolean().optional() }),
   'thread/resume': thread.extend({ model }),
   'thread/fork': thread.extend({ model }),
+  'thread/plan/toggle': thread,
   'thread/name/set': thread.extend({ name: z.string().trim().min(1).max(100) }),
   'thread/archive': thread,
   'thread/unarchive': thread,
@@ -130,3 +132,48 @@ export type AgentEvent =
   | { type: 'question'; generation: string; sequence: number; question: AgentQuestion }
   | { type: 'question/resolved'; generation: string; sequence: number; requestId: string | number }
   | { type: 'process/error'; generation: string; sequence: number; message: string };
+
+/** Redact content without altering protocol identifiers, discriminants, or model IDs. */
+export function redactAgentPayload<T>(value: T, secrets: string[]): T {
+  const structural = new Set([
+    'role',
+    'api',
+    'stopReason',
+    'toolName',
+    'name',
+    'cwd',
+    'effort',
+    'thinkingLevel',
+    'source',
+    'method',
+    'type',
+    'id',
+    'threadId',
+    'turnId',
+    'itemId',
+    'generation',
+    'status',
+    'provider',
+    'model',
+    'modelProvider',
+    'reasoningEffort',
+    'defaultReasoningEffort',
+    'previousAccountId',
+    'chatgptAccountId',
+  ]);
+  function visit(value: unknown, field = ''): unknown {
+    if (typeof value === 'string') {
+      if (structural.has(field)) return value;
+      let text = value;
+      for (const secret of secrets) if (secret) text = text.replaceAll(secret, '[redacted]');
+      return text;
+    }
+    if (Array.isArray(value)) return value.map((entry) => visit(entry, field));
+    if (value && typeof value === 'object')
+      return Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [key, visit(entry, key)]),
+      );
+    return value;
+  }
+  return visit(value) as T;
+}

@@ -12,21 +12,20 @@ import {
   projectAgentEvent,
   type AgentSnapshot,
 } from '@repellet/shared';
-import { CodexConnection } from '../apps/worker/src/agent/connection.js';
+import { AgentConnection } from '../apps/worker/src/agent/connection.js';
 import { readAuthCache } from '../apps/worker/src/agent/auth-cache.js';
-import { hydrateLegacyTools, projectLegacyTools } from '../apps/worker/src/agent/legacy-history.js';
-import type { Thread } from '@repellet/codex-protocol';
+import type { Thread } from '@repellet/agent-protocol';
 const state = vi.hoisted(() => ({ root: '', usage: 0, connections: new Map<string, any>() }));
 vi.mock('../apps/worker/src/agent/process.js', async () => {
-  const { CodexConnection } = await import('../apps/worker/src/agent/connection.js');
+  const { AgentConnection } = await import('../apps/worker/src/agent/connection.js');
   return {
     startProjectProcess: async (id: string) => {
       const home = path.join(state.root, id);
       await mkdir(home, { recursive: true });
       const child = spawn(process.execPath, [path.resolve('tests/fake-app-server.mjs')], {
-        env: { ...process.env, CODEX_HOME: home },
+        env: { ...process.env, AGENT_ACCOUNT_HOME: home },
       });
-      const connection = new CodexConnection({
+      const connection = new AgentConnection({
         input: child.stdin,
         output: child.stdout,
         errors: child.stderr,
@@ -65,11 +64,11 @@ async function rpc(projectId: string, method: string, params: unknown = {}, gen?
     params,
   });
 }
-describe('Codex account and project supervision with a fake app-server', () => {
+describe('Agent account and project supervision with a fake host', () => {
   beforeAll(async () => {
     state.root = await mkdtemp(path.join(os.tmpdir(), 'repellet-agent-test-'));
     process.env.AGENT_ACCOUNTS_HOME = path.join(state.root, 'accounts');
-    process.env.CODEX_BINARY = path.resolve('tests/fake-app-server.mjs');
+    process.env.AGENT_ACCOUNT_BINARY = path.resolve('tests/fake-app-server.mjs');
     accounts = await import('../apps/worker/src/agent/accounts.js');
     projects = await import('../apps/worker/src/agent/projects.js');
   });
@@ -194,7 +193,7 @@ describe('Codex account and project supervision with a fake app-server', () => {
   });
   it('reads a new thread before its first message and keeps genuine history errors visible', async () => {
     const empty = (await rpc(one, 'thread/start')).thread;
-    const connection = state.connections.get(one) as CodexConnection;
+    const connection = state.connections.get(one) as AgentConnection;
     const call = vi.spyOn(connection, 'call');
     try {
       const result = await rpc(one, 'thread/read', { threadId: empty.id, includeTurns: true });
@@ -202,7 +201,7 @@ describe('Codex account and project supervision with a fake app-server', () => {
       expect(result.thread.turns).toEqual([]);
       expect(call).toHaveBeenCalledWith('thread/read', {
         threadId: empty.id,
-        includeTurns: false,
+        includeTurns: true,
       });
       call.mockRejectedValueOnce(new Error('History is unreadable'));
       await expect(
@@ -305,7 +304,7 @@ it('does not retry a lost mutation and rejects all inflight requests on process 
   const input = new PassThrough(),
     output = new PassThrough();
   const close = vi.fn();
-  const connection = new CodexConnection({ input, output, close });
+  const connection = new AgentConnection({ input, output, close });
   const messages: string[] = [];
   input.on('data', (chunk) => messages.push(chunk.toString()));
   const pending = connection.call('thread/start');
@@ -344,209 +343,4 @@ it('ignores stale generations and sequence numbers in reconnect projections', ()
       message: 'old sequence',
     }),
   ).toBe(snapshot);
-});
-
-it('recovers tools from Codex rollouts without exposing model context or other turns', () => {
-  const thread = {
-    cwd: '/workspace',
-    turns: [
-      {
-        id: 'turn-one',
-        status: 'completed',
-        items: [
-          { type: 'userMessage', id: 'user', content: [] },
-          { type: 'agentMessage', id: 'reply', text: 'Done' },
-        ],
-      },
-    ],
-  } as unknown as Thread;
-  const lines =
-    [
-      { type: 'session_meta', payload: { base_instructions: 'private instructions' } },
-      { type: 'turn_context', payload: { turn_id: 'turn-one' } },
-      {
-        type: 'response_item',
-        payload: {
-          type: 'function_call',
-          name: 'exec_command',
-          call_id: 'command',
-          arguments: JSON.stringify({ cmd: 'echo hello', workdir: '/workspace' }),
-        },
-      },
-      {
-        type: 'response_item',
-        payload: {
-          type: 'function_call_output',
-          call_id: 'command',
-          output: 'Process exited with code 0\nhello',
-        },
-      },
-      {
-        type: 'response_item',
-        payload: {
-          type: 'custom_tool_call',
-          name: 'apply_patch',
-          call_id: 'patch',
-          input:
-            '*** Begin Patch\n*** Update File: main.py\n@@\n-print(1)\n+print(2)\n*** End Patch',
-        },
-      },
-      {
-        type: 'response_item',
-        payload: {
-          type: 'custom_tool_call_output',
-          call_id: 'patch',
-          output: 'Success. Updated main.py',
-        },
-      },
-      { type: 'turn_context', payload: { turn_id: 'other-turn' } },
-      {
-        type: 'response_item',
-        payload: {
-          type: 'function_call',
-          name: 'exec_command',
-          call_id: 'other',
-          arguments: '{"cmd":"other-command"}',
-        },
-      },
-    ]
-      .map((record) => JSON.stringify(record))
-      .join('\n') + '\n{"partial';
-  const result = projectLegacyTools(thread, lines);
-  expect(result.turns[0]!.items.map((item) => item.type)).toEqual([
-    'userMessage',
-    'commandExecution',
-    'fileChange',
-    'agentMessage',
-  ]);
-  expect(result.turns[0]!.items[1]).toMatchObject({
-    command: 'echo hello',
-    exitCode: 0,
-    aggregatedOutput: 'Process exited with code 0\nhello',
-  });
-  expect(result.turns[0]!.items[2]).toMatchObject({
-    changes: [{ path: 'main.py', kind: { type: 'update' }, diff: '@@\n-print(1)\n+print(2)\n' }],
-    status: 'completed',
-  });
-  expect(JSON.stringify(result)).not.toMatch(/private instructions|other-command/);
-});
-
-it('preserves custom-tool source code and nested output when recovering saved activity', () => {
-  const script = 'const result = await tools.exec_command({cmd: "pwd"});\ntext(result);';
-  const output = [
-    { type: 'input_text', text: 'Script completed\nOutput:\n' },
-    { type: 'input_text', text: JSON.stringify({ exit_code: 0, output: '/workspace\n' }) },
-  ];
-  const thread = {
-    cwd: '/workspace',
-    turns: [{ id: 'turn', status: 'completed', items: [] }],
-  } as unknown as Thread;
-  const lines = [
-    { type: 'turn_context', payload: { turn_id: 'turn' } },
-    {
-      type: 'response_item',
-      payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-call', input: script },
-    },
-    {
-      type: 'response_item',
-      payload: { type: 'custom_tool_call_output', call_id: 'exec-call', output },
-    },
-    {
-      type: 'response_item',
-      payload: {
-        type: 'function_call',
-        name: 'other_tool',
-        call_id: 'other-call',
-        arguments: 'null',
-      },
-    },
-  ];
-  const result = projectLegacyTools(thread, lines.map((line) => JSON.stringify(line)).join('\n'));
-  expect(result.turns[0]!.items[0]).toMatchObject({
-    type: 'dynamicToolCall',
-    tool: 'exec',
-    arguments: script,
-    status: 'completed',
-    contentItems: [{ type: 'inputText', text: JSON.stringify(output) }],
-  });
-  expect(result.turns[0]!.items[1]).toMatchObject({ arguments: null });
-});
-
-it('refuses history paths outside the private Codex rollout directories', async () => {
-  const connection = { call: vi.fn() } as unknown as CodexConnection;
-  const thread = { path: '/workspace/stolen.jsonl', historyMode: 'legacy', turns: [{}] } as Thread;
-  await expect(hydrateLegacyTools(connection, thread)).rejects.toThrow(
-    'incompatible history location',
-  );
-  expect(connection.call).not.toHaveBeenCalled();
-});
-
-it('interleaves recovered tools with saved messages in rollout order, including repeated messages and steering', () => {
-  const message = (id: string, text: string) => ({ type: 'agentMessage', id, text });
-  const user = (id: string, text: string) => ({
-    type: 'userMessage',
-    id,
-    content: [{ type: 'text', text }],
-  });
-  const thread = {
-    cwd: '/workspace',
-    turns: [
-      {
-        id: 'turn',
-        status: 'completed',
-        items: [
-          user('user', 'Start'),
-          message('comment-one', 'Checking'),
-          message('comment-two', 'Checking'),
-          user('steer', 'Also check this'),
-          message('final', 'Done'),
-        ],
-      },
-    ],
-  } as unknown as Thread;
-  const event = (type: string, message: string) => ({
-    type: 'event_msg',
-    payload: { type, message },
-  });
-  const call = (id: string) => ({
-    type: 'response_item',
-    payload: {
-      type: 'function_call',
-      name: 'exec_command',
-      call_id: id,
-      arguments: '{"cmd":"echo hello"}',
-    },
-  });
-  const lines = [
-    { type: 'turn_context', payload: { turn_id: 'turn' } },
-    // A model-context message must never be used to reorder or add transcript text.
-    { type: 'response_item', payload: { type: 'message', role: 'developer', content: [] } },
-    event('user_message', 'Start'),
-    event('agent_message', 'Checking'),
-    call('first-command'),
-    event('agent_message', 'Checking'),
-    event('user_message', 'Also check this'),
-    call('second-command'),
-    event('agent_message', 'Done'),
-    // A parallel tool's late output does not move its original call position.
-    {
-      type: 'response_item',
-      payload: { type: 'function_call_output', call_id: 'first-command', output: 'hello' },
-    },
-  ];
-  const result = projectLegacyTools(thread, lines.map((line) => JSON.stringify(line)).join('\n'));
-  expect(result.turns[0]!.items.map((item) => item.id)).toEqual([
-    'user',
-    'comment-one',
-    'first-command',
-    'comment-two',
-    'steer',
-    'second-command',
-    'final',
-  ]);
-  expect(result.turns[0]!.items[2]).toMatchObject({ aggregatedOutput: 'hello' });
-  // Rehydrating a thread that already has the tools must neither move nor duplicate them.
-  expect(projectLegacyTools(result, lines.map((line) => JSON.stringify(line)).join('\n'))).toEqual(
-    result,
-  );
 });

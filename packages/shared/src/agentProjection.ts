@@ -39,17 +39,6 @@ export function projectAgentEvent(previous: AgentSnapshot, message: AgentEvent):
       state.pending = state.pending.filter((question) => question.id !== params.requestId);
     if (method === 'item/started' || method === 'item/completed')
       upsert(params.threadId, params.turnId, params.item);
-    if (method === 'turn/plan/updated')
-      upsert(params.threadId, params.turnId, {
-        type: 'plan',
-        id: 'plan-' + params.turnId,
-        text: [
-          params.explanation,
-          ...(params.plan || []).map((step: any) => `${step.status}: ${step.step}`),
-        ]
-          .filter(Boolean)
-          .join('\n'),
-      });
     if (method === 'error')
       state.error = params.error?.message || 'Agent failed. Retry after checking your provider.';
     const deltaFields: Record<string, string> = {
@@ -70,7 +59,7 @@ export function projectAgentEvent(previous: AgentSnapshot, message: AgentEvent):
   }
   state.waiting = state.pending.some((question) => question.params.isBlocking);
   state.items = state.items.slice(-500);
-  // Bounded reconnect projection; Codex remains the source of persisted history.
+  // Bounded reconnect projection; Pi remains the source of persisted history.
   let characters = 0;
   state.items = state.items
     .reverse()

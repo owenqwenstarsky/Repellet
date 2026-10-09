@@ -1,4 +1,7 @@
 import type { FastifyInstance } from 'fastify';
+import { eq } from 'drizzle-orm';
+import { db } from './db.js';
+import { projects } from './schema.js';
 import { WebSocket } from 'ws';
 import { z } from 'zod';
 import { agentSettingsSchema, agentRpcSchema } from '@repellet/shared';
@@ -14,6 +17,19 @@ export async function agentRoutes(app: FastifyInstance) {
       const user = await requireUser(req);
       return workerJson(`/agent/users/${user.id}/${operation}`);
     });
+  app.post('/api/agent/import', async (req) => {
+    const user = await requireUser(req);
+    z.object({})
+      .strict()
+      .parse(req.body ?? {});
+    const owned = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.ownerId, user.id));
+    return workerJson(`/agent/users/${user.id}/import`, 'POST', {
+      projectIds: owned.map((p) => p.id),
+    });
+  });
   app.put('/api/agent/settings', async (req) => {
     const user = await requireUser(req);
     return workerJson(

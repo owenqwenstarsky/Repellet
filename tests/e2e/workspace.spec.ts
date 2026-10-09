@@ -721,11 +721,31 @@ test('GitHub redirects complete with Strict cookies and member repository permis
   await context.close();
 });
 
-test('owner Codex settings, streamed tools, threads, steering, interruption, and reconnect', async ({
+test('owner Pi settings, streamed tools, threads, steering, interruption, and reconnect', async ({
   page,
   browser,
 }) => {
-  await login(page);
+  await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  let createdOwner = false;
+  if (await page.getByLabel('Setup token').isVisible()) {
+    await page.getByLabel('Setup token').fill('repellet-e2e-setup-token');
+    await page.getByLabel('Display name').fill('Workspace Owner');
+    await page.getByLabel('Username', { exact: true }).fill('e2e-owner');
+    await page.getByLabel('Password', { exact: true }).fill('repellet-e2e-password-123');
+    await page.getByRole('button', { name: 'Create owner account' }).click();
+    createdOwner = true;
+    await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
+    await page.request.post('/api/admin/users', {
+      headers: { origin: `http://localhost:${process.env.REPELLET_E2E_PORT || 3315}` },
+      data: {
+        username: 'e2e-editor',
+        displayName: 'Workspace Editor',
+        password: 'repellet-e2e-password-123',
+      },
+    });
+  }
+  if (!createdOwner) await login(page);
   const { providerUrl } = JSON.parse(await readFile('.cache/e2e.json', 'utf8'));
   await page.getByRole('button', { name: 'Account for Workspace Owner' }).click();
   await page.getByRole('menuitem', { name: 'Agent settings' }).click();
@@ -740,17 +760,26 @@ test('owner Codex settings, streamed tools, threads, steering, interruption, and
   expect(publicSettings).not.toHaveProperty('apiKey');
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await page.getByRole('button', { name: 'Create project', exact: true }).click();
-  await page.getByLabel('Project name', { exact: true }).fill('Codex browser workspace');
+  await page.getByLabel('Project name', { exact: true }).fill('Pi browser workspace');
   await page
     .getByRole('dialog')
     .getByRole('button', { name: 'Create project', exact: true })
     .click();
   await page.getByRole('button', { name: 'Agent', exact: true }).click({ timeout: 300000 });
   const id = page.url().split('/').pop()!;
-  await page.getByLabel('Message Codex').fill('create agent file');
+  await page.getByRole('button', { name: 'New thread', exact: true }).click();
+  const planMode = page.getByRole('button', { name: 'Plan mode', exact: true });
+  await expect(planMode).toHaveAttribute('aria-pressed', 'false');
+  await planMode.click();
+  await expect(planMode).toHaveAttribute('aria-pressed', 'true');
+  await page.reload();
+  await expect(planMode).toHaveAttribute('aria-pressed', 'true');
+  await planMode.click();
+  await expect(planMode).toHaveAttribute('aria-pressed', 'false');
+  await page.getByLabel('Message agent').fill('create agent file');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(page.getByLabel('Agent conversation')).toContainText(
-    'Codex is connected to Repellet',
+    'Agent is connected to Repellet',
     { timeout: 60000 },
   );
   await expect
@@ -761,26 +790,32 @@ test('owner Codex settings, streamed tools, threads, steering, interruption, and
     )
     .toBe('created by agent\n');
   await expect(page.locator('.agent-activity')).toContainText('PROVIDER_KEY_HIDDEN');
-  await page.getByRole('button', { name: 'Rename', exact: true }).click();
-  await page.getByLabel('Name', { exact: true }).fill('Saved Codex conversation');
+  const actions = async (name: string) => {
+    await page.getByRole('button', { name: 'Thread actions', exact: true }).click();
+    await page.getByRole('menuitem', { name, exact: true }).click();
+  };
+  await actions('Rename');
+  await page.getByLabel('Name', { exact: true }).fill('Saved Pi conversation');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByLabel('Agent thread', { exact: true })).toContainText(
-    'Saved Codex conversation',
-  );
-  const original = await page.getByLabel('Agent thread', { exact: true }).inputValue();
-  await page.getByRole('button', { name: 'Fork', exact: true }).click();
-  await expect(page.getByLabel('Agent thread', { exact: true })).not.toHaveValue(original);
-  await page.getByRole('button', { name: 'Archive', exact: true }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Saved Pi conversation', exact: true }),
+  ).toBeVisible();
+  await actions('Fork');
+  await expect(
+    page.getByRole('heading', { name: 'Saved Pi conversation', exact: true }),
+  ).toBeVisible();
+  await actions('Archive');
   await page.getByLabel('Archived', { exact: true }).check();
-  await expect(page.getByLabel('Agent thread', { exact: true }).locator('option')).toHaveCount(2);
-  await page.getByLabel('Agent thread', { exact: true }).selectOption({ index: 1 });
-  await page.getByRole('button', { name: 'Unarchive', exact: true }).click();
+  await expect(page.getByRole('listitem')).toHaveCount(1);
+  await page.locator('.agent-thread-row').click();
+  await actions('Unarchive');
   await page.getByLabel('Archived', { exact: true }).uncheck();
-  await page.getByLabel('Agent thread', { exact: true }).selectOption(original);
-  await page.getByLabel('Message Codex').fill('hold for steering');
+  await expect(page.getByRole('listitem')).toHaveCount(2);
+  await page.locator('.agent-thread-row').last().click();
+  await page.getByLabel('Message agent').fill('hold for steering');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
-  await page.getByLabel('Message Codex').fill('additional guidance');
+  await page.getByLabel('Message agent').fill('additional guidance');
   await page.getByRole('button', { name: 'Steer', exact: true }).click();
   await page.getByRole('button', { name: 'Stop', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);
@@ -789,10 +824,20 @@ test('owner Codex settings, streamed tools, threads, steering, interruption, and
     'aria-selected',
     'true',
   );
-  await expect(page.getByLabel('Agent thread', { exact: true })).toHaveValue(original);
+  await expect(
+    page.getByRole('heading', { name: 'Saved Pi conversation', exact: true }),
+  ).toBeVisible();
   await expect(page.getByLabel('Agent conversation')).toContainText(
-    'Codex is connected to Repellet',
+    'Agent is connected to Repellet',
   );
+  await page.setViewportSize({ width: 900, height: 700 });
+  await expect(page.getByLabel('Message agent')).toBeVisible();
+  const composerBounds = await page.locator('.agent-composer').boundingBox();
+  expect(composerBounds!.y + composerBounds!.height).toBeLessThanOrEqual(700);
+  await page.getByRole('button', { name: 'Run settings', exact: true }).click();
+  await expect(page.getByLabel('Agent model')).toBeVisible();
+  await page.getByRole('button', { name: 'Run settings', exact: true }).click();
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.screenshot({ path: '.cache/agent-workspace.png', fullPage: true });
   const editorContext = await browser.newContext(),
     editor = await editorContext.newPage();

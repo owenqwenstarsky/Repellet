@@ -1,0 +1,46 @@
+{
+  "name": "pi-plan",
+  "version": "0.1.0",
+  "description": "A conservative, read-only planning mode extension for Pi",
+  "type": "module",
+  "license": "MIT",
+  "author": "Owen Qwenstarsky",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/owenqwenstarsky/pi-plan.git"
+  },
+  "bugs": {
+    "url": "https://github.com/owenqwenstarsky/pi-plan/issues"
+  },
+  "homepage": "https://github.com/owenqwenstarsky/pi-plan#readme",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "planning",
+    "coding-agent"
+  ],
+  "files": [
+    "index.ts",
+    "ask-questions.ts",
+    "plan.ts",
+    "todo.ts",
+    "state.ts",
+    "utils.ts",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

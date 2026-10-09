@@ -9,7 +9,7 @@ COPY packages/bridge/tsconfig.json ./
 RUN sed -i 's#../../tsconfig.base.json#/tsconfig.base.json#' tsconfig.json
 COPY packages/bridge/src ./src
 RUN npm run build && npm prune --omit=dev
-RUN npm install --prefix /opt/codex @openai/codex@0.160.0 && cp -a /opt/codex/node_modules/@openai/codex-linux-*/vendor/* /opt/codex/runtime
+RUN npm install --prefix /opt/pi @earendil-works/pi-coding-agent@1.1.0
 RUN npm install --prefix /opt/language-tools pyright@1.1.414 typescript@5.9.3 typescript-language-server@6.0.1 prettier@3.9.9
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends bash git openssh-client ca-certificates curl wget ripgrep build-essential pkg-config procps acl tini libstdc++6 libssl3 libffi8 libbz2-1.0 libreadline8 libsqlite3-0 liblzma5 zlib1g libexpat1 && rm -rf /var/lib/apt/lists/* && useradd --create-home --uid 1000 --shell /bin/bash workspace && useradd --create-home --uid 1001 --shell /bin/bash agent && usermod -a -G workspace agent && chmod 700 /home/agent && mkdir /workspace && chown workspace:workspace /workspace
@@ -18,9 +18,10 @@ COPY --from=bridge /build/dist /opt/repellet/bridge/dist
 COPY --from=bridge /build/node_modules /opt/repellet/bridge/node_modules
 COPY --from=bridge /build/package.json /opt/repellet/bridge/package.json
 COPY --from=bridge /opt/language-tools /opt/language-tools
-COPY --from=bridge /opt/codex/runtime /opt/codex-runtime
-RUN ln -s /opt/codex-runtime/bin/codex /usr/local/bin/codex
-COPY docker/agent-launch.cjs /opt/repellet/agent-launch.cjs
+COPY --from=bridge /opt/pi /opt/pi
+COPY docker/pi-extensions /opt/pi/extensions
+RUN ln -s /opt/repellet/node/bin/node /usr/local/bin/node && ln -s /opt/pi/node_modules/.bin/pi /usr/local/bin/pi
+COPY docker/pi-host.cjs docker/pi-session.cjs /opt/repellet/
 COPY --chmod=0444 docker/agent-context/AGENTS.md /opt/repellet/agent-context/AGENTS.md
 ENV HOME=/home/workspace
 USER workspace

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AgentSettings as Settings } from '@repellet/shared';
-import type { GetAccountResponse, LoginAccountResponse } from '@repellet/codex-protocol';
+import type { GetAccountResponse, LoginAccountResponse } from '@repellet/agent-protocol';
 import { api, put, post, errorMessage } from './api';
 import { Modal, Field, Button, Tabs, Banner, Spinner } from './ui';
 import { useAsyncAction } from './components/useAsyncAction';
@@ -15,6 +15,13 @@ export function AgentSettings({ onClose, onSaved }: { onClose: () => void; onSav
   const [removeKey, setRemoveKey] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [migration, setMigration] = useState<{
+    imported: number;
+    skipped: number;
+    errors?: string[];
+    importedConversations?: string[];
+    skippedConversations?: string[];
+  } | null>(null);
   const { busy, run, alive } = useAsyncAction();
   async function load() {
     try {
@@ -234,6 +241,69 @@ export function AgentSettings({ onClose, onSaved }: { onClose: () => void; onSav
               </Field>
             </>
           )}
+          <section className="agent-migration">
+            <p>Bring existing Codex conversations into Pi sessions.</p>
+            <Button
+              disabled={busy}
+              onClick={() =>
+                action(async () => {
+                  const result = await post<{
+                    imported: number;
+                    skipped: number;
+                    errors?: string[];
+                    importedConversations?: string[];
+                    skippedConversations?: string[];
+                  }>('/agent/import', {});
+                  if (alive.current) setMigration(result);
+                })
+              }
+            >
+              Import previous conversations
+            </Button>
+            {migration && (
+              <div role="status">
+                <p>
+                  Imported {migration.imported}; skipped {migration.skipped}.
+                  {!!migration.errors?.length && (
+                    <span>
+                      {' '}
+                      {migration.errors.length} import errors. Original conversations were
+                      preserved.
+                    </span>
+                  )}
+                </p>
+                {!!(
+                  (migration.importedConversations?.length || 0) +
+                  (migration.skippedConversations?.length || 0)
+                ) && (
+                  <details>
+                    <summary>View import result</summary>
+                    <ul>
+                      {[
+                        ...(migration.importedConversations || []).map((name) => ({
+                          name,
+                          status: 'Imported',
+                        })),
+                        ...(migration.skippedConversations || []).map((name) => ({
+                          name,
+                          status: 'Skipped',
+                        })),
+                      ]
+                        .slice(0, 100)
+                        .map((entry, index) => (
+                          <li key={index}>
+                            {entry.status}: {entry.name}
+                          </li>
+                        ))}
+                    </ul>
+                    {migration.imported + migration.skipped > 100 && (
+                      <p>{migration.imported + migration.skipped - 100} more conversations.</p>
+                    )}
+                  </details>
+                )}
+              </div>
+            )}
+          </section>
           <div className="modal-actions">
             <Button onClick={onClose}>Close</Button>
             <Button

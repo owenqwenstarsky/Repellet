@@ -9,9 +9,9 @@
   ],
   "scripts": {
     "setup": "node scripts/setup.mjs",
-    "build": "npm run build -w @repellet/codex-protocol && npm run build -w @repellet/shared && npm run build -w @repellet/bridge && npm run build -w @repellet/api && npm run build -w @repellet/worker && npm run build -w @repellet/web",
-    "dev": "npm run build -w @repellet/codex-protocol && npm run build -w @repellet/shared && ADDITIONAL_ORIGINS=http://localhost:5173 concurrently -k -n api,worker,web 'npm run dev -w @repellet/api' 'npm run dev -w @repellet/worker' 'npm run dev -w @repellet/web'",
-    "typecheck": "npm run build -w @repellet/codex-protocol && npm run build -w @repellet/shared && npm run typecheck --workspaces --if-present",
+    "build": "npm run build -w @repellet/agent-protocol && npm run build -w @repellet/shared && npm run build -w @repellet/bridge && npm run build -w @repellet/api && npm run build -w @repellet/worker && npm run build -w @repellet/web",
+    "dev": "npm run build -w @repellet/agent-protocol && npm run build -w @repellet/shared && ADDITIONAL_ORIGINS=http://localhost:5173 concurrently -k -n api,worker,web 'npm run dev -w @repellet/api' 'npm run dev -w @repellet/worker' 'npm run dev -w @repellet/web'",
+    "typecheck": "npm run build -w @repellet/agent-protocol && npm run build -w @repellet/shared && npm run typecheck --workspaces --if-present",
     "test": "vitest run",
     "test:docker": "RUN_DOCKER_TESTS=1 vitest run tests/docker.test.ts tests/agent-docker.test.ts tests/backup.test.ts",
     "test:e2e": "playwright test",
