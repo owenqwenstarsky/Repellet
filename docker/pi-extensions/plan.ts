@@ -9,6 +9,7 @@ export default function plan(pi: ExtensionAPI) {
     });
   }
   function context(ctx: any) {
+    let feedback: string | undefined;
     return {
       ...ctx,
       hasUI: true,
@@ -18,23 +19,30 @@ export default function plan(pi: ExtensionAPI) {
         setStatus: () => {},
         notify: () => {},
         async select(title: string, options: string[]) {
-          const choices = [...options, 'Keep planning'];
+          feedback = undefined;
           const result = await ask([
             {
               id: 'plan-review',
               header: 'Plan review',
               question: title,
-              options: choices.map((label) => ({ label, description: '' })),
+              isOther: false,
+              options: options.map((label) => ({
+                label,
+                description: '',
+                ...(label === 'Make changes'
+                  ? { textInput: { placeholder: 'What should change in the plan?' } }
+                  : {}),
+              })),
             },
           ]);
           const answer = result.answers['plan-review']?.answers[0];
+          if (answer === 'Make changes') feedback = result.answers['plan-review']?.answers[1];
           return options.includes(answer) ? answer : undefined;
         },
         async editor(title: string) {
-          const result = await ask([
-            { id: 'plan-feedback', header: 'Plan feedback', question: title },
-          ]);
-          return result.answers['plan-feedback']?.answers[0];
+          // Plan review feedback is collected in the same browser form as the
+          // action choice. Never open a second form for a malformed/empty reply.
+          return feedback ?? '';
         },
       },
     };
