@@ -38,3 +38,41 @@ describe('workspace input boundaries', () => {
     ).toThrow();
   });
 });
+
+it('requires revision feedback and rejects undeclared review choices before resolving', async () => {
+  const { validQuestionAnswers } = await import('@repellet/shared');
+  const questions = [
+    {
+      id: 'review',
+      header: 'Plan review',
+      question: 'Plan complete',
+      isOther: false,
+      options: [
+        { label: 'Implement the plan', description: '' },
+        {
+          label: 'Make changes',
+          description: '',
+          textInput: { placeholder: 'What should change?' },
+        },
+      ],
+    },
+  ];
+  const answer = (...answers: string[]) => ({ review: { answers } });
+  expect(validQuestionAnswers(questions, answer('Implement the plan'))).toBe(true);
+  expect(validQuestionAnswers(questions, answer('Make changes', 'Add tests'))).toBe(true);
+  for (const answers of [
+    answer(''),
+    answer('Keep planning'),
+    answer('Make changes'),
+    answer('Make changes', '  '),
+    {},
+  ])
+    expect(validQuestionAnswers(questions, answers)).toBe(false);
+  expect(
+    validQuestionAnswers(questions, {
+      ...answer('Implement the plan'),
+      extra: { answers: ['Unexpected'] },
+    }),
+  ).toBe(false);
+  expect(validQuestionAnswers([{ ...questions[0]!, isOther: true }], answer('Custom'))).toBe(true);
+});

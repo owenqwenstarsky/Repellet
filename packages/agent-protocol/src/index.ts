@@ -63,7 +63,11 @@ export type ToolRequestUserInputParams = {
     question: string;
     isSecret?: boolean;
     isOther?: boolean;
-    options?: Array<{ label: string; description: string }> | null;
+    options?: Array<{
+      label: string;
+      description: string;
+      textInput?: { placeholder: string };
+    }> | null;
   }>;
 };
 export type ToolRequestUserInputResponse = { answers: Record<string, { answers: string[] }> };

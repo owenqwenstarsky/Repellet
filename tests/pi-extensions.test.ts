@@ -228,7 +228,6 @@ it('renders a completed plan and pauses for browser review before restoring writ
   expect(dialogs[0].questions[0].options.map((option: any) => option.label)).toEqual([
     'Implement the plan',
     'Make changes',
-    'Keep planning',
   ]);
   expect(h.planMode(manager)).toBe(true);
   expect(h.transcript(manager).flatMap((turn: any) => turn.items)).toContainEqual(
@@ -238,5 +237,33 @@ it('renders a completed plan and pauses for browser review before restoring writ
   await turn;
   expect(h.planMode(manager)).toBe(false);
   expect(provider.requests.at(-1)?.toolNames.some((tool) => tool.name === 'write')).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+it('consumes revision feedback from the review form without opening another editor', async () => {
+  const { session, eventBus, manager, errors, provider } = await fixture();
+  const dialogs: any[] = [];
+  eventBus.on('repellet:question', (request: any) => dialogs.push(request));
+  await session.prompt('/plan');
+  const turn = session.prompt('create a reviewed plan');
+  await vi.waitFor(() => expect(dialogs).toHaveLength(1));
+  expect(dialogs[0].questions[0]).toMatchObject({
+    isOther: false,
+    options: [
+      { label: 'Implement the plan' },
+      { label: 'Make changes', textInput: { placeholder: 'What should change in the plan?' } },
+    ],
+  });
+  dialogs[0].resolve({
+    answers: { 'plan-review': { answers: ['Make changes', 'Include rollback checks'] } },
+  });
+  await turn;
+  expect(dialogs).toHaveLength(1);
+  expect(h.planMode(manager)).toBe(true);
+  expect(JSON.stringify(manager.buildSessionContext().messages)).toContain(
+    'Include rollback checks',
+  );
+  expect(provider.requests).toHaveLength(2);
+  expect(session.agent.state.tools.map((tool) => tool.name)).not.toContain('write');
   expect(errors).toEqual([]);
 });

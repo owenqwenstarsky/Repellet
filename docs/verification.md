@@ -42,7 +42,7 @@ The interaction-fix verification uses no browser automation. Database suites req
 
 ## Pi agents
 
-The Pi migration was validated with Node.js 22.22.3 and Docker Desktop on macOS ARM64. Pi `1.1.0` is installed in the workspace and worker images, and `pi-host` owns the private RPC boundary. The current workspace base image is `repellet/workspace-base:0.6.1`.
+The Pi migration was validated with Node.js 22.22.3 and Docker Desktop on macOS ARM64. Pi `1.1.0` is installed in the workspace and worker images, and `pi-host` owns the private RPC boundary. The current workspace base image is `repellet/workspace-base:0.6.2`.
 
 | Check                  | Result                                                                                                    |
 | ---------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -87,6 +87,6 @@ The full browser, backup/restore, agent-Docker, failure/load, and native Linux r
 
 ## Managed agent container context
 
-The managed-context milestone advanced the workspace base image to `repellet/workspace-base:0.5.2`; the Pi migration now uses `0.6.1`. These images include both the workspace process APIs and the immutable managed context source, rebuilding cached images from either branch. Both project-volume initialization and agent-process startup install `/home/agent/.pi/agent/SYSTEM.md`; startup refreshes existing persistent agent volumes without a database migration. The worker image includes the source in its workspace build context.
+The managed-context milestone advanced the workspace base image to `repellet/workspace-base:0.5.2`; the Pi migration now uses `0.6.2`. These images include both the workspace process APIs and the immutable managed context source, rebuilding cached images from either branch. Both project-volume initialization and agent-process startup install `/home/agent/.pi/agent/SYSTEM.md`; startup refreshes existing persistent agent volumes without a database migration. The worker image includes the source in its workspace build context.
 
 `tests/agent-docker.test.ts` checks exact context contents, agent readability, workspace-user denial, ownership/modes, placement outside `/workspace`, refresh after container recreation and agent-process replacement, and initialization of duplicated workspaces. The local Responses fixture captures whether the stable `REPELLET_AGENT_CONTEXT_MARKER=repellet-agent-context-v1` marker reached the model request, and the real Pi tests assert its presence before and after process replacement. These tests require `RUN_DOCKER_TESTS=1` and an available Docker daemon; default skips do not establish Docker integration coverage.

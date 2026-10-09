@@ -28,6 +28,34 @@ const text = (content) =>
         .map((p) => p.text || '')
         .join('');
 const messageId = (message) => `${message.role}-${message.timestamp}`;
+/** Browser questions wait for an answer or abort; service requests retain a deadline. */
+function createRequest(pending, emit, notify) {
+  return (method, params, signal) =>
+    new Promise((resolve, reject) => {
+      const id = randomUUID();
+      let settled = false;
+      let timer;
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        pending.delete(id);
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', cancel);
+        if (method === 'item/tool/requestUserInput')
+          notify('serverRequest/resolved', { requestId: id });
+        error ? reject(error) : resolve(value);
+      };
+      const cancel = () => finish(new Error('Request cancelled'));
+      if (method !== 'item/tool/requestUserInput') timer = setTimeout(cancel, 120000);
+      pending.set(id, {
+        resolve: (value) => finish(null, value),
+        reject: (error) => finish(error),
+      });
+      signal?.addEventListener('abort', cancel, { once: true });
+      if (signal?.aborted) return cancel();
+      emit({ id, method, params });
+    });
+}
 function planMode(manager) {
   let enabled = false;
   for (const entry of manager.getBranch())
@@ -89,8 +117,26 @@ function redactStreaming(value, secrets, final = true) {
 }
 function toolItem(name, id, args, result, running = false) {
   const status = running ? 'inProgress' : result?.isError ? 'failed' : 'completed';
-  if (['plan', 'plan_read', 'plan_edit', 'todo_edit'].includes(name) && !result?.isError)
-    return { type: 'plan', id, text: text(result?.content) || args?.plan || '' };
+  if (
+    ['plan', 'plan_read', 'plan_edit', 'todo_edit'].includes(name) &&
+    result &&
+    !running &&
+    !result.isError
+  ) {
+    const action = { plan: 'create', plan_read: 'read', plan_edit: 'edit', todo_edit: 'todo_edit' }[
+      name
+    ];
+    const todos = result.details?.todos;
+    const summary =
+      action === 'read'
+        ? 'Read plan'
+        : action === 'todo_edit' && Array.isArray(todos)
+          ? `${todos.filter((todo) => todo.done).length}/${todos.length} todos complete`
+          : action === 'create'
+            ? 'Plan created'
+            : 'Plan updated';
+    return { type: 'plan', id, text: text(result.content) || args?.plan || '', action, summary };
+  }
   if (name === 'edit' && !running && !result?.isError && typeof result?.details?.diff === 'string')
     return {
       type: 'fileChange',
@@ -585,6 +631,7 @@ function translatePiEvent(id, event, active, notify, redact = (value) => value) 
   }
 }
 module.exports = {
+  createRequest,
   planMode,
   redactStreaming,
   redactPayload,

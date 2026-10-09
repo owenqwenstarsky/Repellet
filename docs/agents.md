@@ -36,6 +36,6 @@ Repellet pins [openai-websearch-pi](https://github.com/owenqwenstarsky/openai-we
 
 The **Plan mode** button sits in the composer beside Run settings. It runs the extension's `/plan` command without starting a model turn. Plan mode disables write/edit tools and restricts bash to conservative read-only commands. State follows each conversation, including forks and agent restarts. Turn off Plan mode to restore normal tools; the button is disabled while work or a question is active.
 
-Planning questions appear in the browser. A completed plan appears in the transcript and pauses for **Implement the plan**, **Make changes**, or **Keep planning**. Implementation restores write tools and queues the extension's implementation prompt. Changes collect feedback before the extension revises the plan. Interrupting a review clears the pending question and retains plan mode.
+Planning questions appear in the browser. A completed plan appears in the transcript and pauses for **Implement the plan**, **Make changes**. Implementation restores write tools and queues the extension's implementation prompt. Make changes reveals an empty feedback field in the review form. Unanswered questions do not expire. The transcript keeps one current plan with compact progress entries. Interrupting a review clears the pending question and retains plan mode.
 
-The workspace base is now `repellet/workspace-base:0.6.1`. Stop and start older workspaces to receive the bundled extensions. Existing project files and canonical session histories remain in their volumes.
+The workspace base is now `repellet/workspace-base:0.6.2`. Stop and start older workspaces to receive the bundled extensions. Existing project files and canonical session histories remain in their volumes.

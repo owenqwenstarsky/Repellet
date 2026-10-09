@@ -7,6 +7,7 @@ import {
   type AgentEvent,
   type AgentMethod,
   type AgentQuestion,
+  validQuestionAnswers,
 } from '@repellet/shared';
 import type { Thread, Model } from '@repellet/agent-protocol';
 import { api, post, wsUrl, errorMessage } from './api';
@@ -717,53 +718,71 @@ function Question({
   disabled: boolean;
   onAnswer: (answers: Record<string, { answers: string[] }>) => void;
 }) {
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [selected, setSelected] = useState<Record<string, string>>({});
+  const [text, setText] = useState<Record<string, string>>({});
+  const answers = Object.fromEntries(
+    question.params.questions.map((q) => {
+      const option = q.options?.find((option) => option.label === selected[q.id]);
+      return [
+        q.id,
+        {
+          answers: option
+            ? option.textInput
+              ? [option.label, text[q.id] || '']
+              : [option.label]
+            : [text[q.id] || ''],
+        },
+      ];
+    }),
+  );
+  const valid = validQuestionAnswers(question.params.questions, answers);
   return (
     <form
       className="agent-question"
       onSubmit={(event) => {
         event.preventDefault();
-        onAnswer(
-          Object.fromEntries(
-            question.params.questions.map((question) => [
-              question.id,
-              { answers: [answers[question.id] || ''] },
-            ]),
-          ),
-        );
+        if (!disabled && valid) onAnswer(answers);
       }}
     >
-      {question.params.questions.map((question) => (
-        <fieldset key={question.id} disabled={disabled}>
-          <legend>{question.header}</legend>
-          <p>{question.question}</p>
-          {question.options?.map((option) => (
-            <label key={option.label}>
+      {question.params.questions.map((q) => {
+        const option = q.options?.find((option) => option.label === selected[q.id]);
+        const allowCustom = !q.options?.length || q.isOther !== false;
+        return (
+          <fieldset key={q.id} disabled={disabled}>
+            <legend>{q.header}</legend>
+            <p>{q.question}</p>
+            {q.options?.map((option) => (
+              <label key={option.label}>
+                <input
+                  type="radio"
+                  name={`${question.id}:${q.id}`}
+                  checked={selected[q.id] === option.label}
+                  onChange={() => setSelected((current) => ({ ...current, [q.id]: option.label }))}
+                />
+                {option.label}
+                <small>{option.description}</small>
+              </label>
+            ))}
+            {(option?.textInput || allowCustom) && (
               <input
-                type="radio"
-                name={question.id}
-                checked={answers[question.id] === option.label}
-                onChange={() => setAnswers({ ...answers, [question.id]: option.label })}
+                aria-label={option?.textInput?.placeholder || q.question}
+                placeholder={
+                  option?.textInput?.placeholder ||
+                  (q.options?.length ? 'Custom response' : undefined)
+                }
+                type={q.isSecret ? 'password' : 'text'}
+                value={text[q.id] || ''}
+                onChange={(event) => {
+                  setText((current) => ({ ...current, [q.id]: event.target.value }));
+                  if (!option?.textInput) setSelected((current) => ({ ...current, [q.id]: '' }));
+                }}
+                required={!!option?.textInput || !option}
               />
-              {option.label}
-              <small>{option.description}</small>
-            </label>
-          ))}
-          <input
-            aria-label={question.question}
-            type={question.isSecret ? 'password' : 'text'}
-            value={answers[question.id] || ''}
-            onChange={(event) => setAnswers({ ...answers, [question.id]: event.target.value })}
-            required
-          />
-        </fieldset>
-      ))}
-      <Button
-        type="submit"
-        disabled={
-          disabled || question.params.questions.some((question) => !answers[question.id]?.trim())
-        }
-      >
+            )}
+          </fieldset>
+        );
+      })}
+      <Button type="submit" disabled={disabled || !valid}>
         Answer
       </Button>
     </form>

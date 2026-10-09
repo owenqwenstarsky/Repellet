@@ -59,7 +59,7 @@ export function agentTranscript(
     }
     turn.live.push(entry.item);
   }
-  return [...turns].flatMap(([turnId, turn]) => {
+  const merged = [...turns].flatMap(([turnId, turn]) => {
     const used = new Set<number>();
     const matches = turn.live.map((item) => {
       let index = turn.stored.findIndex(
@@ -93,5 +93,23 @@ export function agentTranscript(
     return items
       .flatMap((item, index) => [...(additions.get(index) || []), item])
       .concat(additions.get(items.length) || []);
+  });
+  return consolidatePlans(merged);
+}
+
+/** Keep one current snapshot while retaining compact activity at each update. */
+export function consolidatePlans(entries: AgentTranscriptEntry[]): AgentTranscriptEntry[] {
+  const plans = entries.filter((entry) => entry.item.type === 'plan' && entry.item.text.trim());
+  const first = plans.find((entry) => entry.item.type === 'plan' && entry.item.action !== 'read');
+  const latest = plans
+    .filter((entry) => entry.item.type === 'plan' && entry.item.action !== 'read')
+    .at(-1);
+  return entries.map((entry) => {
+    if (entry.item.type !== 'plan') return entry;
+    if (entry === first && latest?.item.type === 'plan')
+      return { ...entry, item: { ...latest.item, id: entry.item.id } };
+    const summary =
+      entry.item.summary || (entry.item.action === 'read' ? 'Read plan' : 'Plan updated');
+    return { ...entry, item: { ...entry.item, text: '', summary } };
   });
 }

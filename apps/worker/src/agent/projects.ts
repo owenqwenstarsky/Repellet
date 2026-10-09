@@ -4,6 +4,7 @@ import {
   agentRpcSchema,
   projectAgentEvent,
   redactAgentPayload,
+  validQuestionAnswers,
   type AgentEvent,
   type AgentSnapshot,
   type AgentPrivateSettings,
@@ -295,11 +296,7 @@ export async function agentRpc(projectId: string, userId: string, input: unknown
         (question) => question.id === params.requestId,
       );
       if (!question) throw error('Question is no longer pending');
-      const ids = question.params.questions.map((q) => q.id);
-      if (
-        Object.keys(params.answers).some((id) => !ids.includes(id)) ||
-        ids.some((id) => !params.answers[id])
-      )
+      if (!validQuestionAnswers(question.params.questions, params.answers))
         throw error('Answer each pending question', 400);
       connection.respond(question.id, { answers: params.answers });
       publish(session, { type: 'question/resolved', requestId: question.id });

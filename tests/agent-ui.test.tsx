@@ -744,3 +744,163 @@ it('keeps model controls in Run settings and submits only with Cmd/Ctrl+Enter', 
     expect(rpcCalls.filter((call) => call.method === 'turn/start')).toHaveLength(1),
   );
 });
+
+function pendingReview() {
+  snapshot.pending = [
+    {
+      id: 'review',
+      params: {
+        threadId: 'thread',
+        turnId: 'turn',
+        itemId: 'review',
+        isBlocking: true,
+        questions: [
+          {
+            id: 'plan-review',
+            header: 'Plan review',
+            question: 'Plan complete',
+            isOther: false,
+            options: [
+              { label: 'Implement the plan', description: '' },
+              {
+                label: 'Make changes',
+                description: '',
+                textInput: { placeholder: 'What should change in the plan?' },
+              },
+            ],
+          },
+        ],
+      },
+    },
+  ];
+  snapshot.waiting = true;
+}
+
+it('shows an empty revision input, preserves feedback between choices, and submits it with the selection', async () => {
+  pendingReview();
+  await mountPanel();
+  expect(screen.getAllByRole('radio')).toHaveLength(2);
+  expect(screen.queryByText('Keep planning')).toBeNull();
+  expect(screen.queryByPlaceholderText('What should change in the plan?')).toBeNull();
+  fireEvent.click(screen.getByRole('radio', { name: 'Make changes' }));
+  const input = screen.getByPlaceholderText('What should change in the plan?') as HTMLInputElement;
+  expect(input.value).toBe('');
+  expect((screen.getByRole('button', { name: 'Answer' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(input, { target: { value: '   ' } });
+  expect((screen.getByRole('button', { name: 'Answer' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(input, { target: { value: 'Add rollback verification' } });
+  fireEvent.click(screen.getByRole('radio', { name: 'Implement the plan' }));
+  expect(screen.queryByPlaceholderText('What should change in the plan?')).toBeNull();
+  expect((screen.getByRole('button', { name: 'Answer' }) as HTMLButtonElement).disabled).toBe(
+    false,
+  );
+  fireEvent.click(screen.getByRole('radio', { name: 'Make changes' }));
+  expect(
+    (screen.getByPlaceholderText('What should change in the plan?') as HTMLInputElement).value,
+  ).toBe('Add rollback verification');
+  fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+  await waitFor(() =>
+    expect(rpcCalls).toContainEqual(
+      expect.objectContaining({
+        method: 'question/respond',
+        params: {
+          requestId: 'review',
+          answers: {
+            'plan-review': { answers: ['Make changes', 'Add rollback verification'] },
+          },
+        },
+      }),
+    ),
+  );
+});
+
+it('submits implementation without a text field or feedback', async () => {
+  pendingReview();
+  await mountPanel();
+  fireEvent.click(screen.getByRole('radio', { name: 'Implement the plan' }));
+  expect(document.querySelector('.agent-question input[type="text"]')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+  await waitFor(() =>
+    expect(rpcCalls).toContainEqual(
+      expect.objectContaining({
+        method: 'question/respond',
+        params: {
+          requestId: 'review',
+          answers: {
+            'plan-review': { answers: ['Implement the plan'] },
+          },
+        },
+      }),
+    ),
+  );
+});
+
+it('does not fill ordinary custom responses with radio labels', async () => {
+  pendingReview();
+  const q = snapshot.pending[0]!.params.questions[0]!;
+  q.isOther = true;
+  q.options = [{ label: 'Focused', description: 'One file' }];
+  await mountPanel();
+  fireEvent.click(screen.getByRole('radio', { name: /Focused.*One file/ }));
+  expect((screen.getByLabelText('Plan complete') as HTMLInputElement).value).toBe('');
+  expect((screen.getByRole('button', { name: 'Answer' }) as HTMLButtonElement).disabled).toBe(
+    false,
+  );
+  fireEvent.change(screen.getByLabelText('Plan complete'), { target: { value: 'Custom scope' } });
+  expect((screen.getByRole('radio') as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+  await waitFor(() =>
+    expect(rpcCalls).toContainEqual(
+      expect.objectContaining({
+        method: 'question/respond',
+        params: {
+          requestId: 'review',
+          answers: {
+            'plan-review': { answers: ['Custom scope'] },
+          },
+        },
+      }),
+    ),
+  );
+});
+
+it('keeps one current plan across revisions, reads, progress, and reconnect history', () => {
+  const plan = (
+    id: string,
+    text: string,
+    action?: 'create' | 'read' | 'edit' | 'todo_edit',
+    summary?: string,
+  ): ThreadItem => ({ type: 'plan', id, text, action, summary });
+  const first = plan('first', 'Original');
+  const read = plan('read', 'Original', 'read', 'Read plan');
+  const revision = plan('revision', 'Revised', 'edit', 'Plan updated');
+  const progress = plan('progress', 'Revised\n[x] #1: Done', 'todo_edit', '1/1 todos complete');
+  const failure = {
+    type: 'dynamicToolCall',
+    id: 'failed',
+    tool: 'plan_edit',
+    status: 'failed',
+  } as ThreadItem;
+  const saved = {
+    ...thread,
+    turns: [
+      { id: 'planning', items: [first, read] },
+      { id: 'implementation', items: [revision, progress, failure] },
+    ],
+  } as Thread;
+  const live = saved.turns.flatMap((turn) =>
+    turn.items.map((item) => ({ threadId: 'thread', turnId: turn.id, item })),
+  );
+  const merged = agentTranscript('thread', saved, live);
+  expect(merged).toEqual(agentTranscript('thread', saved, []));
+  expect(merged.filter(({ item }) => item.type === 'plan' && item.text)).toHaveLength(1);
+  expect(merged[0]!.key).toBe('planning:first');
+  expect(merged[0]!.item).toMatchObject({ id: 'first', text: 'Revised\n[x] #1: Done' });
+  expect(merged.slice(1, 4).map(({ item }) => (item as any).summary)).toEqual([
+    'Read plan',
+    'Plan updated',
+    '1/1 todos complete',
+  ]);
+  expect(merged.at(-1)!.item).toBe(failure);
+  expect(saved.turns[0]!.items[0]).toMatchObject({ text: 'Original' });
+});
