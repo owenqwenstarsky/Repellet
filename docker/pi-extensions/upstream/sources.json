@@ -1,0 +1,11 @@
+{
+  "websearch": {
+    "repository": "https://github.com/owenqwenstarsky/openai-websearch-pi",
+    "commit": "8531eff7ab9ba4b2cd45bccf88948450e66acd44",
+    "sourceDirectory": "src"
+  },
+  "plan": {
+    "repository": "https://github.com/owenqwenstarsky/pi-plan",
+    "commit": "97258e39430d80dbc2e6a258e00a871252f83585"
+  }
+}

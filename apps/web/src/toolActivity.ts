@@ -1,4 +1,4 @@
-/** Unwrap Codex tool-result envelopes without interpreting or executing their contents. */
+/** Unwrap provider tool-result envelopes without interpreting or executing their contents. */
 export function toolOutput(text: string): string {
   function unwrap(value: unknown, depth: number): string | null {
     if (depth > 6) return null;
@@ -46,7 +46,7 @@ export function toolInput(value: unknown): string | null {
   if (typeof value === 'object' && Object.keys(value).length === 0) return null;
   return JSON.stringify(value, null, 2);
 }
-import type { ThreadItem } from '@repellet/codex-protocol';
+import type { ThreadItem } from '@repellet/agent-protocol';
 
 export function isToolItem(item: ThreadItem): boolean {
   return (

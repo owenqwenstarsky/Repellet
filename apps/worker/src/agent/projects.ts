@@ -3,21 +3,21 @@ import type { WebSocket } from 'ws';
 import {
   agentRpcSchema,
   projectAgentEvent,
+  redactAgentPayload,
   type AgentEvent,
   type AgentSnapshot,
   type AgentPrivateSettings,
   type AgentQuestion,
 } from '@repellet/shared';
-import type { ServerRequest, ServerNotification, Thread } from '@repellet/codex-protocol';
-import { CodexConnection } from './connection.js';
+import type { ServerRequest, ServerNotification, Thread } from '@repellet/agent-protocol';
+import { AgentConnection } from './connection.js';
 import { withAccount, privateSettings, accessTokens } from './accounts.js';
 import { startProjectProcess, killProjectAgent, projectAgentBytes } from './process.js';
 import { bridgeRequest, locked } from '../workspaces.js';
-import { hydrateLegacyTools } from './legacy-history.js';
 type Session = {
   userId: string;
   projectId: string;
-  connection: CodexConnection;
+  connection: AgentConnection;
   snapshot: AgentSnapshot;
   clients: Set<WebSocket>;
   settings: AgentPrivateSettings;
@@ -32,10 +32,7 @@ const busy = (session: Session) => session.starting || !!session.snapshot.active
 const error = (message: string, statusCode = 409) =>
   Object.assign(new Error(message), { statusCode });
 function redact<T>(value: T, settings: AgentPrivateSettings): T {
-  if (!settings.apiKey) return value;
-  return JSON.parse(
-    JSON.stringify(value).replaceAll(JSON.stringify(settings.apiKey).slice(1, -1), '[redacted]'),
-  );
+  return redactAgentPayload(value, settings.apiKey ? [settings.apiKey] : []);
 }
 function publish(
   session: Session,
@@ -49,15 +46,34 @@ function publish(
     | { type: 'process/error'; message: string },
 ) {
   const message = redact(
-    { ...event, generation: session.snapshot.generation, sequence: session.snapshot.sequence + 1 },
+    publicResult({
+      ...event,
+      generation: session.snapshot.generation,
+      sequence: session.snapshot.sequence + 1,
+    }),
     session.settings,
   ) as AgentEvent;
   session.snapshot = projectAgentEvent(session.snapshot, message);
   for (const client of session.clients)
     if (client.readyState === 1) client.send(JSON.stringify(message));
 }
+function publicResult<T>(value: T): T {
+  if (!value || typeof value !== 'object') return value;
+  const copy: any = JSON.parse(JSON.stringify(value));
+  const scrub = (item: any) => {
+    if (!item || typeof item !== 'object') return;
+    if ('path' in item && typeof item.path === 'string' && item.cwd === '/workspace')
+      item.path = null;
+    for (const child of Object.values(item)) if (child && typeof child === 'object') scrub(child);
+  };
+  scrub(copy);
+  return copy;
+}
+
 async function serverRequest(session: Session, request: ServerRequest) {
   const connection = session.connection;
+  const requestId = request.id,
+    requestedMethod: string = request.method;
   try {
     if (request.method === 'account/chatgptAuthTokens/refresh') {
       if (session.settings.mode !== 'chatgpt')
@@ -82,12 +98,12 @@ async function serverRequest(session: Session, request: ServerRequest) {
       connection.respond(request.id, { currentTimeAt: Math.floor(Date.now() / 1000) });
     } else {
       connection.reject(
-        request.id,
-        `Repellet does not support ${request.method}. Use built-in tools or ask the owner in text.`,
+        requestId,
+        `Repellet does not support ${requestedMethod}. Use built-in tools or ask the owner in text.`,
       );
       publish(session, {
         type: 'process/error',
-        message: `Codex requested an unsupported operation (${request.method}). Reopen the agent to continue.`,
+        message: `Agent host requested an unsupported operation (${requestedMethod}). Reopen the agent to continue.`,
       });
       await connection.close();
     }
@@ -112,7 +128,7 @@ async function getSession(projectId: string, userId: string) {
         )
           throw error('Configure your custom provider in Agent settings');
         const tokens = settings.mode === 'chatgpt' ? await accessTokens(userId) : null;
-        const connection = await startProjectProcess(projectId, settings);
+        const connection = await startProjectProcess(projectId, settings, tokens || undefined);
         const session: Session = {
           projectId,
           userId,
@@ -142,6 +158,10 @@ async function getSession(projectId: string, userId: string) {
           if (event.method === 'thread/started') {
             session.threads.set(event.params.thread.id, event.params.thread);
             session.loadedThreads.add(event.params.thread.id);
+          }
+          if (event.method === 'thread/planMode/updated') {
+            const thread = session.threads.get(event.params.threadId);
+            if (thread) thread.planMode = event.params.enabled;
           }
           if (event.method === 'turn/completed') {
             session.completedTurns.add(event.params.turn.id);
@@ -235,7 +255,7 @@ export async function agentRpc(projectId: string, userId: string, input: unknown
     const { connection, settings } = session;
     const params = { ...rpc.params };
     if (params.threadId) {
-      // Read by ID from this project's private CODEX_HOME; never accept rollout paths/history.
+      // Read by ID from this project's private Pi session directory; never accept rollout paths/history.
       const thread =
         session.threads.get(params.threadId) ||
         ((await connection.call('thread/read', { threadId: params.threadId, includeTurns: false }))
@@ -245,7 +265,11 @@ export async function agentRpc(projectId: string, userId: string, input: unknown
       if (thread.parentThreadId) throw error('Subagent threads cannot receive top-level turns');
     }
     const active = session.snapshot.active;
-    if (rpc.method === 'turn/start' || rpc.method === 'thread/compact/start') {
+    if (
+      rpc.method === 'turn/start' ||
+      rpc.method === 'thread/compact/start' ||
+      rpc.method === 'thread/plan/toggle'
+    ) {
       if (busy(session)) throw error('This project already has an active agent turn');
       const usage = await agentUsage(projectId);
       if (usage.exceeded)
@@ -281,76 +305,13 @@ export async function agentRpc(projectId: string, userId: string, input: unknown
       publish(session, { type: 'question/resolved', requestId: question.id });
       return { ok: true };
     }
-    // Local 0.160.0 does not implement list_turns for its paginated history store.
-    // Select Codex's supported durable rollout history contract explicitly.
-    if (rpc.method === 'thread/start') params.historyMode = 'legacy';
-    if (rpc.method === 'thread/list')
-      Object.assign(params, { cwd: '/workspace', modelProviders: [] });
-    if (['thread/start', 'thread/resume', 'thread/fork'].includes(rpc.method))
-      Object.assign(params, {
-        cwd: '/workspace',
-        modelProvider: settings.mode === 'custom' ? 'repellet' : 'openai',
-        approvalPolicy: 'never',
-        sandbox: 'danger-full-access',
-        ...(settings.mode === 'custom' ? { model: settings.model } : {}),
-      });
-    if (rpc.method === 'turn/start') {
-      // Always resume under the currently selected provider; thread/read does not load it.
-      if (!session.loadedThreads.has(params.threadId))
-        await connection.call('thread/resume', {
-          threadId: params.threadId,
-          cwd: '/workspace',
-          modelProvider: settings.mode === 'custom' ? 'repellet' : 'openai',
-          approvalPolicy: 'never',
-          sandbox: 'danger-full-access',
-          ...(settings.mode === 'custom' ? { model: settings.model } : {}),
-        });
-      session.loadedThreads.add(params.threadId);
-      Object.assign(params, {
-        cwd: '/workspace',
-        approvalPolicy: 'never',
-        sandboxPolicy: { type: 'dangerFullAccess' },
-        ...(settings.mode === 'custom'
-          ? { model: settings.model, effort: settings.effort ?? undefined }
-          : {}),
-      });
-    }
+    if (rpc.method === 'turn/start' && settings.mode === 'custom')
+      Object.assign(params, { model: settings.model, effort: settings.effort ?? undefined });
     const executing = rpc.method === 'turn/start' || rpc.method === 'thread/compact/start';
     if (executing) session.starting = true;
     try {
-      let result;
-      try {
-        result = await connection.call(rpc.method, params);
-      } catch (e) {
-        const known = session.threads.get(params.threadId);
-        // Codex creates its rollout on the first turn. Empty live threads still belong
-        // to this process generation and can be displayed before that first turn.
-        if (
-          rpc.method === 'thread/read' &&
-          params.includeTurns &&
-          /not materialized yet; includeTurns is unavailable before first user message/.test(
-            (e as Error).message,
-          )
-        )
-          result = await connection.call('thread/read', {
-            threadId: params.threadId,
-            includeTurns: false,
-          });
-        else if (
-          rpc.method === 'thread/read' &&
-          known &&
-          !known.turns.length &&
-          /no rollout found/.test((e as Error).message)
-        )
-          result = { thread: known };
-        else {
-          session.starting = false;
-          throw e;
-        }
-      }
+      const result = await connection.call(rpc.method, params);
       if (result.thread) {
-        if (rpc.method === 'thread/read' && params.includeTurns)
-          result.thread = await hydrateLegacyTools(connection, result.thread);
         session.threads.set(result.thread.id, { ...result.thread, turns: [] });
         if (['thread/start', 'thread/resume', 'thread/fork'].includes(rpc.method))
           session.loadedThreads.add(result.thread.id);
@@ -365,7 +326,7 @@ export async function agentRpc(projectId: string, userId: string, input: unknown
           ...session.snapshot,
           active: { threadId: params.threadId, turnId: result.turn.id },
         };
-      return redact(result, settings);
+      return publicResult(redact(result, settings));
     } finally {
       if (
         executing &&

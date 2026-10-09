@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
-import type { ClientRequest, ServerNotification, ServerRequest } from '@repellet/codex-protocol';
+import type { ClientRequest, ServerNotification, ServerRequest } from '@repellet/agent-protocol';
 export type Transport = {
   input: Writable;
   output: Readable;
@@ -9,7 +9,7 @@ export type Transport = {
   close: () => void | Promise<void>;
 };
 /** One initialized, bidirectional JSONL connection, independent of browser subscribers. */
-export class CodexConnection extends EventEmitter {
+export class AgentConnection extends EventEmitter {
   private nextId = 0;
   private inflight = new Map<
     number,
@@ -26,7 +26,7 @@ export class CodexConnection extends EventEmitter {
     lines.on('line', (line) => {
       if (this.closed) return;
       if (Buffer.byteLength(line) > 16 * 1024 * 1024)
-        return this.fail('Codex sent an oversized message');
+        return this.fail('Agent host sent an oversized message');
       try {
         const message = JSON.parse(line);
         if (message.method) {
@@ -38,18 +38,18 @@ export class CodexConnection extends EventEmitter {
           clearTimeout(pending.timer);
           if (message.error)
             pending.reject(
-              new Error(this.safeMessage(message.error.message || 'Codex request failed')),
+              new Error(this.safeMessage(message.error.message || 'Agent host request failed')),
             );
           else pending.resolve(message.result);
         }
       } catch {
-        this.fail('Codex sent an invalid protocol message');
+        this.fail('Agent host sent an invalid protocol message');
       }
     });
-    transport.input.on('error', () => this.fail('Codex process input closed'));
-    transport.output.on('error', () => this.fail('Codex process output closed'));
+    transport.input.on('error', () => this.fail('Agent host process input closed'));
+    transport.output.on('error', () => this.fail('Agent host process output closed'));
     transport.output.on('end', () =>
-      this.fail('Codex process exited. Reopen the agent to recover saved history.'),
+      this.fail('Agent host process exited. Reopen the agent to recover saved history.'),
     );
     // Drain stderr without logging credentials or provider response bodies.
     transport.errors?.resume();
@@ -62,20 +62,22 @@ export class CodexConnection extends EventEmitter {
     this.send({ method: 'initialized', params: {} });
   }
   call(method: ClientRequest['method'], params: unknown = {}): Promise<any> {
-    if (this.closed) return Promise.reject(new Error('Codex process is unavailable'));
+    if (this.closed) return Promise.reject(new Error('Agent host process is unavailable'));
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.inflight.delete(id);
         reject(
           Object.assign(
-            new Error('Codex response was lost. Refresh status and history before continuing.'),
+            new Error(
+              'Agent host response was lost. Refresh status and history before continuing.',
+            ),
             { uncertain: true },
           ),
         );
         // Never leave an unknown mutation executing behind a new connection.
         this.fail(
-          'Codex response timed out. Saved history can be recovered; prompts are never replayed.',
+          'Agent host response timed out. Saved history can be recovered; prompts are never replayed.',
         );
       }, 60000);
       timer.unref();
@@ -95,7 +97,7 @@ export class CodexConnection extends EventEmitter {
     return message;
   }
   private send(message: unknown) {
-    if (this.closed) throw new Error('Codex process is unavailable');
+    if (this.closed) throw new Error('Agent host process is unavailable');
     this.transport.input.write(JSON.stringify(message) + '\n');
   }
   private fail(message: string) {
@@ -117,7 +119,7 @@ export class CodexConnection extends EventEmitter {
     await this.shutdown();
   }
 }
-export interface CodexConnection {
+export interface AgentConnection {
   on(event: 'notification', listener: (event: ServerNotification) => void): this;
   on(event: 'request', listener: (event: ServerRequest) => void): this;
   on(event: 'failure', listener: (message: string) => void): this;

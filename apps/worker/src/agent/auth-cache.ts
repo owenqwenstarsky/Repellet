@@ -1,7 +1,5 @@
 import { z } from 'zod';
-import type { ChatgptAuthTokensRefreshResponse } from '@repellet/codex-protocol';
-// Codex 0.160.0's file credential cache is the version-specific authentication adapter.
-// Never return its refresh token or id token to project processes or clients.
+import type { ChatgptAuthTokensRefreshResponse } from '@repellet/agent-protocol';
 const cacheSchema = z.object({
   auth_mode: z.literal('chatgpt').optional(),
   tokens: z.object({
@@ -11,19 +9,33 @@ const cacheSchema = z.object({
     id_token: z.string().min(1),
   }),
 });
+/** Accepts legacy Codex caches and Pi's openai-codex OAuth credential shape without exposing secrets. */
 export function readAuthCache(contents: string): ChatgptAuthTokensRefreshResponse {
   try {
-    const { tokens } = cacheSchema.parse(JSON.parse(contents));
-    const claims = JSON.parse(
-      Buffer.from(tokens.access_token.split('.')[1] || '', 'base64url').toString(),
-    );
+    const value = JSON.parse(contents);
+    let access: string, account: string, refresh: string | undefined, idToken: string | undefined;
+    if (value?.tokens) {
+      const parsed = cacheSchema.parse(value);
+      access = parsed.tokens.access_token;
+      account = parsed.tokens.account_id;
+      refresh = parsed.tokens.refresh_token;
+      idToken = parsed.tokens.id_token;
+    } else {
+      const token = value?.['openai-codex'] ?? value?.openaiCodex ?? value;
+      access = token?.access ?? token?.accessToken ?? token?.access_token;
+      account = token?.accountId ?? token?.account_id ?? 'openai-codex';
+      refresh = token?.refresh ?? token?.refreshToken ?? token?.refresh_token;
+      idToken = token?.idToken ?? token?.id_token;
+      if (typeof access !== 'string' || !access) throw new Error('missing access token');
+    }
+    const claims = JSON.parse(Buffer.from(access!.split('.')[1] || '', 'base64url').toString());
     if (!Number.isFinite(claims.exp) || claims.exp * 1000 <= Date.now()) throw new Error('expired');
     const auth = claims['https://api.openai.com/auth'];
-    if (auth?.chatgpt_account_id && auth.chatgpt_account_id !== tokens.account_id)
+    if (auth?.chatgpt_account_id && auth.chatgpt_account_id !== account)
       throw new Error('account mismatch');
     return {
-      accessToken: tokens.access_token,
-      chatgptAccountId: tokens.account_id,
+      accessToken: access!,
+      chatgptAccountId: account!,
       chatgptPlanType: typeof auth?.chatgpt_plan_type === 'string' ? auth.chatgpt_plan_type : null,
     };
   } catch {
@@ -33,5 +45,23 @@ export function readAuthCache(contents: string): ChatgptAuthTokensRefreshRespons
       ),
       { statusCode: 401 },
     );
+  }
+}
+
+/** Converts an existing central cache, including expired access tokens that Pi can refresh. */
+export function legacyPiCredential(contents: string) {
+  try {
+    const value = JSON.parse(contents);
+    if (!value?.tokens || value['openai-codex']) return null;
+    const { access_token: access, refresh_token: refresh, account_id: accountId } = value.tokens;
+    if (![access, refresh, accountId].every((value) => typeof value === 'string' && value))
+      throw new Error();
+    const claims = JSON.parse(Buffer.from(access.split('.')[1], 'base64url').toString());
+    if (!Number.isFinite(claims.exp)) throw new Error();
+    const claimedAccount = claims['https://api.openai.com/auth']?.chatgpt_account_id;
+    if (claimedAccount && claimedAccount !== accountId) throw new Error();
+    return { type: 'oauth' as const, access, refresh, accountId, expires: claims.exp * 1000 };
+  } catch {
+    throw new Error('ChatGPT credentials are incompatible. Reconnect in Agent settings.');
   }
 }

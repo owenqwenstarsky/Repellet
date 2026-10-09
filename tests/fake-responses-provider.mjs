@@ -1,8 +1,10 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-/** Exercises real Codex's Responses transport and built-in tools without upstream billing. */
+import { WebSocketServer } from 'ws';
+/** Exercises Pi's Responses transport and built-in tools without upstream billing. */
 export async function fakeResponsesProvider() {
   const requests = [];
+  const searches = [];
   const server = createServer(async (request, response) => {
     if (request.method !== 'POST' || request.url !== '/custom/v1/responses') {
       response.writeHead(404);
@@ -15,6 +17,7 @@ export async function fakeResponsesProvider() {
     requests.push({
       path: request.url,
       model: body.model,
+      reasoningEffort: body.reasoning?.effort,
       authorizationPresent: !!request.headers.authorization,
       agentContextPresent: JSON.stringify([body.instructions, body.input]).includes(
         'REPELLET_AGENT_CONTEXT_MARKER=repellet-agent-context-v1',
@@ -28,6 +31,7 @@ export async function fakeResponsesProvider() {
     const input = JSON.stringify(body.input);
     const tools = body.tools || [];
     const command =
+      tools.find((tool) => tool.name === 'bash') ||
       tools.find((tool) => tool.name === 'exec_command') ||
       tools.find((tool) => tool.name === 'shell');
     const patchTool = tools.find((tool) => tool.name === 'apply_patch');
@@ -39,64 +43,135 @@ export async function fakeResponsesProvider() {
     const writeFile = input.includes('create agent file');
     const patchFile = input.includes('apply agent patch');
     const ordered = input.includes('ordered commentary');
-    const content = ordered
-      ? 'Ordered final answer.'
-      : 'Codex is connected to Repellet. Your conversation is saved.';
+    const content = input.includes('echo provider credential')
+      ? `Provider returned ${request.headers.authorization?.replace(/^Bearer /, '')}`
+      : ordered
+        ? 'Ordered final answer.'
+        : 'Agent is connected to Repellet. Your conversation is saved.';
+    const question = tools.find((tool) => tool.name === 'question');
+    const search = tools.find((tool) => tool.name === 'web_search');
+    const plan = tools.find((tool) => tool.name === 'plan');
+    const planQuestion = tools.find((tool) => tool.name === 'ask_questions');
+    const fixtureCall = (name, args) => ({
+      type: 'function_call',
+      id: 'fc_' + randomUUID(),
+      call_id: 'repellet_fixture_call_' + randomUUID(),
+      name,
+      arguments: JSON.stringify(args),
+    });
     const output =
-      patchFile && (patchTool || command) && !hasOutput
-        ? {
-            type: patchTool?.type === 'custom' ? 'custom_tool_call' : 'function_call',
-            id: 'ctc_' + randomUUID(),
-            call_id: 'repellet_fixture_call_' + randomUUID(),
-            name: (patchTool || command).name,
-            ...(patchTool?.type === 'custom'
-              ? {
-                  input:
-                    '*** Begin Patch\n*** Add File: agent-patch.txt\n+patched by agent\n*** End Patch',
-                }
-              : {
-                  arguments: JSON.stringify(
-                    patchTool
-                      ? {
-                          input:
-                            '*** Begin Patch\n*** Add File: agent-patch.txt\n+patched by agent\n*** End Patch',
-                        }
-                      : {
-                          cmd: "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: agent-patch.txt\n+patched by agent\n*** End Patch\nPATCH",
-                          workdir: '/workspace',
+      input.includes('search current Pi docs') && search && !hasOutput
+        ? fixtureCall(search.name, {
+            query: 'Pi extension documentation',
+            search_context_size: 'medium',
+          })
+        : input.includes('create a reviewed plan') && plan && !hasOutput
+          ? fixtureCall(plan.name, {
+              plan: '1. Inspect the workspace.\n2. Update app.ts.\n3. Run the tests.',
+              todos: [{ text: 'Inspect the workspace' }],
+            })
+          : input.includes('ask planning choices') && planQuestion && !hasOutput
+            ? fixtureCall(planQuestion.name, {
+                questions: [
+                  {
+                    id: 'scope',
+                    prompt: 'Which scope?',
+                    options: [
+                      { value: 'focused', label: 'Focused', description: 'One file' },
+                      { value: 'broad', label: 'Broad', description: 'Several files' },
+                    ],
+                  },
+                ],
+              })
+            : input.includes('attempt a plan write') && command && !hasOutput
+              ? fixtureCall(command.name, {
+                  command: "printf 'must not be written' > plan-disallowed.txt",
+                })
+              : input.includes('ask owner') && question && !hasOutput
+                ? {
+                    type: 'function_call',
+                    id: 'fc_' + randomUUID(),
+                    call_id: 'repellet_fixture_call_' + randomUUID(),
+                    name: 'question',
+                    arguments: JSON.stringify({
+                      questions: [
+                        {
+                          id: 'choice',
+                          header: 'Choose',
+                          question: 'Which option?',
+                          options: [{ label: 'First', description: 'Choice one' }],
                         },
-                  ),
-                }),
-          }
-        : writeFile && command && !hasOutput
-          ? {
-              type: 'function_call',
-              id: 'fc_' + randomUUID(),
-              call_id: 'repellet_fixture_call_' + randomUUID(),
-              name: command.name,
-              arguments: JSON.stringify(
-                command.name === 'shell'
-                  ? {
-                      command: [
-                        '/bin/bash',
-                        '-c',
-                        "printf 'created by agent\\n' > agent-result.txt; test -z \"$REPELLET_AGENT_API_KEY\" && printf 'PROVIDER_KEY_HIDDEN\\n'",
                       ],
-                      workdir: '/workspace',
+                    }),
+                  }
+                : patchFile && (patchTool || command) && !hasOutput
+                  ? {
+                      type: patchTool?.type === 'custom' ? 'custom_tool_call' : 'function_call',
+                      id: 'ctc_' + randomUUID(),
+                      call_id: 'repellet_fixture_call_' + randomUUID(),
+                      name: (patchTool || command).name,
+                      ...(patchTool?.type === 'custom'
+                        ? {
+                            input:
+                              '*** Begin Patch\n*** Add File: agent-patch.txt\n+patched by agent\n*** End Patch',
+                          }
+                        : {
+                            arguments: JSON.stringify(
+                              patchTool
+                                ? {
+                                    input:
+                                      '*** Begin Patch\n*** Add File: agent-patch.txt\n+patched by agent\n*** End Patch',
+                                  }
+                                : {
+                                    ...(command.name === 'bash'
+                                      ? {
+                                          command:
+                                            "printf 'patched by agent\\n' > /workspace/agent-patch.txt",
+                                        }
+                                      : {
+                                          cmd: "printf 'patched by agent\\n' > /workspace/agent-patch.txt",
+                                        }),
+                                    workdir: '/workspace',
+                                  },
+                            ),
+                          }),
                     }
-                  : {
-                      cmd: "printf 'created by agent\\n' > agent-result.txt; test -z \"$REPELLET_AGENT_API_KEY\" && printf 'PROVIDER_KEY_HIDDEN\\n'",
-                      workdir: '/workspace',
-                    },
-              ),
-            }
-          : {
-              type: 'message',
-              id: 'msg_' + randomUUID(),
-              role: 'assistant',
-              status: 'completed',
-              content: [{ type: 'output_text', text: content, annotations: [] }],
-            };
+                  : writeFile && command && !hasOutput
+                    ? {
+                        type: 'function_call',
+                        id: 'fc_' + randomUUID(),
+                        call_id: 'repellet_fixture_call_' + randomUUID(),
+                        name: command.name,
+                        arguments: JSON.stringify(
+                          command.name === 'shell'
+                            ? {
+                                command: [
+                                  '/bin/bash',
+                                  '-c',
+                                  "printf 'created by agent\\n' > agent-result.txt; test -z \"$REPELLET_AGENT_API_KEY\" && printf 'PROVIDER_KEY_HIDDEN\\n'",
+                                ],
+                                workdir: '/workspace',
+                              }
+                            : {
+                                ...(command.name === 'bash'
+                                  ? {
+                                      command:
+                                        "printf 'created by agent\\n' > agent-result.txt; test -z \"$REPELLET_AGENT_API_KEY\" && printf 'PROVIDER_KEY_HIDDEN\\n'",
+                                    }
+                                  : {
+                                      cmd: "printf 'created by agent\\n' > agent-result.txt; test -z \"$REPELLET_AGENT_API_KEY\" && printf 'PROVIDER_KEY_HIDDEN\\n'",
+                                    }),
+                                workdir: '/workspace',
+                              },
+                        ),
+                      }
+                    : {
+                        type: 'message',
+                        id: 'msg_' + randomUUID(),
+                        role: 'assistant',
+                        status: 'completed',
+                        content: [{ type: 'output_text', text: content, annotations: [] }],
+                      };
     const outputItems =
       ordered && output.type !== 'message'
         ? [
@@ -148,12 +223,16 @@ export async function fakeResponsesProvider() {
           content_index: 0,
           part: { type: 'output_text', text: '', annotations: [] },
         });
-        send('response.output_text.delta', {
-          item_id: output.id,
-          output_index: outputIndex,
-          content_index: 0,
-          delta: content,
-        });
+        const chunks = input.includes('echo provider credential')
+          ? content.match(/.{1,9}/g)
+          : [content];
+        for (const delta of chunks)
+          send('response.output_text.delta', {
+            item_id: output.id,
+            output_index: outputIndex,
+            content_index: 0,
+            delta,
+          });
         send('response.output_text.done', {
           item_id: output.id,
           output_index: outputIndex,
@@ -196,12 +275,62 @@ export async function fakeResponsesProvider() {
     send('response.completed', { response: result });
     response.end();
   });
+  const websocket = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (request, socket, head) => {
+    if (request.url !== '/custom/v1/responses') return socket.destroy();
+    websocket.handleUpgrade(request, socket, head, (client) => {
+      client.on('message', (raw) => {
+        const body = JSON.parse(raw.toString());
+        searches.push({
+          body,
+          authorizationPresent: !!request.headers.authorization,
+          beta: request.headers['openai-beta'],
+        });
+        if (JSON.stringify(body.input).includes('hold search')) return;
+        client.send(
+          JSON.stringify({
+            type: 'response.completed',
+            response: {
+              id: 'search_' + randomUUID(),
+              status: 'completed',
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  content: [
+                    {
+                      type: 'output_text',
+                      text: 'Pi supports extensions.',
+                      annotations: [
+                        {
+                          type: 'url_citation',
+                          title: 'Pi docs',
+                          url: 'https://example.com/pi-docs',
+                          start_index: 0,
+                          end_index: 23,
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          }),
+        );
+      });
+    });
+  });
   await new Promise((resolve) => server.listen(0, '0.0.0.0', resolve));
   const port = server.address().port;
   return {
     server,
     requests,
+    searches,
     url: `http://host.docker.internal:${port}/custom/v1`,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () =>
+      new Promise((resolve) => {
+        for (const client of websocket.clients) client.terminate();
+        websocket.close(() => server.close(resolve));
+      }),
   };
 }

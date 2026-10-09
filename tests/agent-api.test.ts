@@ -190,6 +190,26 @@ describe.skipIf(!enabled)(
         ).statusCode,
       ).toBe(409);
     });
+    it('imports only the signed-in user’s project volumes and rejects supplied project IDs', async () => {
+      const result = await app.inject({
+        method: 'POST',
+        url: '/api/agent/import',
+        headers: headers(ownerCookie),
+        payload: {},
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.json()).toMatchObject({
+        route: `/agent/users/${ownerId}/import`,
+        body: { projectIds: [projectId] },
+      });
+      const injection = await app.inject({
+        method: 'POST',
+        url: '/api/agent/import',
+        headers: headers(ownerCookie),
+        payload: { projectIds: [siteId] },
+      });
+      expect(injection.statusCode).toBe(400);
+    });
     it('flushes collaborative documents before starting or steering and rejects path/config injection', async () => {
       const params = { threadId: randomUUID(), input: [{ type: 'text', text: 'Make a change' }] };
       const result = await app.inject({
@@ -220,6 +240,41 @@ describe.skipIf(!enabled)(
             })
           ).statusCode,
         ).toBe(400);
+    });
+    it('exposes only the owner-scoped plan toggle and rejects arbitrary extension commands', async () => {
+      const payload = {
+        generation: randomUUID(),
+        method: 'thread/plan/toggle',
+        params: { threadId: randomUUID() },
+      };
+      const result = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/agent/rpc`,
+        headers: headers(ownerCookie),
+        payload,
+      });
+      expect(result.statusCode).toBe(200);
+      for (const cookie of [viewerCookie, editorCookie])
+        expect(
+          (
+            await app.inject({
+              method: 'POST',
+              url: `/api/projects/${projectId}/agent/rpc`,
+              headers: headers(cookie),
+              payload,
+            })
+          ).statusCode,
+        ).toBe(403);
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: `/api/projects/${projectId}/agent/rpc`,
+            headers: headers(ownerCookie),
+            payload: { ...payload, params: { ...payload.params, command: '/login' } },
+          })
+        ).statusCode,
+      ).toBe(400);
     });
     it('keeps agent transcripts off ordinary collaboration sockets and revokes owner sockets', async () => {
       const shared = new WebSocket(

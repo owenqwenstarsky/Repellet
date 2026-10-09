@@ -1,4 +1,4 @@
-import type { Thread, ThreadItem } from '@repellet/codex-protocol';
+import type { Thread, ThreadItem } from '@repellet/agent-protocol';
 import type { AgentSnapshot } from '@repellet/shared';
 import { isToolItem } from './toolActivity';
 
@@ -79,7 +79,7 @@ export function agentTranscript(
     turn.live.forEach((item, index) => {
       const match = matches[index]!;
       if (match !== -1) {
-        // Retain the saved key even when Codex's live message ID is different.
+        // Retain the saved key even when Pi's live message ID is different.
         items[match] = { key: items[match]!.key, turnId, item };
         previous = match;
         return;

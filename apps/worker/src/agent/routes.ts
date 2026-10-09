@@ -13,6 +13,7 @@ import {
   cancelLogin,
   logout,
   closeAccounts,
+  importExistingHistory,
 } from './accounts.js';
 import {
   agentStatus,
@@ -33,7 +34,6 @@ export async function agentRoutes(app: FastifyInstance) {
   );
   app.put('/agent/users/:userId/settings', async (req) =>
     withAccount(userFrom(req), async () => {
-      assertAccountIdle(userFrom(req));
       const settings = await saveSettings(userFrom(req), req.body);
       await closeUserAgents(userFrom(req));
       return settings;
@@ -56,6 +56,16 @@ export async function agentRoutes(app: FastifyInstance) {
         z.object({ loginId: z.string().uuid() }).strict().parse(req.body).loginId,
       ),
     ),
+  );
+  app.post('/agent/users/:userId/import', async (req) =>
+    withAccount(userFrom(req), async () => {
+      const { projectIds } = z
+        .object({ projectIds: z.array(z.string().uuid()).max(10000) })
+        .strict()
+        .parse(req.body);
+      await closeUserAgents(userFrom(req));
+      return importExistingHistory(userFrom(req), projectIds);
+    }),
   );
   app.post('/agent/users/:userId/logout', async (req) =>
     withAccount(userFrom(req), async () => {

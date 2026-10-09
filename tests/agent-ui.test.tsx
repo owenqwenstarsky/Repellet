@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { AgentPanel, AgentItem } from '../apps/web/src/AgentPanel';
 import { agentTranscript } from '../apps/web/src/agentTranscript';
 import { groupAgentTools } from '../apps/web/src/agentTranscript';
-import type { Thread, ThreadItem } from '@repellet/codex-protocol';
+import type { Thread, ThreadItem } from '@repellet/agent-protocol';
 import { AgentSettings } from '../apps/web/src/AgentSettings';
 import { ActivityBar } from '../apps/web/src/workspace/ActivityBar';
 import { UiProvider } from '../apps/web/src/ui';
@@ -33,6 +33,7 @@ const thread = {
 };
 const settings = { mode: 'chatgpt', model: '', baseUrl: '', effort: null, hasApiKey: false };
 const rpcCalls: any[] = [];
+let planMode = false;
 beforeEach(() => {
   snapshot = {
     generation,
@@ -47,6 +48,7 @@ beforeEach(() => {
   FakeSocket.instances = [];
   vi.stubGlobal('WebSocket', FakeSocket);
   rpcCalls.length = 0;
+  planMode = false;
   vi.mocked(api)
     .mockReset()
     .mockImplementation(async (path) =>
@@ -64,21 +66,23 @@ beforeEach(() => {
         return body.method === 'thread/list'
           ? { data: [thread] }
           : body.method === 'thread/read' || body.method === 'thread/start'
-            ? { thread }
-            : body.method === 'model/list'
-              ? {
-                  data: [
-                    {
-                      id: 'model',
-                      model: 'model',
-                      displayName: 'Codex model',
-                      defaultReasoningEffort: 'medium',
-                      supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
-                      isDefault: true,
-                    },
-                  ],
-                }
-              : {};
+            ? { thread: { ...thread, planMode } }
+            : body.method === 'thread/plan/toggle'
+              ? { thread: { ...thread, planMode: (planMode = !planMode) } }
+              : body.method === 'model/list'
+                ? {
+                    data: [
+                      {
+                        id: 'model',
+                        model: 'model',
+                        displayName: 'Codex model',
+                        defaultReasoningEffort: 'medium',
+                        supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
+                        isDefault: true,
+                      },
+                    ],
+                  }
+                : {};
       }
       return {};
     });
@@ -111,8 +115,41 @@ async function mountPanel() {
       (screen.getByRole('button', { name: 'Send', exact: true }) as HTMLButtonElement).disabled,
     ).toBe(true),
   );
-  await screen.findByRole('option', { name: 'My conversation' });
+  await screen.findByRole('heading', { name: 'My conversation' });
 }
+it('toggles plan mode from the composer outside Run settings and restores its state after navigation', async () => {
+  await mountPanel();
+  const button = screen.getByRole('button', { name: 'Plan mode', exact: true });
+  expect(button.getAttribute('aria-pressed')).toBe('false');
+  expect(screen.queryByRole('group', { name: 'Model and reasoning' })).toBeNull();
+  fireEvent.click(button);
+  await waitFor(() => expect(button.getAttribute('aria-pressed')).toBe('true'));
+  expect(rpcCalls).toContainEqual(
+    expect.objectContaining({ method: 'thread/plan/toggle', params: { threadId: 'thread' } }),
+  );
+  expect(rpcCalls.some((call) => call.method === 'turn/start')).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: /Threads/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /^My conversation/ }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'Plan mode', exact: true }).getAttribute('aria-pressed'),
+    ).toBe('true'),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Plan mode', exact: true }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'Plan mode', exact: true }).getAttribute('aria-pressed'),
+    ).toBe('false'),
+  );
+});
+it('prevents toggling plan mode while a turn is working or waiting for input', async () => {
+  await mountPanel();
+  snapshot = { ...snapshot, active: { threadId: 'thread', turnId: 'turn' }, waiting: true };
+  await act(async () => FakeSocket.instances[0]!.message({ type: 'snapshot', snapshot }));
+  expect(
+    (screen.getByRole('button', { name: 'Plan mode', exact: true }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+});
 it('hides Agent controls from editors and viewers and exposes them only with strict ownership', () => {
   const props = {
     pane: 'files',
@@ -287,16 +324,18 @@ it('preserves interleaved transcript order when switching away from a thread and
   expect(before[1]).toContain('Check output');
   expect(before[2]).toContain('echo checked');
   expect(before[3]).toContain('All done');
-  fireEvent.change(screen.getByLabelText('Agent thread'), { target: { value: 'other' } });
+  fireEvent.click(screen.getByRole('button', { name: '← Threads' }));
+  fireEvent.click(await screen.findByRole('button', { name: /^Other conversation/ }));
   await waitFor(() => expect(screen.queryByText('All done')).toBeNull());
-  fireEvent.change(screen.getByLabelText('Agent thread'), { target: { value: 'thread' } });
+  fireEvent.click(screen.getByRole('button', { name: '← Threads' }));
+  fireEvent.click(await screen.findByRole('button', { name: /My conversation.*No messages yet/ }));
   await waitFor(() => expect(order()).toEqual(before));
   expect(screen.getAllByText('All done')).toHaveLength(1);
 });
 
 it('flushes browser saves before sending and steers an active turn instead of starting another', async () => {
   await mountPanel();
-  fireEvent.change(screen.getByLabelText('Message Codex'), { target: { value: 'Hello' } });
+  fireEvent.change(screen.getByLabelText('Message agent'), { target: { value: 'Hello' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
   await waitFor(() => expect(rpcCalls.some((call) => call.method === 'turn/start')).toBe(true));
   expect(flushOpenDocuments).toHaveBeenCalledWith('project');
@@ -306,7 +345,7 @@ it('flushes browser saves before sending and steers an active turn instead of st
       snapshot: { ...snapshot, active: { threadId: 'thread', turnId: 'turn' } },
     }),
   );
-  fireEvent.change(screen.getByLabelText('Message Codex'), { target: { value: 'Follow-up' } });
+  fireEvent.change(screen.getByLabelText('Message agent'), { target: { value: 'Follow-up' } });
   fireEvent.click(screen.getByRole('button', { name: 'Steer', exact: true }));
   await waitFor(() =>
     expect(
@@ -379,7 +418,7 @@ it('reconciles a lost response without automatically replaying the user prompt',
       throw new Error('Codex response was lost. Refresh status and history.');
     return original(path, body);
   });
-  fireEvent.change(screen.getByLabelText('Message Codex'), {
+  fireEvent.change(screen.getByLabelText('Message agent'), {
     target: { value: 'Please change the file' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
@@ -577,4 +616,57 @@ it('copies the device code over HTTP and confirms success without an account err
     if (original) Object.defineProperty(document, 'execCommand', original);
     else Reflect.deleteProperty(document, 'execCommand');
   }
+});
+
+it('shows the Threads page with search, archived filtering, row menus and empty states', async () => {
+  await mountPanel();
+  fireEvent.click(screen.getByRole('button', { name: '← Threads' }));
+  expect(screen.queryByLabelText('Message agent')).toBeNull();
+  expect(screen.getByRole('heading', { name: 'Threads' })).not.toBeNull();
+  fireEvent.change(screen.getByLabelText('Search threads'), { target: { value: 'missing' } });
+  expect(screen.getByText('No threads match your search.')).not.toBeNull();
+  expect(screen.queryByRole('button', { name: 'Start a thread' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('Search threads'), { target: { value: '' } });
+  fireEvent.click(screen.getByLabelText('Archived'));
+  await waitFor(() =>
+    expect(rpcCalls.some((call) => call.method === 'thread/list' && call.params.archived)).toBe(
+      true,
+    ),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Actions for My conversation' }));
+  expect(screen.getByRole('menuitem', { name: 'Unarchive' })).not.toBeNull();
+});
+it('moves focus between thread rows with arrows and opens a selected row', async () => {
+  const original = vi.mocked(post).getMockImplementation()!;
+  vi.mocked(post).mockImplementation(async (path, body: any) =>
+    body?.method === 'thread/list'
+      ? { data: [thread, { ...thread, id: 'other', name: 'Other conversation' }] }
+      : original(path, body),
+  );
+  await mountPanel();
+  fireEvent.click(screen.getByRole('button', { name: '← Threads' }));
+  const first = screen.getByRole('button', { name: /^My conversation.*No messages/ });
+  first.focus();
+  fireEvent.keyDown(first, { key: 'ArrowDown' });
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Other conversation/ }));
+  fireEvent.keyDown(document.activeElement!, { key: 'Home' });
+  expect(document.activeElement).toBe(first);
+  fireEvent.click(first);
+  expect(screen.getByLabelText('Message agent')).not.toBeNull();
+});
+it('keeps model controls in Run settings and submits only with Cmd/Ctrl+Enter', async () => {
+  await mountPanel();
+  expect(screen.queryByLabelText('Agent model')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Run settings' }));
+  expect(screen.getByLabelText('Agent model')).not.toBeNull();
+  fireEvent.keyDown(screen.getByLabelText('Agent model'), { key: 'Escape' });
+  expect(screen.queryByLabelText('Agent model')).toBeNull();
+  const composer = screen.getByLabelText('Message agent');
+  fireEvent.change(composer, { target: { value: 'Multiline\nmessage' } });
+  fireEvent.keyDown(composer, { key: 'Enter' });
+  expect(rpcCalls.filter((call) => call.method === 'turn/start')).toHaveLength(0);
+  fireEvent.keyDown(composer, { key: 'Enter', ctrlKey: true });
+  await waitFor(() =>
+    expect(rpcCalls.filter((call) => call.method === 'turn/start')).toHaveLength(1),
+  );
 });

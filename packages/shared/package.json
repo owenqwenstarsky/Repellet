@@ -11,6 +11,6 @@
   },
   "dependencies": {
     "zod": "^3.25.76",
-    "@repellet/codex-protocol": "*"
+    "@repellet/agent-protocol": "*"
   }
 }
