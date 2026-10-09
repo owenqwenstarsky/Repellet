@@ -584,7 +584,7 @@ kbd {
   cursor: default;
 }
 .dropdown {
-  position: absolute;
+  position: fixed;
   top: calc(100% + var(--space-1));
   right: 0;
   z-index: var(--z-menu);

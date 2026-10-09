@@ -8,6 +8,7 @@ import {
   type ReactNode,
   type CSSProperties,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { X, AlertCircle, Check, Loader2 } from 'lucide-react';
 import { Banner } from './components/Layout';
 import { Button, IconButton } from './components/Button';
@@ -159,6 +160,7 @@ export function Menu({
   style?: CSSProperties;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<CSSProperties>({});
   const close = useRef(onClose);
   close.current = onClose;
   const trigger = useRef(focusTrigger(document.activeElement as HTMLElement | null));
@@ -171,6 +173,25 @@ export function Menu({
       item.tabIndex = -1;
     });
     items()[0]?.focus();
+    const reposition = () => {
+      if (style?.top !== undefined || style?.left !== undefined || !trigger.current) return;
+      const anchor = trigger.current.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const gap = 4;
+      const margin = 8;
+      let top = anchor.bottom + gap;
+      if (top + menuRect.height > window.innerHeight - margin)
+        top = anchor.top - menuRect.height - gap;
+      let left = anchor.right - menuRect.width;
+      if (left < margin) left = anchor.left;
+      setPosition({
+        top: Math.max(margin, Math.min(top, window.innerHeight - menuRect.height - margin)),
+        left: Math.max(margin, Math.min(left, window.innerWidth - menuRect.width - margin)),
+      });
+    };
+    reposition();
+    window.addEventListener('resize', reposition);
+    document.addEventListener('scroll', reposition, true);
     const handler = (e: KeyboardEvent) => {
       if (hasOpenDialog()) return;
       const buttons = items(),
@@ -195,6 +216,8 @@ export function Menu({
     document.addEventListener('keydown', handler, true);
     return () => {
       document.removeEventListener('keydown', handler, true);
+      window.removeEventListener('resize', reposition);
+      document.removeEventListener('scroll', reposition, true);
       if (
         trigger.current?.isConnected &&
         (menu.contains(document.activeElement) || document.activeElement === document.body)
@@ -202,13 +225,19 @@ export function Menu({
         trigger.current.focus();
     };
   }, []);
-  return (
+  return createPortal(
     <>
       <div className="menu-dismiss" aria-hidden="true" onClick={() => close.current()} />
-      <div ref={ref} role="menu" className={`dropdown ${className}`} style={style}>
+      <div
+        ref={ref}
+        role="menu"
+        className={`dropdown ${className}`}
+        style={{ ...style, ...position, position: 'fixed', right: 'auto' }}
+      >
         {children}
       </div>
-    </>
+    </>,
+    document.body,
   );
 }
 

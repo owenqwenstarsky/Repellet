@@ -1,3 +1,6 @@
+import { safeRelativePath } from '@repellet/shared';
+import type { ThreadItem } from '@repellet/agent-protocol';
+
 /** Unwrap provider tool-result envelopes without interpreting or executing their contents. */
 export function toolOutput(text: string): string {
   function unwrap(value: unknown, depth: number): string | null {
@@ -46,7 +49,57 @@ export function toolInput(value: unknown): string | null {
   if (typeof value === 'object' && Object.keys(value).length === 0) return null;
   return JSON.stringify(value, null, 2);
 }
-import type { ThreadItem } from '@repellet/agent-protocol';
+
+/** Return a JSON object when a tool's arguments are object-like. */
+export function toolArguments(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value))
+    return value as Record<string, unknown>;
+  if (typeof value === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+        return parsed as Record<string, unknown>;
+    } catch {
+      // Script arguments are intentionally left as text.
+    }
+  }
+  return {};
+}
+
+/** Keep compact tool output readable while allowing larger values to collapse. */
+export function isShortToolText(value: string | null | undefined): boolean {
+  return !!value && value.length <= 240 && value.split('\n').length <= 4;
+}
+
+/** Normalize an agent supplied path only when it stays inside the workspace. */
+export function workspaceFilePath(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const raw = value.startsWith('/workspace/') ? value.slice('/workspace/'.length) : value;
+  if (raw.startsWith('//') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(raw)) return null;
+  try {
+    const normalized = safeRelativePath(raw);
+    return normalized || null;
+  } catch {
+    return null;
+  }
+}
+
+export function toolLabel(name: string): string {
+  return (
+    {
+      write: 'Write file',
+      read: 'Read file',
+      edit: 'Edit file',
+      grep: 'Search files',
+      find: 'Find files',
+      ls: 'List files',
+      plan: 'Plan',
+      plan_read: 'Read plan',
+      plan_edit: 'Edit plan',
+      todo_edit: 'Update todos',
+    }[name] || name
+  );
+}
 
 export function isToolItem(item: ThreadItem): boolean {
   return (

@@ -553,6 +553,80 @@ it('keeps unfamiliar tool output intact, escapes HTML, and shows pending and fai
   expect(screen.getByLabelText('Tool output').textContent).toBe('{partial');
 });
 
+it('renders GFM plans and readable structured file tools with safe file actions', () => {
+  const openFile = vi.fn();
+  const view = render(
+    <AgentItem
+      item={{
+        type: 'agentMessage',
+        id: 'gfm',
+        text: '- [ ] pending\n\n| A | B |\n| - | - |\n| ~~old~~ | `new` |',
+        phase: null,
+        memoryCitation: null,
+        delivery: null,
+        questions: null,
+      }}
+      onOpenFile={openFile}
+    />,
+  );
+  expect(view.container.querySelector('table')).not.toBeNull();
+  expect(view.container.querySelector('del')?.textContent).toBe('old');
+  expect(
+    (view.container.querySelector('input[type="checkbox"]') as HTMLInputElement).disabled,
+  ).toBe(true);
+  view.rerender(
+    <AgentItem
+      item={{
+        type: 'dynamicToolCall',
+        id: 'write',
+        namespace: null,
+        tool: 'write',
+        arguments: { path: '/workspace/src/new.ts', content: 'export const value = 1;' },
+        status: 'completed',
+        contentItems: null,
+        success: true,
+        durationMs: 4,
+      }}
+      onOpenFile={openFile}
+    />,
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'src/new.ts' }));
+  expect(openFile).toHaveBeenCalledWith('src/new.ts');
+  expect(screen.getByRole('button', { name: 'src/new.ts' }).getAttribute('title')).toMatch(
+    /Open file/,
+  );
+  view.rerender(
+    <AgentItem
+      item={{
+        type: 'dynamicToolCall',
+        id: 'bad',
+        namespace: null,
+        tool: 'write',
+        arguments: { path: '../secrets.txt', content: 'secret' },
+        status: 'completed',
+        contentItems: null,
+        success: true,
+        durationMs: null,
+      }}
+      onOpenFile={openFile}
+    />,
+  );
+  expect(screen.queryByRole('button', { name: '../secrets.txt' })).toBeNull();
+  expect(screen.getByText('../secrets.txt')).toBeTruthy();
+  view.rerender(
+    <AgentItem
+      item={{
+        type: 'fileChange',
+        id: 'external',
+        status: 'completed',
+        changes: [{ path: 'https://example.com/file.ts', kind: { type: 'add' }, diff: '+remote' }],
+      }}
+      onOpenFile={openFile}
+    />,
+  );
+  expect(screen.queryByRole('button', { name: /example\.com/ })).toBeNull();
+});
+
 it('retains stored provider keys without disclosing them in the settings form', async () => {
   vi.mocked(api).mockImplementation(async (path) =>
     path === '/agent/settings'

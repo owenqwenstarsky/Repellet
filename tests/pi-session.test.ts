@@ -81,6 +81,33 @@ it('translates separate assistant messages and cumulative command output without
   );
   expect([...active.items.keys()]).toHaveLength(3);
 });
+
+it('turns completed Pi edits with details diffs into file changes and safely falls back on errors', () => {
+  expect(
+    h.toolItem(
+      'edit',
+      'edit-1',
+      { path: 'src/app.ts' },
+      { content: [{ type: 'text', text: 'updated' }], details: { diff: '@@ -1 +1 @@' } },
+    ),
+  ).toMatchObject({
+    type: 'fileChange',
+    status: 'completed',
+    changes: [{ path: 'src/app.ts', diff: '@@ -1 +1 @@' }],
+  });
+  expect(
+    h.toolItem(
+      'edit',
+      'edit-2',
+      { path: 'src/app.ts' },
+      { content: [{ type: 'text', text: 'failed' }], details: { diff: '@@ diff' }, isError: true },
+    ),
+  ).toMatchObject({ type: 'dynamicToolCall', status: 'failed' });
+  expect(h.toolItem('edit', 'edit-3', { path: 'src/app.ts' }, null, true)).toMatchObject({
+    type: 'dynamicToolCall',
+    status: 'inProgress',
+  });
+});
 it('imports recursive Codex histories once, merges tools, retains archives and preserves originals', async () => {
   const source = path.join(root, 'codex', 'archived_sessions', '2026', '10');
   await mkdir(source, { recursive: true });

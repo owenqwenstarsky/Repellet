@@ -116,4 +116,28 @@ describe('menu keyboard interaction', () => {
     expect(screen.queryByRole('menu')).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });
+
+  it('portals the menu to the document body and restores focus after Tab', () => {
+    function Example() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>Bottom actions</button>
+          {open && (
+            <Menu onClose={() => setOpen(false)}>
+              <button>Open file</button>
+            </Menu>
+          )}
+        </>
+      );
+    }
+    render(<Example />);
+    const trigger = screen.getByText('Bottom actions');
+    trigger.focus();
+    fireEvent.click(trigger);
+    expect(screen.getByRole('menu').parentElement).toBe(document.body);
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
 });

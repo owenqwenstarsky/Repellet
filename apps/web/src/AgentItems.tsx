@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
-import { ChevronRight } from 'lucide-react';
-import { safeRelativePath } from '@repellet/shared';
+import remarkGfm from 'remark-gfm';
+import { ChevronRight, FileCode2 } from 'lucide-react';
 import type { ThreadItem } from '@repellet/agent-protocol';
 import { Button } from './ui';
 import { groupAgentTools, type AgentTranscriptEntry } from './agentTranscript';
@@ -9,9 +9,128 @@ import {
   toolCategory,
   toolContent,
   toolFailed,
+  toolArguments,
   toolInput,
+  toolLabel,
   toolOutput,
+  isShortToolText,
+  workspaceFilePath,
 } from './toolActivity';
+
+function Markdown({ children }: { children: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      skipHtml
+      components={{
+        img: () => null,
+        input: ({ checked, ...props }) => <input {...props} checked={checked} disabled />,
+        a: ({ href, children }) => {
+          const safe = href && /^(?:https?:|mailto:)/i.test(href) ? href : null;
+          return safe ? (
+            <a href={safe} target="_blank" rel="noopener noreferrer">
+              {children}
+            </a>
+          ) : (
+            <span>{children}</span>
+          );
+        },
+      }}
+    >
+      {children}
+    </ReactMarkdown>
+  );
+}
+
+function FileAction({ path, onOpenFile }: { path: string; onOpenFile: (path: string) => void }) {
+  return (
+    <Button
+      variant="link"
+      size="sm"
+      icon={<FileCode2 size={13} aria-hidden="true" />}
+      title={`Open file ${path}`}
+      aria-label={path}
+      onClick={() => onOpenFile(path)}
+    >
+      {path}
+    </Button>
+  );
+}
+
+function ToolText({ label, value }: { label: string; value: string }) {
+  if (isShortToolText(value))
+    return (
+      <pre aria-label={label} className="agent-tool-text">
+        {value}
+      </pre>
+    );
+  return (
+    <details className="agent-tool-text-details">
+      <summary>
+        {label} · {value.length.toLocaleString()} characters
+      </summary>
+      <pre aria-label={label} className="agent-tool-text">
+        {value}
+      </pre>
+    </details>
+  );
+}
+
+function PlanContent({ text }: { text: string }) {
+  const blocks: Array<
+    { type: 'markdown'; text: string } | { type: 'todo'; done: boolean; id?: string; text: string }
+  > = [];
+  let markdown: string[] = [];
+  const flush = () => {
+    if (markdown.length) blocks.push({ type: 'markdown', text: markdown.join('\n') });
+    markdown = [];
+  };
+  for (const line of text.split('\n')) {
+    const match = line.match(/^\[([ xX])\]\s*(?:#(\d+)[:.]?\s*)?(.*)$/);
+    if (!match) {
+      markdown.push(line);
+      continue;
+    }
+    flush();
+    blocks.push({
+      type: 'todo',
+      done: match[1].toLowerCase() === 'x',
+      id: match[2],
+      text: match[3] || '',
+    });
+  }
+  flush();
+  return (
+    <div className="agent-plan-content">
+      {blocks.map((block, index) => {
+        if (block.type === 'markdown') return <Markdown key={index}>{block.text}</Markdown>;
+        return (
+          <label className="agent-todo" key={index}>
+            <input type="checkbox" disabled checked={block.done} />
+            <span>{block.id ? `#${block.id}: ` : ''}</span>
+            <Markdown>{block.text}</Markdown>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+function dynamicOutput(item: Extract<ThreadItem, { type: 'dynamicToolCall' }>): string {
+  return (
+    item.contentItems
+      ?.filter((content) => content.type === 'inputText')
+      .map((content) => toolOutput(content.text))
+      .join('\n') || ''
+  );
+}
+
+function normalizedDiff(args: Record<string, unknown>, output: string): string {
+  const oldText = args.oldText ?? args.old_string ?? args.old;
+  const newText = args.newText ?? args.new_string ?? args.new;
+  if (typeof oldText === 'string' && typeof newText === 'string') return `-${oldText}\n+${newText}`;
+  return output;
+}
 
 export function AgentTranscriptItems({
   items,
@@ -54,22 +173,16 @@ export function AgentItem({
   item: ThreadItem;
   onOpenFile: (path: string) => void;
 }) {
-  if (item.type === 'agentMessage' || item.type === 'plan')
+  if (item.type === 'agentMessage')
     return (
       <article className={`agent-item ${item.type}`}>
-        <ReactMarkdown
-          skipHtml
-          components={{
-            img: () => null,
-            a: ({ href, children }) => (
-              <a href={href} target="_blank" rel="noopener noreferrer">
-                {children}
-              </a>
-            ),
-          }}
-        >
-          {item.text}
-        </ReactMarkdown>
+        <Markdown>{item.text}</Markdown>
+      </article>
+    );
+  if (item.type === 'plan')
+    return (
+      <article className="agent-item plan">
+        <PlanContent text={item.text} />
       </article>
     );
   if (item.type === 'userMessage')
@@ -82,14 +195,17 @@ export function AgentItem({
     );
   if (item.type === 'commandExecution')
     return (
-      <details className="agent-activity">
+      <details className="agent-activity" open={isShortToolText(item.aggregatedOutput)}>
         <summary>
           <code>{item.command}</code> · {item.status}
         </summary>
-        <pre>
-          {item.aggregatedOutput ||
-            (item.status === 'inProgress' ? 'Waiting for output…' : 'No output.')}
-        </pre>
+        <ToolText
+          label="Tool output"
+          value={
+            item.aggregatedOutput ||
+            (item.status === 'inProgress' ? 'Waiting for output…' : 'No output.')
+          }
+        />
         {item.exitCode !== null && <small>Exit code {item.exitCode}</small>}
       </details>
     );
@@ -98,18 +214,11 @@ export function AgentItem({
       <details className="agent-activity" open>
         <summary>File changes · {item.status}</summary>
         {item.changes.map((change, index) => {
-          let path: string | null = null;
-          try {
-            path = safeRelativePath(
-              change.path.startsWith('/workspace/') ? change.path.slice(11) : change.path,
-            );
-          } catch {}
+          const path = workspaceFilePath(change.path);
           return (
             <div key={index}>
               {path ? (
-                <Button variant="link" onClick={() => onOpenFile(path!)}>
-                  {path}
-                </Button>
+                <FileAction path={path} onOpenFile={onOpenFile} />
               ) : (
                 <span>{change.path}</span>
               )}
@@ -124,34 +233,92 @@ export function AgentItem({
       <details className="agent-activity">
         <summary>Reasoning</summary>
         {item.summary.map((text, index) => (
-          <ReactMarkdown key={index} skipHtml>
-            {text}
-          </ReactMarkdown>
+          <Markdown key={index}>{text}</Markdown>
         ))}
       </details>
     );
   if (item.type === 'dynamicToolCall') {
     const input = toolInput(item.arguments);
-    const output = item.contentItems
-      ?.filter((content) => content.type === 'inputText')
-      .map((content) => toolOutput(content.text))
-      .join('\n');
+    const output = dynamicOutput(item);
+    const args = toolArguments(item.arguments);
+    const name = item.tool;
+    const path = workspaceFilePath(
+      args.path ?? args.file ?? args.filename ?? args.filePath ?? args.file_path,
+    );
+    const structured = ['write', 'read', 'edit', 'grep', 'find', 'ls'].includes(name);
+    const planTool =
+      ['plan', 'plan_read', 'plan_edit', 'todo_edit'].includes(name) &&
+      item.status !== 'failed' &&
+      item.success !== false;
+    const range =
+      name === 'read'
+        ? [
+            args.startLine ?? args.start_line ?? args.lineStart ?? args.offset,
+            args.endLine ?? args.end_line ?? args.lineEnd ?? args.limit,
+          ]
+            .filter((value) => value !== undefined)
+            .join('–')
+        : '';
+    const content = typeof args.content === 'string' ? args.content : '';
+    const editDiff = name === 'edit' ? normalizedDiff(args, output) : output;
+    const concise =
+      name === 'write'
+        ? 'Writing file'
+        : name === 'read'
+          ? `Reading${range ? ` lines ${range}` : ''}`
+          : name === 'edit'
+            ? 'Applying edit'
+            : name === 'grep'
+              ? `Searching${typeof args.pattern === 'string' ? ` for ${args.pattern}` : ''}`
+              : name === 'find'
+                ? 'Finding files'
+                : name === 'ls'
+                  ? 'Listing files'
+                  : '';
     return (
-      <details className="agent-activity">
+      <details
+        className="agent-activity"
+        open={!!(structured && (isShortToolText(output) || isShortToolText(content)))}
+      >
         <summary>
-          <code>{[item.namespace, item.tool].filter(Boolean).join('.')}</code> · {item.status}
+          <span>
+            {structured || planTool ? (
+              toolLabel(name)
+            ) : (
+              <code>{[item.namespace, name].filter(Boolean).join('.')}</code>
+            )}
+          </span>{' '}
+          · {item.status}
         </summary>
-        {input && (
+        {planTool && output && <PlanContent text={output} />}
+        {structured && concise && <p className="agent-tool-label">{concise}</p>}
+        {path ? (
+          <FileAction path={path} onOpenFile={onOpenFile} />
+        ) : args.path ? (
+          <span>{String(args.path)}</span>
+        ) : null}
+        {name === 'write' && content && <ToolText label="Content preview" value={content} />}
+        {name === 'edit' && editDiff && <ToolText label="Edit diff" value={editDiff} />}
+        {name === 'read' && output && <ToolText label="Tool output" value={output} />}
+        {['grep', 'find', 'ls'].includes(name) && output && (
+          <ToolText label="Tool output" value={output} />
+        )}
+        {!structured && !planTool && input && (
           <>
             <small>
-              {item.tool === 'exec' && typeof item.arguments === 'string' ? 'Script' : 'Input'}
+              {name === 'exec' && typeof item.arguments === 'string' ? 'Script' : 'Input'}
             </small>
-            <pre aria-label="Tool input">{input}</pre>
+            <ToolText label="Tool input" value={input} />
           </>
         )}
-        <pre aria-label="Tool output">
-          {output || (item.status === 'inProgress' ? 'Waiting for output…' : 'No text output.')}
-        </pre>
+        {!structured && !planTool && (
+          <ToolText
+            label="Tool output"
+            value={
+              output || (item.status === 'inProgress' ? 'Waiting for output…' : 'No text output.')
+            }
+          />
+        )}
         {item.contentItems?.some((content) => content.type !== 'inputText') && (
           <small>The tool also returned non-text content.</small>
         )}
@@ -161,40 +328,47 @@ export function AgentItem({
     );
   }
   if (item.type === 'mcpToolCall')
-    return (
-      <details className="agent-activity">
-        <summary>
-          <code>
-            {item.server}.{item.tool}
-          </code>{' '}
-          · {item.status}
-        </summary>
-        {toolInput(item.arguments) && (
-          <pre aria-label="Tool input">{toolInput(item.arguments)}</pre>
-        )}
-        {item.result && (
-          <pre aria-label="Tool output">
-            {toolContent(item.result.content) || 'No text output.'}
-          </pre>
-        )}
-        {item.result?.structuredContent != null && (
-          <pre aria-label="Structured result">{toolContent(item.result.structuredContent)}</pre>
-        )}
-        {item.error && <p className="agent-tool-error">{item.error.message}</p>}
-        {!item.result && !item.error && (
-          <p>{item.status === 'inProgress' ? 'Waiting for output…' : 'No output.'}</p>
-        )}
-      </details>
-    );
+    return (() => {
+      const resultText = item.result ? toolContent(item.result.content) : '';
+      const inputText = toolInput(item.arguments);
+      return (
+        <details
+          className="agent-activity"
+          open={isShortToolText(resultText) && isShortToolText(inputText)}
+        >
+          <summary>
+            <code>
+              {item.server}.{item.tool}
+            </code>{' '}
+            · {item.status}
+          </summary>
+          {inputText && <ToolText label="Tool input" value={inputText} />}
+          {item.result && <ToolText label="Tool output" value={resultText || 'No text output.'} />}
+          {item.result?.structuredContent != null && (
+            <ToolText
+              label="Structured result"
+              value={toolContent(item.result.structuredContent)}
+            />
+          )}
+          {item.error && <p className="agent-tool-error">{item.error.message}</p>}
+          {!item.result && !item.error && (
+            <p>{item.status === 'inProgress' ? 'Waiting for output…' : 'No output.'}</p>
+          )}
+        </details>
+      );
+    })();
   if (item.type === 'functionCallOutput')
-    return (
-      <details className="agent-activity">
-        <summary>
-          <code>{[item.namespace, item.name].filter(Boolean).join('.')}</code>
-        </summary>
-        <pre aria-label="Tool output">{toolContent(item.output) || 'No text output.'}</pre>
-      </details>
-    );
+    return (() => {
+      const output = toolContent(item.output) || 'No text output.';
+      return (
+        <details className="agent-activity" open={isShortToolText(output)}>
+          <summary>
+            <code>{[item.namespace, item.name].filter(Boolean).join('.')}</code>
+          </summary>
+          <ToolText label="Tool output" value={output} />
+        </details>
+      );
+    })();
   if (item.type === 'webSearch') {
     const action = item.action;
     const label =
