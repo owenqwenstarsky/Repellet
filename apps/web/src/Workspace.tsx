@@ -280,9 +280,10 @@ export function Workspace({
       </div>
     );
   if (!project) return <Spinner label="Opening workspace…" />;
-  const running = terminals.terminals.some(
-    (t) => (t.isMainRun ?? t.id === 'run') && t.isRun && t.alive,
-  );
+  const running =
+    ready &&
+    !terminals.error &&
+    terminals.terminals.some((t) => (t.isMainRun ?? t.id === 'run') && t.isRun && t.alive);
   const url = project.previewPort ? previewUrl(project.previewPort) : '';
   const { dimensions } = layout;
   return (

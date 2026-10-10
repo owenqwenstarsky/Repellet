@@ -17,6 +17,7 @@ import {
 } from '@repellet/shared';
 import { db } from './db.js';
 import { startProfile, stopProcess } from './processes.js';
+import { mainAppRunning } from './appActivity.js';
 import type { TerminalInfo } from '@repellet/shared';
 import {
   users,
@@ -81,9 +82,11 @@ export function idFrom(req: FastifyRequest) {
 export async function access(req: FastifyRequest, mode: 'view' | 'edit' | 'manage' = 'view') {
   return projectAccess(await requireUser(req), idFrom(req), mode);
 }
-const viewProject = (p: typeof projects.$inferSelect & { role?: string; ownerName?: string }) => {
+const viewProject = async (
+  p: typeof projects.$inferSelect & { role?: string; ownerName?: string },
+) => {
   const { environment, cloneUrl, lastActiveAt, ...rest } = p;
-  return rest;
+  return { ...rest, running: await mainAppRunning(p) };
 };
 async function ready(req: FastifyRequest, mode: 'view' | 'edit' | 'manage' = 'view') {
   const p = await access(req, mode);
@@ -236,23 +239,29 @@ export async function routes(app: FastifyInstance) {
   });
   app.get('/api/admin/projects', async (req) => {
     const admin = await requireOwner(req);
-    return (
-      await db
-        .select({
-          id: projects.id,
-          name: projects.name,
-          ownerId: projects.ownerId,
-          state: projects.state,
-          storageBytes: projects.storageBytes,
-          storageExceeded: projects.storageExceeded,
-          ownerName: users.displayName,
-          memberId: members.userId,
-        })
-        .from(projects)
-        .innerJoin(users, eq(projects.ownerId, users.id))
-        .leftJoin(members, and(eq(members.projectId, projects.id), eq(members.userId, admin.id)))
-        .orderBy(desc(projects.updatedAt))
-    ).map(({ ownerId, memberId, ...p }) => ({ ...p, canOpen: ownerId === admin.id || !!memberId }));
+    return Promise.all(
+      (
+        await db
+          .select({
+            id: projects.id,
+            name: projects.name,
+            ownerId: projects.ownerId,
+            state: projects.state,
+            storageBytes: projects.storageBytes,
+            storageExceeded: projects.storageExceeded,
+            ownerName: users.displayName,
+            memberId: members.userId,
+          })
+          .from(projects)
+          .innerJoin(users, eq(projects.ownerId, users.id))
+          .leftJoin(members, and(eq(members.projectId, projects.id), eq(members.userId, admin.id)))
+          .orderBy(desc(projects.updatedAt))
+      ).map(async ({ ownerId, memberId, ...p }) => ({
+        ...p,
+        running: await mainAppRunning(p),
+        canOpen: ownerId === admin.id || !!memberId,
+      })),
+    );
   });
   app.post('/api/admin/projects/:id/stop', async (req) => {
     await requireOwner(req);
@@ -274,8 +283,10 @@ export async function routes(app: FastifyInstance) {
       .leftJoin(members, and(eq(members.projectId, projects.id), eq(members.userId, user.id)))
       .where(or(eq(projects.ownerId, user.id), eq(members.userId, user.id)))
       .orderBy(desc(projects.updatedAt));
-    return list.map(({ project, role, ownerName }) =>
-      viewProject({ ...project, role: project.ownerId === user.id ? 'owner' : role!, ownerName }),
+    return Promise.all(
+      list.map(({ project, role, ownerName }) =>
+        viewProject({ ...project, role: project.ownerId === user.id ? 'owner' : role!, ownerName }),
+      ),
     );
   });
   app.get('/api/starters', async (req) => {
@@ -334,7 +345,7 @@ export async function routes(app: FastifyInstance) {
       void ensureProject(p!.id)
         .then(() => (starter ? prepareProject(p!.id) : undefined))
         .catch((e) => req.log.error(e));
-    return reply.code(201).send(viewProject({ ...p!, role: 'owner' }));
+    return reply.code(201).send(await viewProject({ ...p!, role: 'owner' }));
   });
   app.get('/api/projects/:id', async (req) => viewProject(await access(req)));
   app.patch('/api/projects/:id', async (req) => {
@@ -571,7 +582,7 @@ export async function routes(app: FastifyInstance) {
       .returning();
     try {
       await workerJson(`/projects/${p.id}/duplicate`, 'POST', { id: copy!.id });
-      return reply.code(201).send(viewProject({ ...copy!, role: 'owner' }));
+      return reply.code(201).send(await viewProject({ ...copy!, role: 'owner' }));
     } catch (e) {
       await db.delete(projects).where(eq(projects.id, copy!.id));
       throw e;

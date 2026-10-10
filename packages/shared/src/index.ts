@@ -185,6 +185,7 @@ export type Project = {
   createdAt: string;
   updatedAt: string;
   ownerName?: string;
+  /** Whether the main app process was verified alive, independently of workspace state. */
   running?: boolean;
 };
 export type FileEntry = {

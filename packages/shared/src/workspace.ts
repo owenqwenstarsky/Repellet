@@ -140,6 +140,7 @@ export type OperationalProject = {
   name: string;
   ownerName: string;
   state: string;
+  running?: boolean;
   storageBytes: number;
   storageExceeded: boolean;
   canOpen: boolean;

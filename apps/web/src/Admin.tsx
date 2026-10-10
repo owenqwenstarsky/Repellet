@@ -74,6 +74,11 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
   useEffect(() => {
     void load();
   }, []);
+  useEffect(() => {
+    if (tab !== 'projects') return;
+    const timer = setInterval(load, 10000);
+    return () => clearInterval(timer);
+  }, [tab]);
   async function resetPassword(user: User) {
     const password = await ui.ask({
       title: 'Reset password',
@@ -247,7 +252,7 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
                       </small>
                     </span>
                   </button>
-                  <Status state={p.state} />
+                  <Status state={p.running === true ? 'running' : 'idle'} />
                   <span className="admin-storage">{formatBytes(p.storageBytes)}</span>
                   <div className="list-row-actions admin-stop">
                     {p.state === 'running' && (
