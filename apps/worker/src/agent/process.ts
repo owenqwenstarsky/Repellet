@@ -50,7 +50,8 @@ export async function startProjectProcess(
       statusCode: 409,
     });
   await killProjectAgent(id);
-  // Existing workspaces receive reciprocal access once before the first run of this process.
+  // Workspace access is prepared before the bridge starts. Refresh only private
+  // instructions here; recursive workspace changes would flood the live watcher.
   const helper = await docker.createContainer({
     Image: BASE_IMAGE,
     User: '0:0',
@@ -59,20 +60,15 @@ export async function startProjectProcess(
       NetworkMode: 'none',
       CapDrop: ['ALL'],
       CapAdd: ['CHOWN', 'FOWNER', 'DAC_OVERRIDE'],
-      Mounts: [
-        { Type: 'volume', Source: volumeName(id), Target: '/workspace' },
-        { Type: 'volume', Source: volumeName(id, 'agent'), Target: '/home/agent' },
-      ],
+      Mounts: [{ Type: 'volume', Source: volumeName(id, 'agent'), Target: '/home/agent' }],
     },
     Labels: { 'repellet.helper': 'true' },
-    Cmd: [
-      `${installManagedAgentContext} && chgrp -R 1000 /workspace && chmod g+rwX /workspace && find /workspace -type d -exec chmod g+s {} + && setfacl -R -m g:1000:rwX /workspace && find /workspace -type d -exec setfacl -m d:g:1000:rwx,d:m:rwx {} +`,
-    ],
+    Cmd: [installManagedAgentContext],
   });
   try {
     await helper.start();
     if ((await helper.wait()).StatusCode !== 0)
-      throw new Error('Could not prepare agent filesystem permissions');
+      throw new Error('Could not refresh managed agent instructions');
   } finally {
     await helper.remove({ force: true }).catch(() => {});
   }

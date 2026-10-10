@@ -28,6 +28,8 @@ Images and text files persist in `repellet-PROJECT_UUID-attachments`, mounted pr
 
 Project agent homes persist in `repellet-PROJECT_UUID-agent`, mounted at `/home/agent` with private permissions. Shared terminals cannot read this home. Project files use a shared group and ACLs; private agent bytes count toward project storage limits.
 
+Shared workspace permissions are prepared once before the workspace bridge starts. A versioned marker in the private agent home survives container recreation, so later workspace and agent starts avoid recursive permission scans and the resulting file-watcher traffic. The first start after upgrading may take longer while existing files are migrated. Stop and start an already-running workspace to apply this migration; agent restarts continue to refresh managed instructions without scanning project files.
+
 Every project agent home receives Repellet's managed global context at `/home/agent/.pi/agent/SYSTEM.md`. It stays outside `/workspace`, is refreshed at every agent start, and is advisory. Put project-specific instructions in the project's own `AGENTS.md`.
 
 Central account homes and provider settings persist in the worker's `repellet-agent-accounts` volume. Refresh credentials stay there. Custom keys reach only the Pi host and are redacted from returned errors/events. Backups include agent and account volumes.
