@@ -13,6 +13,21 @@ const configuredEffort = process.env.REPELLET_PI_EFFORT || 'medium';
 const effort = normalizeEffort(configuredEffort);
 const key = process.env.REPELLET_AGENT_API_KEY;
 const baseUrl = process.env.REPELLET_PI_BASE_URL;
+const proxyModels = process.env.REPELLET_PI_MODELS
+  ? JSON.parse(process.env.REPELLET_PI_MODELS)
+  : modelId
+    ? [modelId]
+    : [];
+const defaults = process.env.REPELLET_PI_DEFAULTS
+  ? JSON.parse(process.env.REPELLET_PI_DEFAULTS)
+  : {};
+const providerForApi = (api) => (api === 'cliproxyapi' ? 'repellet' : 'openai-codex');
+const apiForProvider = (p) => (p === 'repellet' ? 'cliproxyapi' : 'chatgpt');
+const defaultFor = (p) =>
+  defaults[apiForProvider(p)] || {
+    model: p === provider ? modelId : '',
+    effort: p === provider ? configuredEffort : 'medium',
+  };
 let access = process.env.REPELLET_CHATGPT_ACCESS_TOKEN;
 let accountId = process.env.REPELLET_CHATGPT_ACCOUNT_ID;
 const secrets = [key, access].filter(Boolean);
@@ -97,7 +112,13 @@ function persistEmpty(m) {
     });
   return api.SessionManager.open(m.getSessionFile(), sessionDir, '/workspace');
 }
-function add(m, from = null, selectedModel = modelId) {
+function add(
+  m,
+  from = null,
+  selectedModel = modelId,
+  selectedProvider = from?.provider || provider,
+  selectedEffort = from?.reasoningEffort || defaultFor(selectedProvider).effort,
+) {
   const stamp = new Date().toISOString(),
     idx = h.readIndex(indexFile);
   const e = {
@@ -107,7 +128,8 @@ function add(m, from = null, selectedModel = modelId) {
     createdAt: stamp,
     updatedAt: stamp,
     sessionFile: m.getSessionFile(),
-    provider,
+    provider: selectedProvider,
+    reasoningEffort: selectedEffort || null,
     model: selectedModel || from?.model || modelId,
     preview: from?.preview || '',
     forkedFromId: from?.threadId || null,
@@ -127,6 +149,8 @@ function thread(e, turns = []) {
     recencyAt: Date.parse(e.updatedAt) / 1000,
     modelProvider: e.provider,
     model: e.model,
+    api: apiForProvider(e.provider),
+    reasoningEffort: e.reasoningEffort || null,
     planMode: e.planMode === true,
     path: null,
     cwd: '/workspace',
@@ -139,7 +163,7 @@ function thread(e, turns = []) {
     canAcceptDirectInput: true,
   };
 }
-async function load(id) {
+async function load(id, selection = {}) {
   if (!sessions.has(id)) {
     const m = manager(id),
       settings = api.SettingsManager.inMemory({ retry: { enabled: false } });
@@ -229,18 +253,29 @@ async function load(id) {
     await loader.reload();
     if (loader.getExtensions().errors.length)
       throw new Error('Bundled Pi extensions failed to load');
-    const available = await runtime.getAvailable(provider);
+    const selectedProvider = selection.api
+      ? providerForApi(selection.api)
+      : entry(id).provider || provider;
+    const available = runtime.getModels
+      ? runtime.getModels(selectedProvider)
+      : await runtime.getAvailable(selectedProvider);
     let model =
-      runtime.getModel(provider, modelId || entry(id).model) || h.defaultModel(available, modelId);
+      runtime.getModel(selectedProvider, selection.model || entry(id).model) ||
+      h.defaultModel(available, defaultFor(selectedProvider).model);
     if (!model) throw new Error('Configure your provider in Agent settings');
-    if (provider === 'repellet' && configuredEffort === 'ultra')
+    if (selectedProvider === 'repellet' && entry(id).reasoningEffort === 'ultra')
       model = { ...model, thinkingLevelMap: { ...model.thinkingLevelMap, max: 'ultra' } };
     const { session } = await api.createAgentSession({
       cwd: '/workspace',
       agentDir,
       modelRuntime: runtime,
       model,
-      thinkingLevel: effort,
+      thinkingLevel: normalizeEffort(
+        selection.effort ||
+          entry(id).reasoningEffort ||
+          defaultFor(selectedProvider).effort ||
+          'medium',
+      ),
       sessionManager: m,
       settingsManager: settings,
       resourceLoader: loader,
@@ -319,31 +354,40 @@ async function load(id) {
   }
   return sessions.get(id);
 }
+async function selectModel(s, params) {
+  const selectedProvider = params.api ? providerForApi(params.api) : s.model.provider;
+  const available = runtime.getModels
+    ? runtime.getModels(selectedProvider)
+    : await runtime.getAvailable(selectedProvider);
+  const selected =
+    params.model === ''
+      ? h.defaultModel(available)?.id
+      : params.model ||
+        (s.model.provider === selectedProvider ? s.model.id : defaultFor(selectedProvider).model);
+  const m = runtime.getModel(selectedProvider, selected);
+  if (!m) throw new Error('Unknown or unavailable model');
+  if (s.model.id !== m.id || s.model.provider !== m.provider) await s.setModel(m);
+  const selectedEffort =
+    params.effort === null
+      ? s.model.reasoning
+        ? 'medium'
+        : 'none'
+      : params.effort || defaultFor(selectedProvider).effort;
+  if (selectedEffort) {
+    if (selectedProvider === 'repellet' && ['max', 'ultra'].includes(selectedEffort))
+      await s.setModel({
+        ...s.model,
+        thinkingLevelMap: { ...s.model.thinkingLevelMap, max: selectedEffort },
+      });
+    s.setThinkingLevel(normalizeEffort(selectedEffort));
+  }
+}
 async function run(id, params) {
   if (active) throw new Error('Another turn is active');
   if (entry(id).archived) throw new Error('Unarchive this thread to continue');
-  const s = await load(id);
+  const s = await load(id, params);
   const prepared = h.prepareInput(params.input);
-  const selected =
-    params.model || h.defaultModel(await runtime.getAvailable(provider), modelId)?.id;
-  if (selected) {
-    const prefix = provider + '/';
-    const m = runtime.getModel(
-      provider,
-      selected.startsWith(prefix) ? selected.slice(prefix.length) : selected,
-    );
-    if (!m) throw new Error('Unknown model');
-    if (s.model.id !== m.id || s.model.provider !== m.provider) await s.setModel(m);
-  }
-  if (params.effort) {
-    // Pi uses "max" internally; legacy proxy "ultra" remains a wire-level choice.
-    if (provider === 'repellet' && ['max', 'ultra'].includes(params.effort))
-      await s.setModel({
-        ...s.model,
-        thinkingLevelMap: { ...s.model.thinkingLevelMap, max: params.effort },
-      });
-    s.setThinkingLevel(normalizeEffort(params.effort));
-  }
+  await selectModel(s, params);
   const turnId = crypto.randomUUID(),
     a = {
       id,
@@ -361,6 +405,10 @@ async function run(id, params) {
     updatedAt: new Date().toISOString(),
     provider: s.model.provider,
     model: s.model.id,
+    reasoningEffort:
+      params.effort !== undefined
+        ? params.effort
+        : entry(id).reasoningEffort || defaultFor(s.model.provider).effort || null,
     preview: redact(params.input.map((p) => p.text || '').join('\n')).slice(0, 500),
   });
   const turn = {
@@ -405,8 +453,13 @@ async function run(id, params) {
 }
 async function handle({ method, params = {} }) {
   if (method === 'initialize' || method === 'initialized')
-    return { protocol: 'repellet-agent', provider: 'pi', version: '1.1.0' };
-  if (method === 'account/login/start') return { ok: true };
+    return { protocol: 'repellet-agent', provider: 'pi', version: '1.1.0', apiSelection: true };
+  if (method === 'account/login/start') {
+    access = params.accessToken;
+    accountId = params.chatgptAccountId;
+    if (access && !secrets.includes(access)) secrets.push(access);
+    return { ok: true };
+  }
   if (method === 'thread/list') {
     const entries = h
       .readIndex(indexFile)
@@ -428,28 +481,37 @@ async function handle({ method, params = {} }) {
     };
   }
   if (method === 'thread/start') {
+    const selectedProvider = params.api ? providerForApi(params.api) : provider;
+    const available = runtime.getModels
+      ? runtime.getModels(selectedProvider)
+      : await runtime.getAvailable(selectedProvider);
+    const selected =
+      params.model || h.defaultModel(available, defaultFor(selectedProvider).model)?.id || '';
     const e = add(
       persistEmpty(api.SessionManager.create('/workspace', sessionDir)),
       null,
-      params.model?.replace(provider + '/', '') ||
-        h.defaultModel(await runtime.getAvailable(provider), modelId)?.id ||
-        modelId,
+      selected.replace(selectedProvider + '/', ''),
+      selectedProvider,
+      params.effort !== undefined ? params.effort : defaultFor(selectedProvider).effort,
     );
     const t = thread(e);
     notify('thread/started', { thread: t });
     return { thread: t };
   }
   if (method === 'model/list') {
-    const available = await runtime.getAvailable(provider);
-    const selected = h.defaultModel(available, modelId);
+    const selectedProvider = params.api ? providerForApi(params.api) : provider;
+    const available = runtime.getModels
+      ? runtime.getModels(selectedProvider)
+      : await runtime.getAvailable(selectedProvider);
+    const selected = h.defaultModel(available, defaultFor(selectedProvider).model);
     const data = available.map((m) => ({
-      id: provider + '/' + m.id,
+      id: selectedProvider + '/' + m.id,
       model: m.id,
       displayName: m.name,
       isDefault: m.id === selected?.id,
       supportedReasoningEfforts: [
         ...api.getSupportedThinkingLevels(m),
-        ...(provider === 'repellet' ? ['ultra'] : []),
+        ...(selectedProvider === 'repellet' ? ['ultra'] : []),
       ]
         .map((level) => (level === 'off' ? 'none' : level))
         .map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })),
@@ -483,6 +545,12 @@ async function handle({ method, params = {} }) {
   }
   if (method === 'turn/start') return run(params.threadId, params);
   const e = entry(params.threadId);
+  if (method === 'thread/resume' && (params.api || params.model !== undefined))
+    update(e.threadId, {
+      provider: params.api ? providerForApi(params.api) : e.provider,
+      model: params.model !== undefined ? params.model : e.model,
+      reasoningEffort: params.effort !== undefined ? params.effort : e.reasoningEffort || null,
+    });
   if (method === 'thread/read' || method === 'thread/resume')
     return {
       thread: thread(
@@ -528,7 +596,13 @@ async function handle({ method, params = {} }) {
     return { thread: t };
   }
   if (method === 'thread/compact/start') {
-    const s = await load(e.threadId);
+    const s = await load(e.threadId, params);
+    await selectModel(s, params);
+    update(e.threadId, {
+      provider: s.model.provider,
+      model: s.model.id,
+      reasoningEffort: params.effort !== undefined ? params.effort : e.reasoningEffort || null,
+    });
     await s.compact();
     return { thread: thread(e, h.transcript(s.sessionManager)) };
   }
@@ -579,41 +653,35 @@ async function main() {
     }
   }
   h.writeIndex(indexFile, index);
-  // Only configuration is persisted here. Credentials remain in host memory.
+  // Credentials and the proxy catalog stay in memory, outside project files.
   fs.rmSync(path.join(agentDir, 'auth.json'), { force: true });
-  const modelsPath = path.join(agentDir, 'models.json');
-  fs.rmSync(modelsPath, { force: true });
-  if (provider === 'repellet')
-    fs.writeFileSync(
-      modelsPath,
-      JSON.stringify({
-        providers: {
-          repellet: {
-            baseUrl,
-            api: 'openai-responses',
-            models: [
-              {
-                id: modelId,
-                name: modelId,
-                reasoning: true,
-                // Preserve extended efforts for user-configured Responses proxies.
-                thinkingLevelMap: { xhigh: 'xhigh', max: 'max' },
-                input: ['text'],
-                contextWindow: 200000,
-                maxTokens: 16384,
-              },
-            ],
-          },
-        },
-      }),
-      { mode: 0o600 },
-    );
+  fs.rmSync(path.join(agentDir, 'models.json'), { force: true });
   runtime = await api.ModelRuntime.create({
     credentials,
-    modelsPath: provider === 'repellet' ? modelsPath : null,
+    modelsPath: null,
     refreshOnCreate: false,
   });
-  if (key) await runtime.setRuntimeApiKey(provider, key);
+  if (key && baseUrl && proxyModels.length) {
+    const known = runtime.getModels();
+    runtime.registerProvider('repellet', {
+      baseUrl,
+      api: 'openai-responses',
+      models: proxyModels.map((id) => {
+        const metadata = known.find((model) => model.id === id);
+        return {
+          id,
+          name: id,
+          reasoning: metadata?.reasoning ?? true,
+          thinkingLevelMap: { xhigh: 'xhigh', max: 'max' },
+          input: metadata?.input || ['text'],
+          cost: metadata?.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: metadata?.contextWindow || 200000,
+          maxTokens: metadata?.maxTokens || 16384,
+        };
+      }),
+    });
+    await runtime.setRuntimeApiKey('repellet', key);
+  }
   let buffer = '';
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk) => {

@@ -20,16 +20,20 @@ export const providerUrlSchema = z
   .max(2048)
   .url()
   .refine((value) => {
-    const url = new URL(value);
-    return (
-      ['http:', 'https:'].includes(url.protocol) &&
-      !url.username &&
-      !url.password &&
-      !url.hash &&
-      !url.search
-    );
+    try {
+      const url = new URL(value);
+      return (
+        ['http:', 'https:'].includes(url.protocol) &&
+        !url.username &&
+        !url.password &&
+        !url.hash &&
+        !url.search
+      );
+    } catch {
+      return false;
+    }
   }, 'Use an HTTP(S) Responses API base URL without credentials, query, or fragment');
-export const agentSettingsSchema = z
+export const legacyAgentSettingsSchema = z
   .object({
     mode: z.enum(['chatgpt', 'custom']),
     baseUrl: providerUrlSchema.or(z.literal('')),
@@ -39,20 +43,78 @@ export const agentSettingsSchema = z
     apiKey: z.string().min(1).max(32768).nullable().optional(),
   })
   .strict();
-export type AgentSettings = {
+export type LegacyAgentSettings = {
   mode: 'chatgpt' | 'custom';
   baseUrl: string;
   model: string;
   effort: z.infer<typeof reasoningEffortSchema> | null;
   hasApiKey: boolean;
 };
-export type AgentPrivateSettings = Omit<AgentSettings, 'hasApiKey'> & { apiKey: string | null };
+/** Legacy shape retained at the private process adapter boundary. */
+export type AgentPrivateSettings = Omit<LegacyAgentSettings, 'hasApiKey'> & {
+  apiKey: string | null;
+  proxyModels?: string[];
+  defaults?: AgentStoredSettings['defaults'];
+};
+export const agentApiSchema = z.enum(['chatgpt', 'cliproxyapi']);
+export type AgentApi = z.infer<typeof agentApiSchema>;
+const preferenceSchema = z
+  .object({
+    model: z.string().trim().max(200),
+    effort: reasoningEffortSchema.nullable(),
+  })
+  .strict();
+export const proxyConnectionSchema = z
+  .object({
+    baseUrl: providerUrlSchema.or(z.literal('')),
+    apiKey: z.string().trim().min(1).max(32768).nullable().optional(),
+  })
+  .strict();
+export const agentPreferencesSchema = z
+  .object({
+    version: z.literal(2),
+    defaultApi: agentApiSchema,
+    defaults: z.object({ chatgpt: preferenceSchema, cliproxyapi: preferenceSchema }).strict(),
+    personalProxy: proxyConnectionSchema.optional(),
+  })
+  .strict();
+export const agentSettingsSchema = z.union([agentPreferencesSchema, legacyAgentSettingsSchema]);
+export type AgentStoredSettings = Omit<z.infer<typeof agentPreferencesSchema>, 'personalProxy'> & {
+  personalProxy: { baseUrl: string; apiKey: string | null };
+};
+export type AgentSettings = Omit<AgentStoredSettings, 'personalProxy'> & {
+  personalProxy?: { baseUrl: string; hasApiKey: boolean };
+  proxySource: 'global' | 'personal' | 'none';
+  availability: Record<AgentApi, { available: boolean; reason: string | null }>;
+};
+export const globalAgentApiSchema = proxyConnectionSchema
+  .extend({
+    enabled: z.boolean(),
+    allowedModels: z.array(z.string().trim().min(1).max(200)).max(10000),
+  })
+  .strict();
+export type GlobalAgentApiSettings = {
+  enabled: boolean;
+  baseUrl: string;
+  hasApiKey: boolean;
+  allowedModels: string[];
+  models: string[];
+  fetchedAt: number | null;
+};
+export type AgentModelCatalog = {
+  data: import('@repellet/agent-protocol').Model[];
+  nextCursor: null;
+  error: string | null;
+};
 const id = z
   .string()
   .min(1)
   .max(200)
   .regex(/^[a-zA-Z0-9_-]+$/);
-const model = z.string().trim().min(1).max(200).optional();
+// An explicit empty model selects the provider default; omission restores thread preferences.
+const model = z.string().trim().max(200).optional();
+const api = agentApiSchema.optional();
+const effort = reasoningEffortSchema.nullable().optional();
 const input = z
   .array(
     z.union([
@@ -83,7 +145,7 @@ const input = z
   });
 const thread = z.object({ threadId: id }).strict();
 const methods = {
-  'thread/start': z.object({ model }).strict(),
+  'thread/start': z.object({ api, model, effort }).strict(),
   'thread/list': z
     .object({
       cursor: z.string().max(1000).optional(),
@@ -93,18 +155,19 @@ const methods = {
     })
     .strict(),
   'thread/read': thread.extend({ includeTurns: z.boolean().optional() }),
-  'thread/resume': thread.extend({ model }),
-  'thread/fork': thread.extend({ model }),
+  'thread/resume': thread.extend({ api, model, effort }),
+  'thread/fork': thread.extend({ api, model, effort }),
   'thread/plan/toggle': thread,
   'thread/name/set': thread.extend({ name: z.string().trim().min(1).max(100) }),
   'thread/archive': thread,
   'thread/unarchive': thread,
-  'thread/compact/start': thread,
-  'turn/start': thread.extend({ input, model, effort: reasoningEffortSchema.optional() }),
+  'thread/compact/start': thread.extend({ api, model, effort }),
+  'turn/start': thread.extend({ api, input, model, effort }),
   'turn/steer': thread.extend({ input, expectedTurnId: id }),
   'turn/interrupt': thread.extend({ turnId: id }),
   'model/list': z
     .object({
+      api,
       cursor: z.string().max(1000).optional(),
       limit: z.number().int().min(1).max(100).optional(),
     })
@@ -162,6 +225,7 @@ export type AgentSnapshot = {
   sequence: number;
   connected: boolean;
   active: { threadId: string; turnId: string } | null;
+  compacting?: boolean;
   waiting: boolean;
   pending: AgentQuestion[];
   items: { threadId: string; turnId: string; item: ThreadItem }[];
@@ -172,6 +236,7 @@ export type AgentEvent =
   | { type: 'event'; generation: string; sequence: number; event: ServerNotification }
   | { type: 'question'; generation: string; sequence: number; question: AgentQuestion }
   | { type: 'question/resolved'; generation: string; sequence: number; requestId: string | number }
+  | { type: 'compaction'; generation: string; sequence: number; active: boolean }
   | { type: 'process/error'; generation: string; sequence: number; message: string };
 
 /** Redact content without altering protocol identifiers, discriminants, or model IDs. */

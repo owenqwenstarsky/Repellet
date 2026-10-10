@@ -90,3 +90,33 @@ it('does not prepare instructions or start an agent in a stopped workspace', asy
   expect(state.helpers).toEqual([]);
   expect(state.execOptions).toEqual([]);
 });
+
+it('supplies both providers privately even when ChatGPT is the default API', async () => {
+  const connection = await startProjectProcess(
+    'project',
+    {
+      mode: 'chatgpt',
+      baseUrl: 'https://global.invalid/v1',
+      apiKey: 'global-private-key',
+      model: '',
+      effort: null,
+      proxyModels: ['allowed', 'other'],
+      defaults: {
+        chatgpt: { model: '', effort: null },
+        cliproxyapi: { model: 'allowed', effort: 'high' },
+      },
+    },
+    { accessToken: 'chatgpt-private-token', chatgptAccountId: 'account', chatgptPlanType: 'plus' },
+  );
+  const exec = state.execOptions.find((options) => options.AttachStdin);
+  expect(exec.Env).toEqual(
+    expect.arrayContaining([
+      'REPELLET_PI_PROVIDER=openai-codex',
+      'REPELLET_AGENT_API_KEY=global-private-key',
+      'REPELLET_CHATGPT_ACCESS_TOKEN=chatgpt-private-token',
+      'REPELLET_PI_MODELS=["allowed","other"]',
+    ]),
+  );
+  expect(exec.Cmd.join(' ')).not.toMatch(/global-private-key|chatgpt-private-token/);
+  await connection.close();
+});

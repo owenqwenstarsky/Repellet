@@ -374,8 +374,8 @@ describe.skipIf(!enabled)('real Pi 1.1.0 in the unprivileged workspace container
       (await exec('1001:1000', ['test', '!', '-e', '/home/agent/.pi/agent/auth.json'])).code,
     ).toBe(0);
     expect(
-      (await exec('1001:1000', ['cat', '/home/agent/.pi/agent/models.json'])).text,
-    ).not.toContain('private-provider-key');
+      (await exec('1001:1000', ['test', '!', '-e', '/home/agent/.pi/agent/models.json'])).code,
+    ).toBe(0);
   }, 60000);
   it('waits for an owner question through the Pi SDK and resumes the same turn', async () => {
     const thread = (await rpc('thread/start')).thread.id;
@@ -603,8 +603,12 @@ describe.skipIf(!enabled)('real Pi 1.1.0 in the unprivileged workspace container
       (thread: any) => thread.name === 'Imported workspace history',
     );
     expect(imported).toBeTruthy();
+    // Imported Codex history retains ChatGPT as its API. Continuing through the
+    // fixture proxy requires an explicit selection rather than a silent fallback.
     await rpc('turn/start', {
       threadId: imported.id,
+      api: 'cliproxyapi',
+      model: 'repellet-test-model',
       input: [{ type: 'text', text: 'Continue the imported work' }],
     });
     await vi.waitFor(() => expect(projects.agentActivity(id).active).toBe(false), {

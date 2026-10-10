@@ -1,19 +1,42 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { AgentStoredSettings } from '@repellet/shared';
+
+const preferences = vi.hoisted((): AgentStoredSettings => ({
+  version: 2,
+  defaultApi: 'cliproxyapi',
+  defaults: {
+    chatgpt: { model: '', effort: null },
+    cliproxyapi: { model: 'model', effort: null },
+  },
+  personalProxy: { baseUrl: 'http://test-provider', apiKey: 'private-provider-key' },
+}));
 
 vi.mock('../apps/worker/src/databases.js', () => ({ databaseBytes: async () => 0 }));
 vi.mock('../apps/worker/src/config.js', () => ({
   config: { appUrl: 'http://test-api', token: 'private-worker-token' },
 }));
 vi.mock('../apps/worker/src/agent/accounts.js', () => ({
-  privateSettings: async () => ({
-    mode: 'custom',
-    apiKey: 'private-provider-key',
-    baseUrl: 'http://test-provider',
-    model: 'model',
-  }),
+  storedSettings: async () => structuredClone(preferences),
   withAccount: (_id: string, fn: () => unknown) => fn(),
-  accessTokens: vi.fn(),
+  accessTokens: vi.fn(async () => {
+    throw new Error('ChatGPT is not connected');
+  }),
+}));
+// Keep provider discovery out of these control-transport tests: fetch belongs to
+// the internal project-control API, and no private storage should be accessed.
+vi.mock('../apps/worker/src/agent/providers.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../apps/worker/src/agent/providers.js')>()),
+  runtimeSettings: async () => ({
+    mode: 'custom',
+    ...preferences.personalProxy,
+    ...preferences.defaults.cliproxyapi,
+    defaults: preferences.defaults,
+    proxyModels: ['model'],
+  }),
+  modelCatalog: async () => ({
+    data: [{ model: 'model', supportedReasoningEfforts: [] }],
+  }),
 }));
 vi.mock('../apps/worker/src/agent/process.js', () => ({
   startProjectProcess: vi.fn(),
@@ -179,7 +202,13 @@ async function supervisor() {
     userId = randomUUID(),
     threadId = randomUUID(),
     turnId = randomUUID();
-  const thread = { id: threadId, cwd: '/workspace', parentThreadId: null };
+  const thread = {
+    id: threadId,
+    cwd: '/workspace',
+    parentThreadId: null,
+    modelProvider: 'repellet',
+    model: 'model',
+  };
   const turn = { id: turnId, status: 'inProgress', items: [], error: null };
   vi.spyOn(connection, 'call').mockImplementation(async (method) => {
     if (method === 'thread/start') return { thread };

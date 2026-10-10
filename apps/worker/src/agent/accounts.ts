@@ -5,8 +5,10 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import {
   agentSettingsSchema,
+  agentPreferencesSchema,
+  legacyAgentSettingsSchema,
   type AgentPrivateSettings,
-  type AgentSettings,
+  type AgentStoredSettings,
 } from '@repellet/shared';
 import type {
   ChatgptAuthTokensRefreshResponse,
@@ -251,43 +253,73 @@ async function localPiAccountService(id: string): Promise<AccountService> {
     },
   };
 }
-const defaults: AgentPrivateSettings = {
-  mode: 'chatgpt',
-  baseUrl: '',
-  model: '',
-  effort: null,
-  apiKey: null,
-};
-export async function privateSettings(id: string): Promise<AgentPrivateSettings> {
+export const defaultSettings = (): AgentStoredSettings => ({
+  version: 2,
+  defaultApi: 'chatgpt',
+  defaults: { chatgpt: { model: '', effort: null }, cliproxyapi: { model: '', effort: null } },
+  personalProxy: { baseUrl: '', apiKey: null },
+});
+export function migrateSettings(data: unknown): AgentStoredSettings {
+  if ((data as { version?: number })?.version === 2) {
+    const parsed = agentPreferencesSchema.parse(data);
+    return {
+      ...parsed,
+      personalProxy: {
+        baseUrl: parsed.personalProxy?.baseUrl || '',
+        apiKey: parsed.personalProxy?.apiKey ?? null,
+      },
+    };
+  }
+  const old = legacyAgentSettingsSchema.parse(data);
+  const next = defaultSettings();
+  next.defaultApi = old.mode === 'custom' ? 'cliproxyapi' : 'chatgpt';
+  // The old model field configured only the custom API, even while ChatGPT was selected.
+  next.defaults.cliproxyapi = { model: old.model, effort: old.effort ?? null };
+  next.personalProxy = { baseUrl: old.baseUrl, apiKey: old.apiKey ?? null };
+  return next;
+}
+export async function storedSettings(id: string): Promise<AgentStoredSettings> {
   try {
     const data = JSON.parse(
       await fs.readFile(path.join(accountHome(id), 'repellet-settings.json'), 'utf8'),
     );
-    const parsed = agentSettingsSchema.parse(data);
-    return { ...defaults, ...parsed, apiKey: parsed.apiKey ?? null };
+    return migrateSettings(data);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { ...defaults };
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return defaultSettings();
     throw new Error('Agent settings are incompatible. Reconnect your provider.');
   }
 }
-export const publicSettings = ({ apiKey, ...settings }: AgentPrivateSettings): AgentSettings => ({
-  ...settings,
-  hasApiKey: !!apiKey,
-});
+export async function privateSettings(id: string): Promise<AgentPrivateSettings> {
+  const settings = await storedSettings(id);
+  return {
+    mode: settings.defaultApi === 'chatgpt' ? 'chatgpt' : 'custom',
+    ...settings.personalProxy,
+    ...settings.defaults[settings.defaultApi],
+    defaults: settings.defaults,
+  };
+}
 export async function saveSettings(id: string, input: unknown) {
   const update = agentSettingsSchema.parse(input);
-  const previous = await privateSettings(id);
-  const next = {
-    ...previous,
-    ...update,
-    effort: update.effort ?? null,
-    apiKey: update.apiKey === undefined ? previous.apiKey : update.apiKey,
-  };
-  if (next.mode === 'custom' && (!next.baseUrl || !next.apiKey?.trim() || !next.model))
-    throw Object.assign(
-      new Error('Custom API requires a Responses API base URL, key, and model ID'),
-      { statusCode: 400 },
-    );
+  const previous = await storedSettings(id);
+  const { globalSettings, userSettings, validatePreferences } = await import('./providers.js');
+  const global = await globalSettings();
+  const legacy = !('version' in update);
+  if (global.enabled && (legacy || update.personalProxy !== undefined))
+    throw Object.assign(new Error('CLIProxyAPI is managed by your administrator'), {
+      statusCode: 403,
+    });
+  const next = legacy
+    ? migrateSettings(update)
+    : { ...previous, ...update, personalProxy: previous.personalProxy };
+  const connection = legacy
+    ? { baseUrl: update.baseUrl, apiKey: update.apiKey }
+    : update.personalProxy;
+  if (connection)
+    next.personalProxy = {
+      baseUrl: connection.baseUrl,
+      apiKey: connection.apiKey === undefined ? previous.personalProxy.apiKey : connection.apiKey,
+    };
+  await validatePreferences(id, next);
   const home = await prepareHome(id);
   const temporary = path.join(home, '.settings-' + randomUUID());
   try {
@@ -296,7 +328,7 @@ export async function saveSettings(id: string, input: unknown) {
   } finally {
     await fs.rm(temporary, { force: true });
   }
-  return publicSettings(next);
+  return userSettings(id);
 }
 export async function readAccount(id: string) {
   try {

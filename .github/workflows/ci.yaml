@@ -20,9 +20,13 @@ jobs:
       - run: npm run setup
       - run: npm install -g @openai/codex@0.160.0
       - run: docker compose -f compose.yaml -f compose.dev.yaml up -d database
+      - name: Resolve the fake agent provider from the runner and workspaces
+        run: |
+          gateway="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+          printf '%s host.docker.internal\n' "$gateway" | sudo tee -a /etc/hosts
       - run: npm run check
       - run: npm run format:check
-      - run: docker build -f docker/workspace.Dockerfile -t repellet/workspace-base:0.7.0 .
+      - run: docker build -f docker/workspace.Dockerfile -t repellet/workspace-base:0.7.1 .
       - run: npm run test:docker
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e

@@ -6,6 +6,11 @@ export async function fakeResponsesProvider() {
   const requests = [];
   const searches = [];
   const server = createServer(async (request, response) => {
+    if (request.method === 'GET' && request.url === '/custom/v1/models') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ data: [{ id: 'repellet-test-model' }] }));
+      return;
+    }
     if (request.method !== 'POST' || request.url !== '/custom/v1/responses') {
       response.writeHead(404);
       response.end('Responses endpoint required');

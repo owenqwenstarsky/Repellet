@@ -109,37 +109,46 @@ describe('Agent account and project supervision with a fake host', () => {
     await expect(accounts.cancelLogin(userId, randomUUID())).rejects.toThrow('no longer pending');
   });
   it('keeps plaintext keys private and supports retain, replace, remove, and switching', async () => {
-    const saved = await accounts.saveSettings(userId, {
-      mode: 'custom',
-      baseUrl: 'http://192.168.1.5:8080/custom/v1',
-      model: 'local-model',
-      apiKey: 'test-secret',
-    });
-    expect(saved.hasApiKey).toBe(true);
-    expect(saved).not.toHaveProperty('apiKey');
-    expect(
-      await readFile(path.join(accounts.accountHome(userId), 'repellet-settings.json'), 'utf8'),
-    ).toContain('test-secret');
-    await accounts.saveSettings(userId, {
-      mode: 'chatgpt',
-      baseUrl: saved.baseUrl,
-      model: saved.model,
-    });
-    expect((await accounts.privateSettings(userId)).apiKey).toBe('test-secret');
-    await accounts.saveSettings(userId, {
-      mode: 'custom',
-      baseUrl: saved.baseUrl,
-      model: saved.model,
-      apiKey: 'replacement',
-    });
-    expect((await accounts.privateSettings(userId)).apiKey).toBe('replacement');
-    await accounts.saveSettings(userId, {
-      mode: 'chatgpt',
-      baseUrl: saved.baseUrl,
-      model: saved.model,
-      apiKey: null,
-    });
-    expect((await accounts.privateSettings(userId)).apiKey).toBeNull();
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(
+        async () => new Response(JSON.stringify({ data: [{ id: 'local-model' }] })),
+      );
+    try {
+      const saved = await accounts.saveSettings(userId, {
+        mode: 'custom',
+        baseUrl: 'http://192.168.1.5:8080/custom/v1',
+        model: 'local-model',
+        apiKey: 'test-secret',
+      });
+      expect(saved.personalProxy?.hasApiKey).toBe(true);
+      expect(saved).not.toHaveProperty('apiKey');
+      expect(
+        await readFile(path.join(accounts.accountHome(userId), 'repellet-settings.json'), 'utf8'),
+      ).toContain('test-secret');
+      await accounts.saveSettings(userId, {
+        mode: 'chatgpt',
+        baseUrl: saved.personalProxy!.baseUrl,
+        model: saved.defaults.cliproxyapi.model,
+      });
+      expect((await accounts.privateSettings(userId)).apiKey).toBe('test-secret');
+      await accounts.saveSettings(userId, {
+        mode: 'custom',
+        baseUrl: saved.personalProxy!.baseUrl,
+        model: saved.defaults.cliproxyapi.model,
+        apiKey: 'replacement',
+      });
+      expect((await accounts.privateSettings(userId)).apiKey).toBe('replacement');
+      await accounts.saveSettings(userId, {
+        mode: 'chatgpt',
+        baseUrl: saved.personalProxy!.baseUrl,
+        model: saved.defaults.cliproxyapi.model,
+        apiKey: null,
+      });
+      expect((await accounts.privateSettings(userId)).apiKey).toBeNull();
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
   it('reports expired device login and allows reconnecting', async () => {
     const marker = path.join(accounts.accountHome(userId), 'login-fails');

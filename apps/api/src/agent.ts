@@ -10,14 +10,45 @@ import {
   agentRpcSchema,
   MAX_AGENT_IMAGE_BYTES,
   agentAttachmentUploadSchema,
+  agentApiSchema,
+  proxyConnectionSchema,
+  globalAgentApiSchema,
 } from '@repellet/shared';
-import { requireUser, projectAgentAccess, SESSION_COOKIE } from './security.js';
+import { requireUser, requireOwner, projectAgentAccess, SESSION_COOKIE } from './security.js';
 import { workerJson, workerRequest } from './worker.js';
 import { flushProject } from './collaboration.js';
 import { serialize } from './lifecycle.js';
 import { track } from './live.js';
 import { config } from './config.js';
 export async function agentRoutes(app: FastifyInstance) {
+  app.get('/api/admin/agent-api', async (req) => {
+    await requireOwner(req);
+    return workerJson('/agent/global');
+  });
+  app.put('/api/admin/agent-api', async (req) => {
+    await requireOwner(req);
+    return workerJson('/agent/global', 'PUT', globalAgentApiSchema.parse(req.body));
+  });
+  app.post('/api/admin/agent-api/models', async (req) => {
+    await requireOwner(req);
+    return workerJson('/agent/global/models', 'POST', proxyConnectionSchema.parse(req.body));
+  });
+  app.get('/api/agent/models', async (req) => {
+    const user = await requireUser(req);
+    const query = z
+      .object({ api: agentApiSchema, refresh: z.enum(['true', 'false']).optional() })
+      .strict()
+      .parse(req.query);
+    return workerJson(`/agent/users/${user.id}/models?${new URLSearchParams(query).toString()}`);
+  });
+  app.post('/api/agent/models', async (req) => {
+    const user = await requireUser(req);
+    return workerJson(
+      `/agent/users/${user.id}/models`,
+      'POST',
+      proxyConnectionSchema.parse(req.body),
+    );
+  });
   await app.register(async (uploads) => {
     uploads.addContentTypeParser(
       'application/octet-stream',

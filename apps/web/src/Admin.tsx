@@ -29,8 +29,9 @@ import {
   Tabs,
   TabPanel,
 } from './ui';
+import { AdminAgentApi } from './AdminAgentApi';
 import { useAsyncAction } from './components/useAsyncAction';
-type Tab = 'people' | 'resources' | 'projects';
+type Tab = 'people' | 'resources' | 'projects' | 'agent-apis';
 const limitFields: [keyof Limits, string, number, number, number][] = [
   ['cpu', 'CPU cores', 0.25, 64, 0.25],
   ['memoryMb', 'Memory (MiB)', 256, 131072, 128],
@@ -125,9 +126,11 @@ export function Admin({ onOpen }: { onOpen: (id: string) => void }) {
           { id: 'people', label: 'People', icon: Users },
           { id: 'resources', label: 'Resources', icon: SlidersHorizontal },
           { id: 'projects', label: 'All projects', icon: Box },
+          { id: 'agent-apis', label: 'Agent APIs', icon: KeyRound },
         ]}
       />
       <TabPanel>
+        {tab === 'agent-apis' && <AdminAgentApi />}
         {loadError && <LoadError message={loadError} onRetry={load} />}
         {loading && <Spinner />}
         {!loading && tab === 'people' && (

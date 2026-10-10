@@ -15,7 +15,8 @@ import {
 } from '@repellet/shared';
 import type { ServerRequest, ServerNotification, Thread } from '@repellet/agent-protocol';
 import { AgentConnection } from './connection.js';
-import { withAccount, privateSettings, accessTokens } from './accounts.js';
+import { withAccount, storedSettings, accessTokens } from './accounts.js';
+import { withProviderPolicy, runtimeSettings, modelCatalog, defaultModel } from './providers.js';
 import { startProjectProcess, killProjectAgent, projectAgentBytes } from './process.js';
 import { bridgeRequest, locked } from '../workspaces.js';
 import { forwardProjectControl } from './project-control.js';
@@ -31,6 +32,7 @@ type Session = {
   loadedThreads: Set<string>;
   completedTurns: Set<string>;
   controls: Map<string | number, AbortController>;
+  invalidated: boolean;
 };
 const sessions = new Map<string, Session>();
 const starts = new Map<string, Promise<Session>>();
@@ -49,7 +51,8 @@ function publish(
         question: AgentQuestion;
       }
     | { type: 'question/resolved'; requestId: string | number }
-    | { type: 'process/error'; message: string },
+    | { type: 'process/error'; message: string }
+    | { type: 'compaction'; active: boolean },
 ) {
   const message = redact(
     publicResult({
@@ -107,9 +110,8 @@ async function serverRequest(session: Session, request: ServerRequest) {
         session.controls.delete(request.id);
       }
     } else if (request.method === 'account/chatgptAuthTokens/refresh') {
-      if (session.settings.mode !== 'chatgpt')
-        throw new Error('Custom provider cannot refresh ChatGPT');
       const tokens = await accessTokens(session.userId);
+      connection.addSecrets(tokens.accessToken);
       if (
         request.params.previousAccountId &&
         request.params.previousAccountId !== tokens.chatgptAccountId
@@ -144,21 +146,23 @@ async function serverRequest(session: Session, request: ServerRequest) {
   }
 }
 async function getSession(projectId: string, userId: string) {
-  const existing = sessions.get(projectId);
+  let existing = sessions.get(projectId);
   if (existing && existing.userId !== userId) throw error('Project owner mismatch', 403);
-  if (existing && !existing.connection.closed) return existing;
+  const settings = await runtimeSettings(userId);
+  if (existing && !existing.connection.closed) {
+    if (busy(existing)) return existing;
+    if (!existing.invalidated && JSON.stringify(existing.settings) === JSON.stringify(settings))
+      return existing;
+    await stopAgent(projectId);
+    existing = undefined;
+  }
   if (!starts.has(projectId))
     starts.set(
       projectId,
       (async () => {
         if (existing?.connection.closed) await existing.connection.close();
-        const settings = await privateSettings(userId);
-        if (
-          settings.mode === 'custom' &&
-          (!settings.apiKey || !settings.baseUrl || !settings.model)
-        )
-          throw error('Configure your custom provider in Agent settings');
-        const tokens = settings.mode === 'chatgpt' ? await accessTokens(userId) : null;
+        // History remains accessible even when either provider needs reconnection.
+        const tokens = await accessTokens(userId).catch(() => null);
         const connection = await startProjectProcess(projectId, settings, tokens || undefined);
         const session: Session = {
           projectId,
@@ -171,6 +175,7 @@ async function getSession(projectId: string, userId: string) {
           loadedThreads: new Set(),
           completedTurns: new Set(),
           controls: new Map(),
+          invalidated: false,
           snapshot: {
             generation: randomUUID(),
             sequence: 0,
@@ -223,6 +228,13 @@ async function getSession(projectId: string, userId: string) {
           if (!/^(thread\/|turn\/|item\/|error$|serverRequest\/resolved$)/.test(event.method))
             return;
           publish(session, { type: 'event', event });
+          if (event.method === 'turn/completed' && session.invalidated)
+            void withProviderPolicy(() =>
+              withAccount(userId, async () => {
+                if (sessions.get(projectId) === session && !busy(session))
+                  await stopAgent(projectId);
+              }),
+            ).catch(() => {});
         });
         connection.on('failure', (message) => {
           for (const controller of session.controls.values()) controller.abort();
@@ -230,7 +242,7 @@ async function getSession(projectId: string, userId: string) {
           publish(session, { type: 'process/error', message });
         });
         try {
-          await connection.initialize();
+          await connection.initialize(true);
           if (tokens)
             await connection.call('account/login/start', { type: 'chatgptAuthTokens', ...tokens });
           for (const client of session.clients)
@@ -246,7 +258,17 @@ async function getSession(projectId: string, userId: string) {
   return starts.get(projectId)!;
 }
 export async function agentStatus(projectId: string, userId: string) {
-  return withAccount(userId, async () => (await getSession(projectId, userId)).snapshot);
+  return withProviderPolicy(() =>
+    withAccount(userId, async () => (await getSession(projectId, userId)).snapshot),
+  );
+}
+/** Caller owns the provider-policy lock. Never interrupt an admitted turn. */
+export async function invalidateAgentProviders(userId?: string) {
+  for (const session of [...sessions.values()]) {
+    if (userId && session.userId !== userId) continue;
+    session.invalidated = true;
+    if (!busy(session)) await stopAgent(session.projectId);
+  }
 }
 export function agentActivity(projectId: string) {
   const session = sessions.get(projectId);
@@ -279,7 +301,9 @@ export async function stopAgent(projectId: string) {
   });
 }
 export async function attachAgent(client: WebSocket, projectId: string, userId: string) {
-  const session = await withAccount(userId, () => getSession(projectId, userId));
+  const session = await withProviderPolicy(() =>
+    withAccount(userId, () => getSession(projectId, userId)),
+  );
   if (client.readyState !== 1) return;
   // Synchronous registration + snapshot serialization gives an atomic boundary.
   session.clients.add(client);
@@ -288,93 +312,154 @@ export async function attachAgent(client: WebSocket, projectId: string, userId: 
 }
 export async function agentRpc(projectId: string, userId: string, input: unknown) {
   const rpc = agentRpcSchema.parse(input);
-  return withAccount(userId, async () => {
-    const session = await getSession(projectId, userId);
-    if (rpc.generation !== session.snapshot.generation)
-      throw error('Agent process changed. Refresh status and history before continuing.');
-    const { connection, settings } = session;
-    const params = { ...rpc.params };
-    if (params.input?.some((item: { type: string }) => item.type === 'attachment'))
-      params.input = await resolveAttachmentInputs(projectId, params.input);
-    if (params.threadId) {
-      // Read by ID from this project's private Pi session directory; never accept rollout paths/history.
-      const thread =
-        session.threads.get(params.threadId) ||
-        ((await connection.call('thread/read', { threadId: params.threadId, includeTurns: false }))
-          .thread as Thread);
-      session.threads.set(thread.id, thread);
-      if (thread.cwd !== '/workspace') throw error('Thread does not belong to this project', 403);
-      if (thread.parentThreadId) throw error('Subagent threads cannot receive top-level turns');
-    }
-    const active = session.snapshot.active;
-    if (
-      rpc.method === 'turn/start' ||
-      rpc.method === 'thread/compact/start' ||
-      rpc.method === 'thread/plan/toggle'
-    ) {
-      if (busy(session)) throw error('This project already has an active agent turn');
-      const usage = await agentUsage(projectId);
-      if (usage.exceeded)
-        throw error('Project storage limit reached. Delete files to continue.', 507);
-    }
-    if (
-      rpc.method === 'turn/steer' &&
-      (!active || active.threadId !== params.threadId || active.turnId !== params.expectedTurnId)
-    )
-      throw error('Active turn changed. Refresh the conversation.');
-    if (
-      rpc.method === 'turn/interrupt' &&
-      (!active || active.threadId !== params.threadId || active.turnId !== params.turnId)
-    )
-      throw error('This turn is no longer active');
-    if (
-      ['thread/resume', 'thread/fork', 'thread/archive', 'thread/unarchive'].includes(rpc.method) &&
-      active?.threadId === params.threadId
-    )
-      throw error('Stop the active turn before changing this thread');
-    if (rpc.method === 'question/respond') {
-      const question = session.snapshot.pending.find(
-        (question) => question.id === params.requestId,
-      );
-      if (!question) throw error('Question is no longer pending');
-      if (!validQuestionAnswers(question.params.questions, params.answers))
-        throw error('Answer each pending question', 400);
-      connection.respond(question.id, { answers: params.answers });
-      publish(session, { type: 'question/resolved', requestId: question.id });
-      return { ok: true };
-    }
-    if (rpc.method === 'turn/start' && settings.mode === 'custom')
-      Object.assign(params, { model: settings.model, effort: settings.effort ?? undefined });
-    if (rpc.method === 'turn/interrupt')
-      for (const controller of session.controls.values()) controller.abort();
-    const executing = rpc.method === 'turn/start' || rpc.method === 'thread/compact/start';
-    if (executing) session.starting = true;
-    try {
-      const result = await connection.call(rpc.method, params);
-      if (result.thread) {
-        session.threads.set(result.thread.id, { ...result.thread, turns: [] });
-        if (['thread/start', 'thread/resume', 'thread/fork'].includes(rpc.method))
-          session.loadedThreads.add(result.thread.id);
+  return withProviderPolicy(() =>
+    withAccount(userId, async () => {
+      const session = await getSession(projectId, userId);
+      if (rpc.generation !== session.snapshot.generation)
+        throw error('Agent process changed. Refresh status and history before continuing.');
+      const { connection, settings } = session;
+      const params = { ...rpc.params };
+      if (params.input?.some((item: { type: string }) => item.type === 'attachment'))
+        params.input = await resolveAttachmentInputs(projectId, params.input);
+      if (params.threadId) {
+        // Read by ID from this project's private Pi session directory; never accept rollout paths/history.
+        const thread =
+          session.threads.get(params.threadId) ||
+          ((
+            await connection.call('thread/read', { threadId: params.threadId, includeTurns: false })
+          ).thread as Thread);
+        session.threads.set(thread.id, thread);
+        if (thread.cwd !== '/workspace') throw error('Thread does not belong to this project', 403);
+        if (thread.parentThreadId) throw error('Subagent threads cannot receive top-level turns');
+      }
+      const active = session.snapshot.active;
+      if (
+        rpc.method === 'turn/start' ||
+        rpc.method === 'thread/compact/start' ||
+        rpc.method === 'thread/plan/toggle'
+      ) {
+        if (busy(session)) throw error('This project already has an active agent turn');
+        const usage = await agentUsage(projectId);
+        if (usage.exceeded)
+          throw error('Project storage limit reached. Delete files to continue.', 507);
       }
       if (
-        rpc.method === 'turn/start' &&
-        result.turn?.status === 'inProgress' &&
-        !session.completedTurns.has(result.turn.id) &&
-        !session.snapshot.active
+        rpc.method === 'turn/steer' &&
+        (!active || active.threadId !== params.threadId || active.turnId !== params.expectedTurnId)
       )
-        session.snapshot = {
-          ...session.snapshot,
-          active: { threadId: params.threadId, turnId: result.turn.id },
-        };
-      return publicResult(redact(result, settings));
-    } finally {
+        throw error('Active turn changed. Refresh the conversation.');
       if (
-        executing &&
-        (rpc.method !== 'thread/compact/start' || session.snapshot.active || connection.closed)
+        rpc.method === 'turn/interrupt' &&
+        (!active || active.threadId !== params.threadId || active.turnId !== params.turnId)
       )
-        session.starting = false;
-    }
-  });
+        throw error('This turn is no longer active');
+      if (
+        ['thread/resume', 'thread/fork', 'thread/archive', 'thread/unarchive'].includes(
+          rpc.method,
+        ) &&
+        active?.threadId === params.threadId
+      )
+        throw error('Stop the active turn before changing this thread');
+      if (rpc.method === 'question/respond') {
+        const question = session.snapshot.pending.find(
+          (question) => question.id === params.requestId,
+        );
+        if (!question) throw error('Question is no longer pending');
+        if (!validQuestionAnswers(question.params.questions, params.answers))
+          throw error('Answer each pending question', 400);
+        connection.respond(question.id, { answers: params.answers });
+        publish(session, { type: 'question/resolved', requestId: question.id });
+        return { ok: true };
+      }
+      const preferences = await storedSettings(userId);
+      if (rpc.method === 'model/list')
+        return modelCatalog(userId, params.api || preferences.defaultApi);
+      const invokesModel = rpc.method === 'turn/start' || rpc.method === 'thread/compact/start';
+      if (
+        invokesModel ||
+        rpc.method === 'thread/start' ||
+        (rpc.method === 'thread/resume' && (params.api || params.model))
+      ) {
+        const thread = params.threadId ? session.threads.get(params.threadId) : undefined;
+        const api =
+          params.api ||
+          (thread
+            ? thread.modelProvider === 'repellet'
+              ? 'cliproxyapi'
+              : 'chatgpt'
+            : preferences.defaultApi);
+        const catalog = await modelCatalog(userId, api);
+        const threadApi = thread?.modelProvider === 'repellet' ? 'cliproxyapi' : 'chatgpt';
+        const configured =
+          params.model !== undefined
+            ? params.model
+            : thread && threadApi === api
+              ? (thread.model as string)
+              : preferences.defaults[api as 'chatgpt' | 'cliproxyapi'].model;
+        const selected = defaultModel(catalog.data, configured);
+        if (!selected)
+          throw error(
+            'This model is unavailable or not allowed. Select another model in Run settings.',
+            400,
+          );
+        const effort =
+          params.effort !== undefined
+            ? params.effort
+            : thread && threadApi === api
+              ? (thread.reasoningEffort as string | undefined)
+              : preferences.defaults[api as 'chatgpt' | 'cliproxyapi'].effort;
+        if (
+          effort &&
+          !selected.supportedReasoningEfforts.some((option) => option.reasoningEffort === effort)
+        )
+          throw error('This reasoning effort is unavailable for the selected model.', 400);
+        Object.assign(params, { api, model: selected.model, effort: effort ?? null });
+        if (invokesModel && api === 'chatgpt') {
+          const tokens = await accessTokens(userId);
+          connection.addSecrets(tokens.accessToken);
+          await connection.call('account/login/start', { type: 'chatgptAuthTokens', ...tokens });
+        }
+      }
+      if (rpc.method === 'turn/interrupt')
+        for (const controller of session.controls.values()) controller.abort();
+      const executing = rpc.method === 'turn/start' || rpc.method === 'thread/compact/start';
+      if (executing) session.starting = true;
+      if (rpc.method === 'thread/compact/start')
+        publish(session, { type: 'compaction', active: true });
+      try {
+        const result = await connection.call(rpc.method, params);
+        if (rpc.method === 'turn/start' && result.turn) {
+          const thread = session.threads.get(params.threadId);
+          if (thread)
+            Object.assign(thread, {
+              modelProvider: params.api === 'cliproxyapi' ? 'repellet' : 'openai-codex',
+              model: params.model,
+              reasoningEffort: params.effort,
+            });
+        }
+        if (result.thread) {
+          session.threads.set(result.thread.id, { ...result.thread, turns: [] });
+          if (['thread/start', 'thread/resume', 'thread/fork'].includes(rpc.method))
+            session.loadedThreads.add(result.thread.id);
+        }
+        if (
+          rpc.method === 'turn/start' &&
+          result.turn?.status === 'inProgress' &&
+          !session.completedTurns.has(result.turn.id) &&
+          !session.snapshot.active
+        )
+          session.snapshot = {
+            ...session.snapshot,
+            active: { threadId: params.threadId, turnId: result.turn.id },
+          };
+        return publicResult(redact(result, settings));
+      } finally {
+        if (executing) session.starting = false;
+        if (rpc.method === 'thread/compact/start')
+          publish(session, { type: 'compaction', active: false });
+      }
+    }),
+  );
 }
 export async function agentUsage(projectId: string) {
   const agentBytes = await projectAgentBytes(projectId);

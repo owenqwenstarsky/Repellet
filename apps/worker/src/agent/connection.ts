@@ -54,12 +54,20 @@ export class AgentConnection extends EventEmitter {
     // Drain stderr without logging credentials or provider response bodies.
     transport.errors?.resume();
   }
-  async initialize() {
-    await this.call('initialize', {
+  async initialize(requireApiSelection = false) {
+    const result = await this.call('initialize', {
       clientInfo: { name: 'repellet', title: 'Repellet', version: '0.1.0' },
       capabilities: { experimentalApi: true },
     });
+    if (requireApiSelection && result?.apiSelection !== true)
+      throw new Error(
+        'Stop and start this workspace, or rebuild its environment, to enable API selection.',
+      );
     this.send({ method: 'initialized', params: {} });
+  }
+  addSecrets(...values: string[]) {
+    for (const value of values)
+      if (value && !this.secrets.includes(value)) this.secrets.push(value);
   }
   call(method: ClientRequest['method'], params: unknown = {}): Promise<any> {
     if (this.closed) return Promise.reject(new Error('Agent host process is unavailable'));

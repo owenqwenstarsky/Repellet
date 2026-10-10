@@ -6,7 +6,7 @@ Pi 1.1.0 runs in every workspace image. Repellet supervises a private `pi-host` 
 
 **Sign in with ChatGPT** keeps the existing Plus/Pro device-code flow, polling, cancellation, reconnect, logout, and account-wide credential storage. Disconnecting ChatGPT interrupts agent work across your projects.
 
-**Custom API** requires an HTTP(S) Responses API base URL, API key, and model ID. Embedded credentials, query strings, and fragments are rejected. Reasoning effort is optional. The key stays in private worker settings and agent-host memory, is never written to `/workspace`, and is removed from tool subprocess environments.
+**Custom API** requires an HTTP(S) Responses API base URL and API key; model IDs are selected from the discovered catalog. Embedded credentials, query strings, and fragments are rejected. Reasoning effort is optional. The key stays in private worker settings and agent-host memory, is never written to `/workspace`, and is removed from tool subprocess environments.
 
 Accounts apply to all projects owned by the signed-in Repellet user. Only the actual project owner can access agent controls, RPC, or events. Editors and viewers still see shared file changes through normal collaboration.
 
@@ -44,7 +44,7 @@ The **Plan mode** button sits in the composer beside Run settings. It runs the e
 
 Planning questions appear in the browser. A completed plan appears in the transcript and pauses for **Implement the plan**, **Make changes**. Implementation restores write tools and queues the extension's implementation prompt. Make changes reveals an empty feedback field in the review form. Unanswered questions do not expire. The transcript keeps one current plan with compact progress entries. Interrupting a review clears the pending question and retains plan mode.
 
-The workspace base is now `repellet/workspace-base:0.6.4`. Stop and start older workspaces, or rebuild their environment, to receive the main Run app tools and updated bridge. Stopping only the app does not update a workspace. Existing project files and canonical session histories remain in their volumes. No database migration is required.
+The workspace base is now `repellet/workspace-base:0.7.1`. Stop and start older workspaces, or rebuild their environment, to receive the main Run app tools and updated bridge. Stopping only the app does not update a workspace. Existing project files and canonical session histories remain in their volumes. The Agent APIs feature requires no database migration; project databases use the normal application migrations.
 
 ## Main Run app tools
 
@@ -57,6 +57,18 @@ The workspace base is now `repellet/workspace-base:0.6.4`. Stop and start older 
 The system prompt and managed global instructions require `project_status` before every start or stop, and again between stop and start during a restart. The backend independently checks fresh state, without requiring a previous status-call receipt. Normal task authorization applies; ambiguous intent or project-specific approval requirements prompt an owner question. Plan mode exposes status and logs while hiding and blocking mutations, including restored and forked plans.
 
 Tool requests travel through the Pi event bus, host JSONL connection, and worker to a worker-authenticated internal API. The worker binds requests to the current project, enabled owner, and active turn; tool parameters cannot select other projects, commands, or process IDs. Control-plane credentials stay outside the agent. Requests cancel with the turn and never automatically retry a start or stop after an uncertain response. Check status again before deciding what to do next.
+
+## Global CLIProxyAPI and API selection
+
+Administration → **Agent APIs** controls an optional server-wide CLIProxyAPI connection. Enter a Responses API base URL (including its API path) and a key, load the model catalog, select allowed IDs, and save. Loading a draft does not change the active connection. Blank key input retains the saved key; disable the connection before removing it. New catalog IDs are never automatically allowed, and an empty selection permits no proxy models. Missing selected IDs remain visible to administrators but cannot execute until they reappear in the catalog.
+
+While enabled, the global connection overrides and hides personal proxy configuration. Existing personal credentials remain in private account storage and become available again when the global connection is disabled. ChatGPT sign-in is independent of the selected API. **Agent settings** saves a default API and separate model/effort preferences for each API. Personal proxy models are discovered rather than entered manually. **Run settings** selects ChatGPT Auth or CLIProxyAPI (Custom API for a personal connection) for subsequent turns without changing account defaults. Conversations restore their last-used API, model, and effort. Invalid saved selections require a new selection; the worker never silently switches APIs.
+
+The worker fetches `/models` using the private connection key, preserves API path prefixes, caches successful catalogs for five minutes, and retains the last successful snapshot after refresh failures. Global configuration and its catalog live in the existing `repellet-agent-accounts` volume and are included in existing backups. No database migration is required; legacy settings are adapted on read and rewritten in the versioned format on save. Keys remain private worker settings and host memory, outside conversation files, tool environments, and browser responses.
+
+The worker enforces the current effective connection and allowed model catalog for turns and compaction. Administrator changes let admitted turns finish, then refresh affected hosts before further model execution. API/model/effort changes are disabled during turns and compaction, and web search follows the active provider and model.
+
+The workspace base is `repellet/workspace-base:0.7.1`. Stop and start existing workspaces, or rebuild their environments, to receive the updated host. Older adapters are rejected with upgrade guidance before model execution. Files and canonical session history remain in their volumes. Verification for this change uses mocked in-memory storage, provider requests, authentication, Pi sessions, and React rendering; it does not start containers, browsers, databases, or external services.
 
 ## Database and environment tools
 
