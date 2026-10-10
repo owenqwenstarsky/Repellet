@@ -28,6 +28,32 @@ const text = (content) =>
         .map((p) => p.text || '')
         .join('');
 const messageId = (message) => `${message.role}-${message.timestamp}`;
+// Resolve from the live catalog so new Sol releases become the default automatically.
+function defaultModel(available, configuredModel = '') {
+  const configured = available.find((model) => model.id === configuredModel);
+  if (configured) return configured;
+  let latest, latestVersion;
+  for (const model of available) {
+    const match = /^gpt-(\d+(?:\.\d+)*)-sol$/i.exec(model.id);
+    if (!match) continue;
+    const version = match[1].split('.').map(Number);
+    let newer = !latest;
+    if (latest) {
+      for (let i = 0; i < Math.max(version.length, latestVersion.length); i++) {
+        const difference = (version[i] || 0) - (latestVersion[i] || 0);
+        if (difference) {
+          newer = difference > 0;
+          break;
+        }
+      }
+    }
+    if (newer) {
+      latest = model;
+      latestVersion = version;
+    }
+  }
+  return latest || available[0];
+}
 /** Browser questions wait for an answer or abort; service requests retain a deadline. */
 function createRequest(pending, emit, notify) {
   return (method, params, signal) =>
@@ -669,6 +695,7 @@ function translatePiEvent(id, event, active, notify, redact = (value) => value) 
   }
 }
 module.exports = {
+  defaultModel,
   prepareInput,
   attachInputMetadata,
   createRequest,
