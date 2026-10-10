@@ -136,6 +136,35 @@ async function mountPanel() {
   );
   await screen.findByRole('heading', { name: 'My conversation' });
 }
+it('selects the provider default even when latest Sol is last in the model list', async () => {
+  const original = vi.mocked(post).getMockImplementation()!;
+  vi.mocked(post).mockImplementation(async (path, body: any) => {
+    if (body?.method === 'model/list')
+      return {
+        data: ['gpt-5.6-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol'].map((model) => ({
+          id: model,
+          model,
+          displayName: model,
+          isDefault: model === 'gpt-6.1-sol',
+          defaultReasoningEffort: 'medium',
+          supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
+        })),
+      };
+    return original(path, body);
+  });
+  await mountPanel();
+  fireEvent.click(screen.getByRole('button', { name: 'Run settings' }));
+  await waitFor(() =>
+    expect((screen.getByLabelText('Agent model') as HTMLSelectElement).value).toBe('gpt-6.1-sol'),
+  );
+  fireEvent.click(screen.getByRole('button', { name: '← Threads' }));
+  fireEvent.click(screen.getByRole('button', { name: 'New thread' }));
+  await waitFor(() =>
+    expect(rpcCalls.find((call) => call.method === 'thread/start')?.params.model).toBe(
+      'gpt-6.1-sol',
+    ),
+  );
+});
 it('uploads picker attachments, shows progress and sends an image-only turn after upload completes', async () => {
   await mountPanel();
   let finish: (value: any) => void = () => {};

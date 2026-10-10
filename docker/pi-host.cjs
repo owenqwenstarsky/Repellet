@@ -184,7 +184,8 @@ async function load(id) {
     if (loader.getExtensions().errors.length)
       throw new Error('Bundled Pi extensions failed to load');
     const available = await runtime.getAvailable(provider);
-    let model = runtime.getModel(provider, modelId || entry(id).model) || available[0];
+    let model =
+      runtime.getModel(provider, modelId || entry(id).model) || h.defaultModel(available, modelId);
     if (!model) throw new Error('Configure your provider in Agent settings');
     if (provider === 'repellet' && configuredEffort === 'ultra')
       model = { ...model, thinkingLevelMap: { ...model.thinkingLevelMap, max: 'ultra' } };
@@ -277,15 +278,16 @@ async function run(id, params) {
   if (entry(id).archived) throw new Error('Unarchive this thread to continue');
   const s = await load(id);
   const prepared = h.prepareInput(params.input);
-  if (params.model) {
-    const selected = params.model;
+  const selected =
+    params.model || h.defaultModel(await runtime.getAvailable(provider), modelId)?.id;
+  if (selected) {
     const prefix = provider + '/';
     const m = runtime.getModel(
       provider,
       selected.startsWith(prefix) ? selected.slice(prefix.length) : selected,
     );
     if (!m) throw new Error('Unknown model');
-    await s.setModel(m);
+    if (s.model.id !== m.id || s.model.provider !== m.provider) await s.setModel(m);
   }
   if (params.effort) {
     // Pi uses "max" internally; legacy proxy "ultra" remains a wire-level choice.
@@ -383,18 +385,22 @@ async function handle({ method, params = {} }) {
     const e = add(
       persistEmpty(api.SessionManager.create('/workspace', sessionDir)),
       null,
-      params.model?.replace(provider + '/', '') || modelId,
+      params.model?.replace(provider + '/', '') ||
+        h.defaultModel(await runtime.getAvailable(provider), modelId)?.id ||
+        modelId,
     );
     const t = thread(e);
     notify('thread/started', { thread: t });
     return { thread: t };
   }
   if (method === 'model/list') {
-    const data = (await runtime.getAvailable(provider)).map((m, i) => ({
+    const available = await runtime.getAvailable(provider);
+    const selected = h.defaultModel(available, modelId);
+    const data = available.map((m) => ({
       id: provider + '/' + m.id,
       model: m.id,
       displayName: m.name,
-      isDefault: i === 0,
+      isDefault: m.id === selected?.id,
       supportedReasoningEfforts: [
         ...api.getSupportedThinkingLevels(m),
         ...(provider === 'repellet' ? ['ultra'] : []),

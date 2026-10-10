@@ -1,0 +1,182 @@
+import { expect, it, vi } from 'vitest';
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { runInNewContext } from 'node:vm';
+
+const h = createRequire(import.meta.url)('../docker/pi-session.cjs');
+const catalog = [
+  'gpt-5.3-codex-spark',
+  'gpt-5.6-sol',
+  'gpt-6-astra',
+  'gpt-6-sol',
+  'gpt-6.1-sol',
+].map((id) => ({ id, name: id, provider: 'openai-codex', reasoning: true }));
+
+it('selects the newest Sol regardless of catalog order or other model families', () => {
+  expect(h.defaultModel(catalog).id).toBe('gpt-6.1-sol');
+  expect(h.defaultModel([...catalog].reverse()).id).toBe('gpt-6.1-sol');
+  expect(h.defaultModel([...catalog, { id: 'gpt-7-astra' }]).id).toBe('gpt-6.1-sol');
+});
+
+it('automatically selects future Sol releases using numeric version components', () => {
+  const future = [...catalog, { id: 'gpt-6.10-sol' }, { id: 'gpt-6.2-sol' }];
+  expect(h.defaultModel(future).id).toBe('gpt-6.10-sol');
+  expect(h.defaultModel([...future, { id: 'gpt-7-sol' }]).id).toBe('gpt-7-sol');
+});
+
+it('retains the configured custom model and falls back when Sol is unavailable', () => {
+  expect(h.defaultModel(catalog, 'gpt-6-astra').id).toBe('gpt-6-astra');
+  expect(h.defaultModel([catalog[0]]).id).toBe('gpt-5.3-codex-spark');
+  expect(h.defaultModel([])).toBeUndefined();
+});
+
+// Execute the host's RPC handlers with an in-memory filesystem, SDK and catalog.
+// No host process, provider request, credentials or external service is used.
+function host(models = [...catalog], configuredModel = '') {
+  const index: { sessions: any[] } = { sessions: [] };
+  const manager = {
+    getSessionId: () => 'thread',
+    getSessionName: () => null,
+    getSessionFile: () => '/sessions/thread.jsonl',
+    getHeader: () => ({ cwd: '/workspace' }),
+    getBranch: () => [],
+    appendMessage: vi.fn(),
+    appendCustomEntry: vi.fn(),
+  };
+  const session = {
+    model: models[0],
+    sessionManager: manager,
+    setModel: vi.fn(async (model) => {
+      session.model = model;
+    }),
+    setThinkingLevel: vi.fn(),
+    subscribe: vi.fn(),
+    bindExtensions: vi.fn(),
+    prompt: vi.fn(async () => {}),
+  };
+  const runtime = {
+    getAvailable: async () => models,
+    getModel: (_provider: string, id: string) => models.find((model) => model.id === id),
+  };
+  const api = {
+    SessionManager: { create: () => manager, open: () => manager },
+    SettingsManager: { inMemory: () => ({}) },
+    createEventBus: () => ({ on: vi.fn() }),
+    DefaultResourceLoader: class {
+      async reload() {}
+      getExtensions() {
+        return { errors: [] };
+      }
+    },
+    createAgentSession: vi.fn(async (options) => {
+      session.model = options.model;
+      return { session };
+    }),
+    getSupportedThinkingLevels: () => ['medium'],
+  };
+  const fs = {
+    mkdirSync: vi.fn(),
+    existsSync: () => true,
+    readFileSync: () => '',
+    realpathSync: (file: string) => file,
+  };
+  const helpers = {
+    ...h,
+    readIndex: () => index,
+    writeIndex: vi.fn(),
+  };
+  const source = readFileSync(new URL('../docker/pi-host.cjs', import.meta.url), 'utf8');
+  const service = runInNewContext(
+    source.slice(0, source.lastIndexOf('main().catch(')) +
+      '\nruntime = testRuntime; api = testApi; ({ handle, isActive: () => active !== null });',
+    {
+      require: (name: string) =>
+        ({ 'node:fs': fs, 'node:path': path, 'node:crypto': crypto, './pi-session.cjs': helpers })[
+          name
+        ],
+      __dirname: '/opt/repellet',
+      process: {
+        env: { PI_CODING_AGENT_SESSION_DIR: '/sessions', REPELLET_PI_MODEL: configuredModel },
+        umask: vi.fn(),
+        stdout: { write: vi.fn() },
+      },
+      testRuntime: runtime,
+      testApi: api,
+      AbortController,
+      AbortSignal,
+      setTimeout,
+      clearTimeout,
+    },
+  );
+  return { ...service, session, api, index, models };
+}
+
+it('advertises exactly the newest Sol as the provider default', async () => {
+  const f = host();
+  const result = await f.handle({ method: 'model/list' });
+  expect(
+    result.data.filter((model: any) => model.isDefault).map((model: any) => model.model),
+  ).toEqual(['gpt-6.1-sol']);
+});
+
+it('uses the newest Sol for new threads and default turns, including after a catalog update', async () => {
+  const f = host();
+  const result = await f.handle({ method: 'thread/start' });
+  expect(result.thread.model).toBe('gpt-6.1-sol');
+  const turn = { threadId: 'thread', input: [{ type: 'text', text: 'Hello' }] };
+  await f.handle({ method: 'turn/start', params: turn });
+  expect(f.api.createAgentSession.mock.calls[0][0].model.id).toBe('gpt-6.1-sol');
+  await vi.waitFor(() => expect(f.isActive()).toBe(false));
+
+  f.models.push({ ...catalog[0], id: 'gpt-6.2-sol' });
+  await f.handle({ method: 'turn/start', params: turn });
+  expect(f.session.model.id).toBe('gpt-6.2-sol');
+  expect(f.index.sessions[0].model).toBe('gpt-6.2-sol');
+});
+
+it('honors an explicit model and returns to latest Sol when Default model is selected', async () => {
+  const f = host();
+  await f.handle({ method: 'thread/start', params: { model: 'openai-codex/gpt-6-astra' } });
+  const turn = { threadId: 'thread', input: [{ type: 'text', text: 'Hello' }] };
+  await f.handle({ method: 'turn/start', params: { ...turn, model: 'gpt-6-sol' } });
+  expect(f.session.model.id).toBe('gpt-6-sol');
+  await vi.waitFor(() => expect(f.isActive()).toBe(false));
+  await f.handle({ method: 'turn/start', params: turn });
+  expect(f.session.model.id).toBe('gpt-6.1-sol');
+});
+
+it('uses the same fallback for listing and running when no Sol model is available', async () => {
+  const f = host([catalog[0]]);
+  const result = await f.handle({ method: 'model/list' });
+  expect(result.data[0].isDefault).toBe(true);
+  await f.handle({ method: 'thread/start' });
+  await f.handle({
+    method: 'turn/start',
+    params: { threadId: 'thread', input: [{ type: 'text', text: 'Hello' }] },
+  });
+  expect(f.session.model.id).toBe('gpt-5.3-codex-spark');
+});
+
+it('keeps a configured provider model as the default', async () => {
+  const f = host([...catalog], 'gpt-6-astra');
+  const result = await f.handle({ method: 'model/list' });
+  expect(result.data.find((model: any) => model.isDefault).model).toBe('gpt-6-astra');
+  await f.handle({ method: 'thread/start' });
+  await f.handle({
+    method: 'turn/start',
+    params: { threadId: 'thread', input: [{ type: 'text', text: 'Hello' }] },
+  });
+  expect(f.session.model.id).toBe('gpt-6-astra');
+});
+
+it('falls back to latest Sol when the saved model is no longer available', async () => {
+  const f = host();
+  await f.handle({ method: 'thread/start', params: { model: 'removed-model' } });
+  await f.handle({
+    method: 'turn/start',
+    params: { threadId: 'thread', input: [{ type: 'text', text: 'Hello' }] },
+  });
+  expect(f.api.createAgentSession.mock.calls[0][0].model.id).toBe('gpt-6.1-sol');
+});
