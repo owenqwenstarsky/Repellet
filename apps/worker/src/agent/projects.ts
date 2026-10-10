@@ -16,6 +16,7 @@ import { AgentConnection } from './connection.js';
 import { withAccount, privateSettings, accessTokens } from './accounts.js';
 import { startProjectProcess, killProjectAgent, projectAgentBytes } from './process.js';
 import { bridgeRequest, locked } from '../workspaces.js';
+import { forwardProjectControl } from './project-control.js';
 type Session = {
   userId: string;
   projectId: string;
@@ -27,6 +28,7 @@ type Session = {
   threads: Map<string, Thread>;
   loadedThreads: Set<string>;
   completedTurns: Set<string>;
+  controls: Map<string | number, AbortController>;
 };
 const sessions = new Map<string, Session>();
 const starts = new Map<string, Promise<Session>>();
@@ -77,7 +79,25 @@ async function serverRequest(session: Session, request: ServerRequest) {
   const requestId = request.id,
     requestedMethod: string = request.method;
   try {
-    if (request.method === 'account/chatgptAuthTokens/refresh') {
+    if (request.method === 'repellet/project/control') {
+      const controller = new AbortController();
+      session.controls.set(request.id, controller);
+      try {
+        const result = await forwardProjectControl(
+          {
+            projectId: session.projectId,
+            userId: session.userId,
+            active: () => session.snapshot.active,
+            planMode: (id) => session.threads.get(id)?.planMode === true,
+          },
+          request.params,
+          controller.signal,
+        );
+        if (!connection.closed) connection.respond(request.id, redact(result, session.settings));
+      } finally {
+        session.controls.delete(request.id);
+      }
+    } else if (request.method === 'account/chatgptAuthTokens/refresh') {
       if (session.settings.mode !== 'chatgpt')
         throw new Error('Custom provider cannot refresh ChatGPT');
       const tokens = await accessTokens(session.userId);
@@ -141,6 +161,7 @@ async function getSession(projectId: string, userId: string) {
           threads: new Map(),
           loadedThreads: new Set(),
           completedTurns: new Set(),
+          controls: new Map(),
           snapshot: {
             generation: randomUUID(),
             sequence: 0,
@@ -157,6 +178,8 @@ async function getSession(projectId: string, userId: string) {
           void serverRequest(session, request);
         });
         connection.on('notification', (event: ServerNotification) => {
+          if (event.method === 'serverRequest/resolved')
+            session.controls.get(event.params.requestId)?.abort();
           if (event.method === 'thread/started') {
             session.threads.set(event.params.thread.id, event.params.thread);
             session.loadedThreads.add(event.params.thread.id);
@@ -166,6 +189,11 @@ async function getSession(projectId: string, userId: string) {
             if (thread) thread.planMode = event.params.enabled;
           }
           if (event.method === 'turn/completed') {
+            if (
+              session.snapshot.active?.threadId === event.params.threadId &&
+              session.snapshot.active.turnId === event.params.turn.id
+            )
+              for (const controller of session.controls.values()) controller.abort();
             session.completedTurns.add(event.params.turn.id);
             if (session.completedTurns.size > 200)
               session.completedTurns.delete(session.completedTurns.values().next().value!);
@@ -188,6 +216,7 @@ async function getSession(projectId: string, userId: string) {
           publish(session, { type: 'event', event });
         });
         connection.on('failure', (message) => {
+          for (const controller of session.controls.values()) controller.abort();
           session.starting = false;
           publish(session, { type: 'process/error', message });
         });
@@ -307,6 +336,8 @@ export async function agentRpc(projectId: string, userId: string, input: unknown
     }
     if (rpc.method === 'turn/start' && settings.mode === 'custom')
       Object.assign(params, { model: settings.model, effort: settings.effort ?? undefined });
+    if (rpc.method === 'turn/interrupt')
+      for (const controller of session.controls.values()) controller.abort();
     const executing = rpc.method === 'turn/start' || rpc.method === 'thread/compact/start';
     if (executing) session.starting = true;
     try {

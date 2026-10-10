@@ -172,9 +172,10 @@ it('shares in-flight guards between Run button and shortcut, and permits retry a
 });
 it('suppresses workspace shortcuts behind dialogs and reveals the sidebar for Find', async () => {
   mount();
+  // Role queries wait until the workspace is accessible and shortcuts are enabled.
+  const files = await screen.findByRole('button', { name: 'Files', exact: true });
   // Clicking the active tool hides the sidebar; Find must bring it back.
-  await screen.findByLabelText('Files');
-  fireEvent.click(screen.getByLabelText('Files'));
+  fireEvent.click(files);
   expect(document.querySelector('aside.explorer')?.hasAttribute('hidden')).toBe(true);
   fireEvent.keyDown(window, { key: 'F', ctrlKey: true, shiftKey: true });
   expect(screen.getByLabelText('Find in project')).toBeTruthy();

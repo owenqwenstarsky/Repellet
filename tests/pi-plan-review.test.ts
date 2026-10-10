@@ -5,7 +5,19 @@ import plan from '../docker/pi-extensions/plan.ts';
 // No model provider, filesystem session, or external service is started.
 async function fixture(initialBranch: any[] = []) {
   let branch = structuredClone(initialBranch);
-  let activeTools = ['read', 'bash', 'edit', 'write', 'question', 'todo_edit'];
+  let activeTools = [
+    'read',
+    'bash',
+    'edit',
+    'write',
+    'question',
+    'todo_edit',
+    'project_status',
+    'project_logs',
+    'project_start',
+    'project_stop',
+  ];
+  const builtinTools = [...activeTools];
   const tools = new Map<string, any>();
   const commands = new Map<string, any>();
   const handlers = new Map<string, any[]>();
@@ -36,7 +48,7 @@ async function fixture(initialBranch: any[] = []) {
     registerTool: (tool: any) => tools.set(tool.name, tool),
     registerCommand: (name: string, command: any) => commands.set(name, command),
     getActiveTools: () => [...activeTools],
-    getAllTools: () => [...new Set([...activeTools, ...tools.keys()])].map((name) => ({ name })),
+    getAllTools: () => [...new Set([...builtinTools, ...tools.keys()])].map((name) => ({ name })),
     setActiveTools: (names: string[]) => (activeTools = [...names]),
     appendEntry: (customType: string, data: any) => {
       branch.push({ type: 'custom', customType, data: structuredClone(data) });
@@ -64,6 +76,7 @@ async function fixture(initialBranch: any[] = []) {
     systemPrompt,
     branch: () => branch,
     activeTools: () => activeTools,
+    toolCall: (toolName: string) => emit('tool_call', { toolName, input: {} }),
     switchBranch: async (entries: any[]) => {
       branch = structuredClone(entries);
       await emit('session_tree');
@@ -113,6 +126,41 @@ it('records UI approval before the implementation prompt and supplies it to the 
   expect(await f.systemPrompt()).toContain('PLAN MODE ACTIVE');
   expect(await f.systemPrompt()).not.toContain('explicitly selected "Implement the plan"');
   expect(f.activeTools()).not.toContain('write');
+});
+
+it('keeps project reads available and hides and blocks project mutations through plan toggles', async () => {
+  const f = await fixture();
+  await f.command();
+  expect(f.activeTools()).toEqual(expect.arrayContaining(['project_status', 'project_logs']));
+  expect(f.activeTools()).not.toContain('project_start');
+  expect(f.activeTools()).not.toContain('project_stop');
+  for (const tool of ['project_start', 'project_stop'])
+    expect(await f.toolCall(tool)).toMatchObject({ block: true });
+  expect(await f.toolCall('project_status')).toBeUndefined();
+  await f.command('off');
+  expect(f.activeTools()).toEqual(expect.arrayContaining(['project_start', 'project_stop']));
+  expect(await f.toolCall('project_start')).toBeUndefined();
+});
+
+it('restores project tool policy from an older saved plan branch and its fork', async () => {
+  const branch = [
+    {
+      type: 'custom',
+      customType: 'plan-mode-state',
+      data: { enabled: true, toolsBeforePlanMode: ['read', 'write'] },
+    },
+  ];
+  const restored = await fixture(branch);
+  const fork = await fixture(structuredClone(branch));
+  for (const f of [restored, fork]) {
+    expect(f.activeTools()).toEqual(expect.arrayContaining(['project_status', 'project_logs']));
+    expect(f.activeTools()).not.toContain('project_start');
+    expect(await f.toolCall('project_stop')).toMatchObject({ block: true });
+    await f.command('off');
+    expect(f.activeTools()).toEqual(expect.arrayContaining(['project_start', 'project_stop']));
+    await f.switchBranch(branch);
+    expect(f.activeTools()).not.toContain('project_stop');
+  }
 });
 
 it('keeps revision feedback in plan mode without authorizing implementation', async () => {

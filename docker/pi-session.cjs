@@ -67,7 +67,7 @@ function createRequest(pending, emit, notify) {
         pending.delete(id);
         clearTimeout(timer);
         signal?.removeEventListener('abort', cancel);
-        if (method === 'item/tool/requestUserInput')
+        if (method === 'item/tool/requestUserInput' || method === 'repellet/project/control')
           notify('serverRequest/resolved', { requestId: id });
         error ? reject(error) : resolve(value);
       };

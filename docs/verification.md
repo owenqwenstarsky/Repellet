@@ -1,5 +1,11 @@
 # Verification
 
+## Main Run app Pi tools
+
+The main Run app tool change advances the workspace base image to `0.6.4` without a database migration. Its verification uses in-memory unit tests with mocked Pi, host transport, database, bridge, and HTTP requests. Coverage includes live versus preview state, legacy Run sessions, idempotent and concurrent starts/stops, unresolved starts, authorization, cancellation before spawn, uncertain outcomes without replay, bounded UTF-8 logs, terminal control stripping, and plan-mode restoration/forks. Repository type checks also cover the API, worker, shared protocol, bridge, and web app. No browser, Docker, external service, or deployment verification was performed for this change.
+
+## Earlier environment verification
+
 Validated locally on **macOS Docker Desktop, ARM64**, using Node.js 22.22.3 and Docker 29.2.1. Test runs use disposable databases/containers/volumes, separate from the interactive development installation.
 
 | Check                          | Result                             | Coverage                                                                                                                                                                                                                                                                                                                                                                                         |

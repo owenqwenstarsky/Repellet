@@ -143,6 +143,26 @@ async function load(id) {
     const m = manager(id),
       settings = api.SettingsManager.inMemory({ retry: { enabled: false } });
     const eventBus = api.createEventBus();
+    eventBus.on(
+      'repellet:project-control',
+      ({ operation, arguments: args, signal, resolve, reject }) => {
+        if (active?.id !== id || active.controller.signal.aborted)
+          return reject(new Error('No active turn for this project request'));
+        const cancel = signal
+          ? AbortSignal.any([signal, active.controller.signal])
+          : active.controller.signal;
+        void request(
+          'repellet/project/control',
+          {
+            operation,
+            arguments: args,
+            threadId: id,
+            turnId: active.turnId,
+          },
+          cancel,
+        ).then(resolve, reject);
+      },
+    );
     eventBus.on('repellet:question', ({ questions, signal, itemId, resolve, reject }) => {
       if (active?.id !== id) return reject(new Error('No active turn for this question'));
       const cancel = signal
@@ -169,7 +189,7 @@ async function load(id) {
       settingsManager: settings,
       noExtensions: true,
       eventBus,
-      additionalExtensionPaths: ['websearch.ts', 'plan.ts'].map((name) =>
+      additionalExtensionPaths: ['websearch.ts', 'project.ts', 'plan.ts'].map((name) =>
         path.join(extensionsDir, name),
       ),
       disabledBuiltinExtensions: ['mcp'],

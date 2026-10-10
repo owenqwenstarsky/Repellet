@@ -74,6 +74,11 @@ export type ToolRequestUserInputResponse = { answers: Record<string, { answers: 
 export type ServerRequest =
   | {
       id: string | number;
+      method: 'repellet/project/control';
+      params: import('./project-control.js').ProjectControlRequest;
+    }
+  | {
+      id: string | number;
       method: 'account/chatgptAuthTokens/refresh';
       params: { previousAccountId?: string | null };
     }
@@ -115,3 +120,4 @@ export type ClientRequest = {
   params: Record<string, unknown>;
 };
 export * from './rpc.js';
+export * from './project-control.js';
