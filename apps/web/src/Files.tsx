@@ -33,6 +33,16 @@ import {
   Button,
 } from './ui';
 import { remapPath, type StructureChange } from './workspaceState';
+import {
+  workspaceDragType,
+  readWorkspaceDrag,
+  canMove,
+  droppedItems,
+  parentPath,
+  joinPath,
+  type WorkspaceDrag,
+  type UploadItem,
+} from './fileDrag';
 export function FileTree({
   projectId,
   active,
@@ -73,6 +83,175 @@ export function FileTree({
   const upload = useRef<HTMLInputElement>(null);
   const uploadFolder = useRef<HTMLInputElement>(null);
   const ui = useUi();
+  const [busy, setBusy] = useState(false);
+  const mutation = useRef(false);
+  const [progress, setProgress] = useState('');
+  const [dropTarget, setDropTarget] = useState<{ path: string; mode: 'Move' | 'Upload' } | null>(
+    null,
+  );
+  const dragSource = useRef<WorkspaceDrag | null>(null);
+  const hover = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverPath = useRef<string | null>(null);
+  const operationProject = useRef(projectId);
+  operationProject.current = projectId;
+  function clearDrag(clearSource = true) {
+    if (hover.current) clearTimeout(hover.current);
+    hover.current = null;
+    hoverPath.current = null;
+    if (clearSource) dragSource.current = null;
+    setDropTarget(null);
+  }
+  useEffect(() => {
+    operationProject.current = projectId;
+    clearDrag();
+    const cancel = () => clearDrag();
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') clearDrag();
+    };
+    window.addEventListener('dragend', cancel);
+    window.addEventListener('drop', cancel);
+    window.addEventListener('keydown', key);
+    return () => {
+      operationProject.current = '';
+      if (hover.current) clearTimeout(hover.current);
+      window.removeEventListener('dragend', cancel);
+      window.removeEventListener('drop', cancel);
+      window.removeEventListener('keydown', key);
+    };
+  }, [projectId]);
+  function dragOver(event: React.DragEvent, target: string) {
+    const types = Array.from(event.dataTransfer.types);
+    const internal = types.includes(workspaceDragType);
+    if (!internal && !types.includes('Files')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const source = dragSource.current;
+    if (
+      !editable ||
+      mutation.current ||
+      (internal && source && !canMove(source, projectId, target))
+    ) {
+      event.dataTransfer.dropEffect = 'none';
+      setDropTarget(null);
+      if (hover.current) clearTimeout(hover.current);
+      hoverPath.current = null;
+      return;
+    }
+    event.dataTransfer.dropEffect = internal ? 'move' : 'copy';
+    setDropTarget({ path: target, mode: internal ? 'Move' : 'Upload' });
+    if (hoverPath.current !== target) {
+      if (hover.current) clearTimeout(hover.current);
+      hoverPath.current = target;
+      if (target && !expandedRef.current.has(target))
+        hover.current = setTimeout(() => {
+          setExpanded((old) => new Set([...old, target]));
+          void load(target);
+        }, 600);
+    }
+  }
+  async function move(from: string, to: string) {
+    if (!editable || mutation.current) return;
+    mutation.current = true;
+    setBusy(true);
+    const project = projectId;
+    try {
+      await post(`/projects/${project}/files/move`, { from, to });
+      if (operationProject.current === project) {
+        await Promise.all(
+          [...new Set([parentPath(from), parentPath(to)])].map((path) => load(path)),
+        );
+      }
+    } catch (e) {
+      if (operationProject.current === project) ui.notify(errorMessage(e));
+    } finally {
+      mutation.current = false;
+      setBusy(false);
+    }
+  }
+  async function uploadItems(items: Promise<UploadItem[]> | UploadItem[], target: string) {
+    if (!editable || mutation.current) return;
+    mutation.current = true;
+    setBusy(true);
+    setProgress('Reading upload…');
+    const project = projectId;
+    let completed = 0,
+      failed = 0;
+    const refresh = new Set([target]);
+    try {
+      const entries = await items;
+      for (let i = 0; i < entries.length; i++) {
+        if (operationProject.current !== project) break;
+        const { path, file } = entries[i];
+        const destination = joinPath(target, path);
+        setProgress(`Uploading ${i + 1} of ${entries.length}…`);
+        try {
+          if (file) {
+            if (file.size > 8 * 1024 * 1024) throw new Error('uploads are limited to 8 MiB.');
+            const buffer = new Uint8Array(await file.arrayBuffer());
+            let data = '';
+            for (const byte of buffer) data += String.fromCharCode(byte);
+            if (operationProject.current !== project) break;
+            await post(`/projects/${project}/files/upload`, {
+              path: destination,
+              data: btoa(data),
+            });
+          } else {
+            try {
+              await post(`/projects/${project}/files/create`, {
+                path: destination,
+                kind: 'directory',
+              });
+            } catch (error) {
+              // Existing directories can receive new contents; files are never overwritten.
+              try {
+                await api(`/projects/${project}/files?path=${encodeURIComponent(destination)}`);
+              } catch {
+                throw error;
+              }
+            }
+          }
+          completed++;
+          refresh.add(parentPath(destination));
+        } catch (error) {
+          failed++;
+          if (operationProject.current === project) ui.notify(`${path}: ${errorMessage(error)}`);
+        }
+      }
+      if (operationProject.current === project) {
+        ui.notify(
+          `Upload complete: ${completed} items completed, ${failed} failed or skipped.`,
+          failed ? undefined : 'success',
+        );
+      }
+    } catch (error) {
+      if (operationProject.current === project) ui.notify(errorMessage(error));
+    } finally {
+      if (operationProject.current === project) {
+        await Promise.all(
+          [...refresh]
+            .filter((path) => path === target || expandedRef.current.has(path))
+            .map((path) => load(path)),
+        );
+      }
+      mutation.current = false;
+      setBusy(false);
+      setProgress('');
+    }
+  }
+  function drop(event: React.DragEvent, target: string) {
+    const types = Array.from(event.dataTransfer.types);
+    if (!types.includes(workspaceDragType) && !types.includes('Files')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const source = readWorkspaceDrag(event.dataTransfer);
+    clearDrag();
+    if (!editable || mutation.current) return;
+    if (types.includes(workspaceDragType)) {
+      if (source && canMove(source, projectId, target))
+        void move(source.path, joinPath(target, source.path.split('/').pop()!));
+    } else void uploadItems(droppedItems(event.dataTransfer), target);
+  }
+
   async function load(path = '') {
     const generation = epoch.current;
     const request = (requests.current.get(path) || 0) + 1;
@@ -143,49 +322,60 @@ export function FileTree({
       : selected.split('/').slice(0, -1).join('/')
     : '';
   async function create(kind: 'file' | 'directory') {
+    if (!editable || mutation.current) return;
     const name = await ui.ask({
       title: kind === 'file' ? 'New file' : 'New folder',
       label: 'Workspace path',
       value: directory ? directory + '/' : '',
     });
-    if (!name) return;
+    if (!name || mutation.current) return;
+    mutation.current = true;
+    setBusy(true);
     try {
       await post(`/projects/${projectId}/files/create`, { path: name, kind });
       await load(directory);
       if (kind === 'file') onOpen(name);
     } catch (e) {
       ui.notify(errorMessage(e));
+    } finally {
+      mutation.current = false;
+      setBusy(false);
     }
   }
   async function uploadSelection(event: React.ChangeEvent<HTMLInputElement>) {
     const input = event.currentTarget;
-    for (const file of input.files || []) {
-      if (file.size > 8 * 1024 * 1024) {
-        ui.notify(`${file.name}: uploads are limited to 8 MiB.`);
-        continue;
-      }
-      try {
-        const buffer = new Uint8Array(await file.arrayBuffer());
-        let data = '';
-        for (const byte of buffer) data += String.fromCharCode(byte);
-        await post(`/projects/${projectId}/files/upload`, {
-          path: [directory, file.webkitRelativePath || file.name].filter(Boolean).join('/'),
-          data: btoa(data),
-        });
-      } catch (error) {
-        ui.notify(errorMessage(error));
-      }
-    }
+    const files = Array.from(input.files || []).map((file) => ({
+      path: file.webkitRelativePath || file.name,
+      file,
+    }));
     input.value = '';
-    await load(directory);
+    await uploadItems(files, directory);
   }
   function rows(path: string, depth = 0): React.ReactNode {
     return (children[path] || []).map((entry) => (
       <div key={entry.path}>
         <button
-          className={`file-row ${active === entry.path ? 'active' : ''} ${selected === entry.path ? 'selected' : ''}`}
+          className={`file-row ${active === entry.path ? 'active' : ''} ${selected === entry.path ? 'selected' : ''} ${dropTarget?.path === entry.path ? 'drop-target' : ''}`}
           style={{ paddingLeft: `min(${12 + depth * 14}px, max(12px, calc(100% - 120px)))` }}
           title={entry.path}
+          draggable={editable && !busy}
+          onDragStart={(event) => {
+            if (!editable || mutation.current) {
+              event.preventDefault();
+              return;
+            }
+            const source = { projectId, path: entry.path, kind: entry.kind };
+            dragSource.current = source;
+            event.dataTransfer.setData(workspaceDragType, JSON.stringify(source));
+            event.dataTransfer.effectAllowed = 'move';
+          }}
+          onDragEnd={() => clearDrag()}
+          onDragOver={(event) =>
+            dragOver(event, entry.kind === 'directory' ? entry.path : parentPath(entry.path))
+          }
+          onDrop={(event) =>
+            drop(event, entry.kind === 'directory' ? entry.path : parentPath(entry.path))
+          }
           aria-expanded={entry.kind === 'directory' ? expanded.has(entry.path) : undefined}
           aria-current={active === entry.path ? 'true' : undefined}
           onClick={() => {
@@ -248,21 +438,28 @@ export function FileTree({
               <>
                 <IconButton
                   size="sm"
+                  disabled={busy}
                   label="New file"
                   icon={<FilePlus2 size={14} />}
                   onClick={() => create('file')}
                 />
                 <IconButton
                   size="sm"
+                  disabled={busy}
                   label="New folder"
                   icon={<FolderPlus size={14} />}
                   onClick={() => create('directory')}
                 />
                 <MenuButton label="Upload" icon={<Upload size={14} />} className="pane-menu">
-                  <MenuItem icon={<Upload size={14} />} onSelect={() => upload.current?.click()}>
+                  <MenuItem
+                    disabled={busy}
+                    icon={<Upload size={14} />}
+                    onSelect={() => upload.current?.click()}
+                  >
                     Upload files…
                   </MenuItem>
                   <MenuItem
+                    disabled={busy}
                     icon={<FolderUp size={14} />}
                     onSelect={() => uploadFolder.current?.click()}
                   >
@@ -284,6 +481,12 @@ export function FileTree({
       />
       <div
         className="file-tree"
+        aria-busy={busy}
+        onDragOver={(event) => dragOver(event, '')}
+        onDrop={(event) => drop(event, '')}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) clearDrag(false);
+        }}
         onContextMenu={(e) => {
           if (e.target === e.currentTarget) {
             e.preventDefault();
@@ -291,6 +494,20 @@ export function FileTree({
           }
         }}
       >
+        <button
+          className={`file-row workspace-root ${dropTarget?.path === '' ? 'drop-target' : ''}`}
+          onClick={() => setSelected('')}
+          onDragOver={(event) => dragOver(event, '')}
+          onDrop={(event) => drop(event, '')}
+        >
+          <Folder size={15} />
+          <span>Workspace root</span>
+        </button>
+        {(dropTarget || progress) && (
+          <div className="file-drop-status" role="status">
+            {progress || `${dropTarget!.mode} to ${dropTarget!.path || 'Workspace root'}`}
+          </div>
+        )}
         {errors[''] ? (
           <LoadError message={errors['']!} onRetry={() => load()} />
         ) : loading ? (
@@ -301,16 +518,24 @@ export function FileTree({
           <div className="tree-empty">
             No files yet.
             {editable && (
-              <Button variant="link" size="sm" onClick={() => create('file')}>
+              <Button disabled={busy} variant="link" size="sm" onClick={() => create('file')}>
                 Create a file
               </Button>
             )}
           </div>
         )}
       </div>
-      <input ref={upload} type="file" multiple className="hidden" onChange={uploadSelection} />
+      <input
+        ref={upload}
+        disabled={busy || !editable}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={uploadSelection}
+      />
       <input
         ref={uploadFolder}
+        disabled={busy || !editable}
         type="file"
         multiple
         className="hidden"
@@ -343,6 +568,7 @@ export function FileTree({
             {editable && (
               <>
                 <button
+                  disabled={busy}
                   onClick={async () => {
                     setMenu(null);
                     const to = await ui.ask({
@@ -352,7 +578,7 @@ export function FileTree({
                     });
                     if (to && to !== menu.path)
                       try {
-                        await post(`/projects/${projectId}/files/move`, { from: menu.path, to });
+                        await move(menu.path, to);
                       } catch (e) {
                         ui.notify(errorMessage(e));
                       }
@@ -362,6 +588,7 @@ export function FileTree({
                   Rename / move
                 </button>
                 <button
+                  disabled={busy}
                   className="danger-text"
                   onClick={async () => {
                     setMenu(null);
@@ -373,11 +600,17 @@ export function FileTree({
                         danger: true,
                       })
                     )
-                      try {
-                        await post(`/projects/${projectId}/files/delete`, { path: menu.path });
-                      } catch (e) {
-                        ui.notify(errorMessage(e));
-                      }
+                      if (!mutation.current)
+                        try {
+                          mutation.current = true;
+                          setBusy(true);
+                          await post(`/projects/${projectId}/files/delete`, { path: menu.path });
+                        } catch (e) {
+                          ui.notify(errorMessage(e));
+                        } finally {
+                          mutation.current = false;
+                          setBusy(false);
+                        }
                   }}
                 >
                   <Trash2 size={14} />
