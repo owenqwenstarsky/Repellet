@@ -366,9 +366,10 @@ it('opens failed preparation for viewers without exposing retry or terminal muta
     preparation: { ...project.preparation, status: 'interrupted', error: 'Interrupted' },
   });
   mount();
-  expect(await screen.findByText('Preparation interrupted')).toBeTruthy();
+  await screen.findByRole('tab', { name: 'Preparation Logs' });
+  expect(screen.getByText('Preparation interrupted')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Retry preparation' })).toBeNull();
-  fireEvent.click(screen.getByRole('tab', { name: 'Terminal', exact: true }));
+  fireEvent.click(await screen.findByRole('tab', { name: 'Terminal', exact: true }));
   expect(screen.queryByRole('button', { name: 'New terminal' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Close Shell' })).toBeNull();
   expect(screen.getByText('Terminal rendering')).toBeTruthy();

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { StrictMode } from 'react';
+import { StrictMode, useEffect } from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup, act, waitFor, within } from '@testing-library/react';
 import { api, post, put, patch } from '../apps/web/src/api';
@@ -21,7 +21,10 @@ vi.mock('../apps/web/src/api', async (original) => ({
 }));
 vi.mock('../apps/web/src/Terminal', () => ({ Terminal: () => <div>Terminal content</div> }));
 vi.mock('../apps/web/src/CodeEditor', () => ({
-  CodeEditor: ({ path }: { path: string }) => <div>Editing {path}</div>,
+  CodeEditor: ({ path, onInitialLoad }: { path: string; onInitialLoad?: () => void }) => {
+    useEffect(() => onInitialLoad?.(), []);
+    return <div>Editing {path}</div>;
+  },
 }));
 const mockedApi = vi.mocked(api),
   mockedPost = vi.mocked(post);
@@ -378,11 +381,14 @@ describe('workspace state recovery', () => {
     );
     workspace();
     await flush();
-    fireEvent.click(screen.getByLabelText('Toggle bottom panel'));
-    expect(screen.getByText('Terminal failed')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toBe('Terminal failed');
+    expect(screen.getByRole('main', { name: 'Opening project' })).toBeTruthy();
     await act(async () => vi.advanceTimersByTimeAsync(2500));
     expect(attempts).toBe(2);
     expect(screen.queryByText('Terminal failed')).toBeNull();
+    expect(screen.queryByRole('main', { name: 'Opening project' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle bottom panel' }));
+    expect(screen.getByRole('tab', { name: 'Terminal', exact: true })).toBeTruthy();
   });
 });
 describe('create dialog cancellation', () => {
@@ -425,8 +431,11 @@ describe('loading recovery and keyboard feedback', () => {
     );
     workspace();
     await flush();
-    expect(screen.getByText('Preparing your environment')).toBeTruthy();
-    expect(screen.getByText('Build log unavailable: Log missing')).toBeTruthy();
+    const opening = screen.getByRole('main', { name: 'Opening project' });
+    expect(within(opening).getByRole('status').textContent).toBe('Starting workspace…');
+    expect(within(opening).getByRole('alert').textContent).toBe(
+      'Build log unavailable: Log missing',
+    );
     expect(screen.queryByText('Workspace unavailable')).toBeNull();
   });
   it('shows a project-list load error and allows retry', async () => {
