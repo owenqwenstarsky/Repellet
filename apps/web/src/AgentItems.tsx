@@ -78,6 +78,7 @@ function ToolText({ label, value }: { label: string; value: string }) {
 }
 
 function PlanContent({ text }: { text: string }) {
+  const displayText = text.replace(/^(\s*Plan:)(?:[ \t\r\n]+Plan:)+(?=\s|$)/, '$1');
   const blocks: Array<
     { type: 'markdown'; text: string } | { type: 'todo'; done: boolean; id?: string; text: string }
   > = [];
@@ -86,7 +87,7 @@ function PlanContent({ text }: { text: string }) {
     if (markdown.length) blocks.push({ type: 'markdown', text: markdown.join('\n') });
     markdown = [];
   };
-  for (const line of text.split('\n')) {
+  for (const line of displayText.split('\n')) {
     const match = line.match(/^\[([ xX])\]\s*(?:#(\d+)[:.]?\s*)?(.*)$/);
     if (!match) {
       markdown.push(line);
