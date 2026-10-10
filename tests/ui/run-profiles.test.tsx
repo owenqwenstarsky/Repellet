@@ -85,8 +85,8 @@ it('shows viewer process status without allowing execution or configuration', as
     ((await screen.findByRole('button', { name: 'Run API' })) as HTMLButtonElement).disabled,
   ).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: 'Actions for API' }));
-  expect((screen.getByRole('button', { name: 'Run as task' }) as HTMLButtonElement).disabled).toBe(
-    true,
-  );
+  expect(
+    (screen.getByRole('menuitem', { name: 'Run as task' }) as HTMLButtonElement).disabled,
+  ).toBe(true);
   expect(screen.queryByLabelText('Name')).toBeNull();
 });
