@@ -1,3 +1,4 @@
+import { databaseOperation } from './database.js';
 import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import chokidar from 'chokidar';
@@ -61,6 +62,7 @@ app.setErrorHandler((error, req, reply) => {
 let storageLimit = Number(process.env.STORAGE_LIMIT_MB || 5120) * 1024 * 1024;
 let measured = 0;
 let agentBytes = 0;
+let databaseBytes = 0;
 process.umask(0o002);
 let suspended = false;
 async function checkWrite(delta = 0) {
@@ -96,6 +98,7 @@ app.get('/health', async () => ({
     'terminal-close',
     'terminal-readonly',
     'terminal-output',
+    'database',
   ],
 }));
 app.get('/files', async (req) =>
@@ -144,7 +147,7 @@ app.post('/files/delete', async (req) => {
   if (!relative(b.path))
     throw Object.assign(new Error('Root cannot be deleted'), { statusCode: 400 });
   await fs.rm(await resolvePath(b.path), { recursive: true, force: false });
-  measured = (await usage()) + agentBytes;
+  measured = (await usage()) + agentBytes + databaseBytes;
   return { ok: true };
 });
 app.post('/files/upload', async (req) => {
@@ -215,7 +218,7 @@ app.get('/terminals/:id/connect', { websocket: true }, (ws, req) =>
 );
 app.get('/processes', async () => info());
 app.post('/processes', async (req) => {
-  measured = (await usage()) + agentBytes;
+  measured = (await usage()) + agentBytes + databaseBytes;
   await checkWrite();
   if (suspended)
     throw Object.assign(new Error('Execution suspended: storage limit exceeded'), {
@@ -266,6 +269,41 @@ app.post('/run/stop', async () => {
   await stopTerminal('run');
   return { ok: true };
 });
+app.post('/database/ping', async (req, reply) => {
+  const controller = new AbortController();
+  const cancel = () => {
+    if (!reply.raw.writableFinished) controller.abort();
+  };
+  reply.raw.on('close', cancel);
+  try {
+    return await databaseOperation(
+      (req.body as any).database,
+      { operation: 'ping' },
+      controller.signal,
+    );
+  } finally {
+    reply.raw.off('close', cancel);
+  }
+});
+app.post('/database', async (req, reply) => {
+  const { database, operation } = req.body as any;
+  const controller = new AbortController();
+  const cancel = () => {
+    if (!reply.raw.writableFinished) controller.abort();
+  };
+  reply.raw.on('close', cancel);
+  try {
+    return await databaseOperation(database, operation, controller.signal);
+  } finally {
+    reply.raw.off('close', cancel);
+  }
+});
+app.put('/database-usage', async (req) => {
+  const bytes = (req.body as { bytes: number }).bytes;
+  if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('Invalid database storage usage');
+  databaseBytes = bytes;
+  return { ok: true };
+});
 app.get('/environment', async () => projectEnvironment());
 app.put('/agent-usage', async (req) => {
   const bytes = (req.body as { bytes: number }).bytes;
@@ -301,7 +339,7 @@ processEvents.on('change', (process) => {
   if (process.finishedAt)
     void usage()
       .then((bytes) => {
-        measured = bytes + agentBytes;
+        measured = bytes + agentBytes + databaseBytes;
       })
       .catch(() => {});
 });
@@ -327,7 +365,7 @@ watcher.on('error', (error) => {
 });
 watcher.on('all', (event, p) => emit({ type: 'file', event, path: path.relative(root, p) }));
 app.get('/usage', async () => {
-  measured = (await usage()) + agentBytes;
+  measured = (await usage()) + agentBytes + databaseBytes;
   const exceeded = measured > storageLimit;
   if (exceeded && !suspended) {
     suspended = true;

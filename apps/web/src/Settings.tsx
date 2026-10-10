@@ -293,7 +293,11 @@ function useEnvironment(project: Project, alive: { current: boolean }) {
   const manage = project.role === 'owner';
   const base = `/projects/${project.id}`;
   const [runtimes, setRuntimes] = usePollingField<Runtime[]>(project.runtimes);
-  const [variables, setVariables] = useState<{ key: string; value: string }[] | null>(null);
+  const [variables, setVariables] = useState<
+    { key: string; value: string; original?: string }[] | null
+  >(null);
+  const [environmentRevision, setEnvironmentRevision] = useState<number>();
+  const [databaseVariableName, setDatabaseVariableName] = useState<string | null>();
   const [visible, setVisible] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -303,13 +307,20 @@ function useEnvironment(project: Project, alive: { current: boolean }) {
     const current = ++request.current;
     setLoadError('');
     try {
-      const value = await api<{ variables: Record<string, string>; runtimes?: Runtime[] }>(
-        base + '/environment',
-      );
+      const value = await api<{
+        variables: Record<string, string>;
+        runtimes?: Runtime[];
+        revision?: number;
+        databaseVariableName?: string | null;
+      }>(base + '/environment');
       if (alive.current && current === request.current) {
         snapshot.current = value.runtimes || project.runtimes;
         setRuntimes(snapshot.current);
-        setVariables(Object.entries(value.variables).map(([key, value]) => ({ key, value })));
+        setVariables(
+          Object.entries(value.variables).map(([key, value]) => ({ key, value, original: key })),
+        );
+        setEnvironmentRevision(value.revision);
+        setDatabaseVariableName(value.databaseVariableName);
       }
     } catch (e) {
       if (alive.current && current === request.current) setLoadError(errorMessage(e));
@@ -336,6 +347,8 @@ function useEnvironment(project: Project, alive: { current: boolean }) {
     snapshot,
     load,
     loaded,
+    environmentRevision,
+    databaseVariableName,
   };
 }
 function Environment({
@@ -352,6 +365,8 @@ function Environment({
     snapshot,
     load,
     loaded,
+    environmentRevision,
+    databaseVariableName,
   },
   project,
   busy,
@@ -401,15 +416,34 @@ function Environment({
           )
             return;
           if (!alive.current) return;
-          await put(base + '/environment', {
+          const saved = await put<{ synced?: boolean }>(base + '/environment', {
             runtimes: submittedRuntimes,
             variables: Object.fromEntries(values.map((v) => [v.key, v.value])),
+            ...(environmentRevision !== undefined ? { revision: environmentRevision } : {}),
+            ...(databaseVariableName !== undefined
+              ? {
+                  databaseVariableName:
+                    values.find((v) => v.original === databaseVariableName)?.key ||
+                    databaseVariableName,
+                }
+              : {}),
+            ...(values.some((v) => v.original && v.original !== v.key)
+              ? {
+                  renames: Object.fromEntries(
+                    values
+                      .filter((v) => v.original && v.original !== v.key)
+                      .map((v) => [v.original!, v.key]),
+                  ),
+                }
+              : {}),
           });
           ui.notify(
-            changed
-              ? 'Environment rebuild started.'
-              : 'Variables saved. Open new terminals or restart your app to use them.',
-            'success',
+            saved?.synced === false
+              ? 'Variables saved, but the workspace could not be updated. Restart the workspace to apply them.'
+              : changed
+                ? 'Environment rebuild started.'
+                : 'Variables saved. Open new terminals or restart your app to use them.',
+            saved?.synced === false ? 'error' : 'success',
           );
           if (alive.current) {
             onChanged();
@@ -463,6 +497,12 @@ function Environment({
                   maxLength={32768}
                   aria-invalid={!!errors[v.key]}
                   aria-label={`Variable value ${i + 1}`}
+                  readOnly={v.original === databaseVariableName}
+                  title={
+                    v.original === databaseVariableName
+                      ? 'Database-managed connection value'
+                      : undefined
+                  }
                   type={visible ? 'text' : 'password'}
                   value={v.value}
                   placeholder="Value"
@@ -471,7 +511,7 @@ function Environment({
                 <IconButton
                   label={`Remove variable ${i + 1}`}
                   icon={<Trash2 size={14} />}
-                  disabled={busy}
+                  disabled={busy || v.original === databaseVariableName}
                   onClick={() => setVariables((v) => v!.filter((_, n) => n !== i))}
                 />
                 {errors[v.key] && (
@@ -483,6 +523,9 @@ function Environment({
             ))}
           </div>
         )}
+        <Button variant="link" disabled={busy} onClick={() => void load()}>
+          Reload variables
+        </Button>
         <Button
           variant="link"
           disabled={!loaded || busy || variables!.length >= 100}

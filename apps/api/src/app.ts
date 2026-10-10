@@ -1,3 +1,5 @@
+import { databaseRoutes } from './databaseRoutes.js';
+import { resourceControlRoutes } from './resourceControl.js';
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
@@ -92,6 +94,8 @@ export async function createApp(options: { static?: boolean; logger?: boolean } 
   await githubRoutes(app);
   await agentRoutes(app);
   await projectControlRoutes(app);
+  await databaseRoutes(app);
+  await resourceControlRoutes(app);
   app.get('/ws/projects/:id/events', { websocket: true }, async (ws, req) => {
     try {
       const user = await requireUser(req);

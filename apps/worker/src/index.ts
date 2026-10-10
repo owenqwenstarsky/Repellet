@@ -1,3 +1,11 @@
+import {
+  databaseSpecSchema,
+  ensureDatabase,
+  inspectDatabase,
+  removeDatabase,
+  databaseBytes,
+  databaseUrl,
+} from './databases.js';
 import { agentRoutes, terminateStaleAgents } from './agent/routes.js';
 import { stopAgent } from './agent/projects.js';
 import Fastify from 'fastify';
@@ -16,6 +24,8 @@ import {
   inspect,
   bridgeAddress,
   bridgeRequest,
+  containerName,
+  locked,
 } from './workspaces.js';
 import {
   enablePreview,
@@ -86,6 +96,7 @@ app.post('/projects/:id/ensure', async (req) => {
     runtimes: runtimesSchema.parse(b.runtimes),
     limits: limitsSchema.parse(b.limits),
     environment: environmentSchema.parse(b.environment),
+    ...(b.database ? { database: databaseSpecSchema.parse(b.database) } : {}),
     rebuild: b.rebuild === true,
     prepared: b.prepared === true,
     cloneUrl: typeof b.cloneUrl === 'string' ? b.cloneUrl : undefined,
@@ -105,6 +116,36 @@ app.delete('/projects/:id', async (req) => {
 app.post('/projects/:id/duplicate', async (req) =>
   duplicateWorkspace(idFrom(req), projectId((req.body as { id: string }).id)),
 );
+app.get('/projects/:id/database', async (req) => {
+  const current = await inspectDatabase(idFrom(req));
+  return {
+    exists: !!current,
+    running: !!current?.State.Running,
+    id: current?.Config.Labels?.['repellet.database.id'],
+  };
+});
+app.post('/projects/:id/database/ensure', async (req) =>
+  locked(idFrom(req), async () => {
+    const id = idFrom(req),
+      spec = databaseSpecSchema.parse(req.body);
+    if (!(await inspect(id))?.State.Running)
+      throw Object.assign(new Error('Start the workspace first'), { statusCode: 409 });
+    const result = await ensureDatabase(id, spec, containerName(id));
+    await bridgeRequest(id, '/database/ping', 'POST', {
+      database: { id: spec.id, type: spec.type, url: databaseUrl(id, spec) },
+    });
+    await bridgeRequest(id, '/database-usage', 'PUT', { bytes: await databaseBytes(id) });
+    return { status: result.status };
+  }),
+);
+app.delete('/projects/:id/database', async (req) =>
+  locked(idFrom(req), async () => {
+    await removeDatabase(idFrom(req));
+    if ((await inspect(idFrom(req)))?.State.Running)
+      await bridgeRequest(idFrom(req), '/database-usage', 'PUT', { bytes: 0 });
+    return { ok: true };
+  }),
+);
 app.post('/projects/:id/preview', async (req) => {
   const b = req.body as { targetPort: number; port?: number };
   if (!Number.isInteger(b.targetPort) || b.targetPort < 1024 || b.targetPort > 65535)
@@ -119,13 +160,22 @@ app.post('/projects/:id/probe', async (req) => {
   return probePreview(id, port);
 });
 const allowedPath =
-  /^\/(preparation(?:\/[a-z0-9-]+)?|scaffold|fingerprint|inspect|health|processes(?:\/[0-9a-z-]+\/stop)?|files(?:\/(?:create|move|delete|upload))?|file-index|file|search|replace|format|terminals(?:\/[0-9a-z-]+(?:\/output)?)?|run(?:\/stop)?|environment|agent-usage|limits|usage|git(?:\/(?:status|diff|remote))?|shutdown)(?:\?[^\r\n]*)?$/;
-app.post('/projects/:id/request', async (req) => {
+  /^\/(preparation(?:\/[a-z0-9-]+)?|scaffold|fingerprint|inspect|health|processes(?:\/[0-9a-z-]+\/stop)?|files(?:\/(?:create|move|delete|upload))?|file-index|file|search|replace|format|terminals(?:\/[0-9a-z-]+(?:\/output)?)?|run(?:\/stop)?|environment|database(?:\/ping)?|database-usage|agent-usage|limits|usage|git(?:\/(?:status|diff|remote))?|shutdown)(?:\?[^\r\n]*)?$/;
+app.post('/projects/:id/request', async (req, reply) => {
   const b = req.body as { path: string; method: string; body?: unknown };
   if (!allowedPath.test(b.path) || !['GET', 'POST', 'PUT', 'DELETE'].includes(b.method))
     throw Object.assign(new Error('Unsupported workspace operation'), { statusCode: 400 });
-  const response = await bridgeRequest(idFrom(req), b.path, b.method, b.body);
-  return response.json();
+  const controller = new AbortController();
+  const cancel = () => {
+    if (!reply.raw.writableFinished) controller.abort();
+  };
+  reply.raw.on('close', cancel);
+  try {
+    const response = await bridgeRequest(idFrom(req), b.path, b.method, b.body, controller.signal);
+    return await response.json();
+  } finally {
+    reply.raw.off('close', cancel);
+  }
 });
 for (const operation of ['export', 'download'])
   app.get(`/projects/:id/${operation}`, async (req, reply) => {

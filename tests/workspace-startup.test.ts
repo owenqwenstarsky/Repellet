@@ -11,6 +11,13 @@ const state = vi.hoisted(() => ({
   migrationWait: null as Promise<{ StatusCode: number }> | null,
   probeError: null as { statusCode: number } | null,
 }));
+vi.mock('../apps/worker/src/databases.js', () => ({
+  stopDatabase: vi.fn(),
+  ensureDatabase: vi.fn(),
+  removeDatabase: vi.fn(),
+  databaseBytes: vi.fn(async () => 0),
+  databaseUrl: () => 'database-url',
+}));
 vi.mock('../apps/worker/src/config.js', () => ({
   config: { inDocker: true, network: 'test-network' },
   projectId: (id: string) => id,
@@ -109,6 +116,7 @@ import {
   duplicateWorkspace,
 } from '../apps/worker/src/workspaces.js';
 import { workspacePermissionMarker } from '../apps/worker/src/workspace-permissions.js';
+import { ensureDatabase, stopDatabase } from '../apps/worker/src/databases.js';
 
 const options = {
   runtimes: [],
@@ -129,6 +137,8 @@ function permissionHelpers() {
   );
 }
 beforeEach(() => {
+  vi.mocked(ensureDatabase).mockReset().mockResolvedValue({ status: 'ready', url: 'database-url' });
+  vi.mocked(stopDatabase).mockClear();
   state.workspace = existingWorkspace();
   state.markers.clear();
   state.calls.length = 0;
@@ -141,6 +151,31 @@ beforeEach(() => {
     'fetch',
     vi.fn(async () => new Response(JSON.stringify({ bytes: 0, exceeded: false }))),
   );
+});
+
+it('awaits database readiness before reporting startup and keeps workspace usable on database failure', async () => {
+  const database = {
+    id: '11111111-1111-4111-8111-111111111111',
+    type: 'postgresql' as const,
+    image: 'postgres:17-alpine' as const,
+    initialize: true,
+    password: 'a'.repeat(64),
+    adminPassword: 'b'.repeat(64),
+  };
+  const first = await ensureWorkspace('project', { ...options, database });
+  expect(first).toMatchObject({ state: 'running', databaseStatus: 'ready' });
+  expect(ensureDatabase).toHaveBeenCalledWith('project', database, 'repellet-project-project');
+  const paths = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
+  expect(paths.findIndex((path) => path.endsWith('/database/ping'))).toBeLessThan(
+    paths.findIndex((path) => path.endsWith('/environment')),
+  );
+  vi.mocked(ensureDatabase).mockRejectedValueOnce(new Error('database failed'));
+  expect(await ensureWorkspace('project', { ...options, database })).toMatchObject({
+    state: 'running',
+    databaseStatus: 'failed',
+  });
+  await stopWorkspace('project');
+  expect(stopDatabase).toHaveBeenCalledWith('project');
 });
 afterEach(() => vi.unstubAllGlobals());
 

@@ -101,6 +101,16 @@ export function toolLabel(name: string): string {
       project_logs: 'Project logs',
       project_start: 'Start app',
       project_stop: 'Stop app',
+      database_status: 'Database status',
+      database_schema: 'Database schema',
+      database_read: 'Read database',
+      database_execute: 'Execute database command',
+      environment_list: 'List environment variables',
+      environment_get: 'Get environment variable',
+      environment_create: 'Create environment variable',
+      environment_update: 'Update environment variable',
+      environment_rename: 'Rename environment variable',
+      environment_delete: 'Delete environment variable',
     }[name] || name
   );
 }

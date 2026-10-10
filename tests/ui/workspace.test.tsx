@@ -435,3 +435,40 @@ it('opens failed preparation for viewers without exposing retry or terminal muta
   expect(screen.queryByRole('button', { name: 'Close Shell' })).toBeNull();
   expect(screen.getByText('Terminal rendering')).toBeTruthy();
 });
+
+it('opens and closes the optional Database tab while preserving fixed tabs and saved preferences', async () => {
+  const original = vi.mocked(api).getMockImplementation()!;
+  vi.mocked(api).mockImplementation((path, options) =>
+    path.endsWith('/database') ? Promise.resolve(null) : original(path, options),
+  );
+  const view = mount();
+  await screen.findByRole('button', { name: 'Database', exact: true });
+  fireEvent.click(screen.getByRole('button', { name: 'Database', exact: true }));
+  await screen.findByText('Add a development database');
+  expect(
+    screen.getByRole('tab', { name: 'Database', exact: true }).getAttribute('aria-selected'),
+  ).toBe('true');
+  expect(screen.getByRole('tab', { name: 'Preview', exact: true })).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Agent', exact: true })).toBeTruthy();
+  await waitFor(() =>
+    expect(readPreferences(preferenceKey(user.id, project.id)).databaseOpen).toBe(true),
+  );
+  view.unmount();
+  mount();
+  await screen.findByRole('tab', { name: 'Database', exact: true });
+  fireEvent.click(screen.getByLabelText('Close Database tab'));
+  expect(screen.queryByRole('tab', { name: 'Database', exact: true })).toBeNull();
+  expect(
+    screen.getByRole('tab', { name: 'Preview', exact: true }).getAttribute('aria-selected'),
+  ).toBe('true');
+  await waitFor(() =>
+    expect(readPreferences(preferenceKey(user.id, project.id)).databaseOpen).toBe(false),
+  );
+});
+
+it('does not expose a Database button to viewers', async () => {
+  defaults({ ...project, role: 'viewer' });
+  mount();
+  await screen.findByLabelText('Toggle preview');
+  expect(screen.queryByRole('button', { name: 'Database', exact: true })).toBeNull();
+});

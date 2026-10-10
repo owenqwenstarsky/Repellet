@@ -2,7 +2,7 @@ import { runDocker as run } from './lib/docker.mjs';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parse } from 'dotenv';
-import { createBackup, verifyBackup, restoreBackup } from './lib/backup.mjs';
+import { createBackup, verifyBackup, restoreBackup, stopProjectDatabases } from './lib/backup.mjs';
 const [operation, location, ...flags] = process.argv.slice(2);
 const envFile = path.resolve(process.env.REPELLET_ENV_FILE || '.env');
 const compose = [
@@ -45,7 +45,7 @@ async function projectVolumes() {
   const ids = (await query('SELECT id FROM projects ORDER BY id')).split('\n').filter(Boolean);
   const volumes = [];
   for (const id of ids)
-    for (const kind of ['files', 'home', 'agent', 'attachments']) {
+    for (const kind of ['files', 'home', 'agent', 'attachments', 'database']) {
       const name = `repellet-${id}-${kind}`;
       const found = await run(
         ['volume', 'ls', '--filter', `name=^${name}$`, '--format', '{{.Name}}'],
@@ -72,6 +72,10 @@ try {
   } else if (operation === 'backup') {
     try {
       await maintenance(true);
+      await stopProjectDatabases(
+        (await query('SELECT id FROM projects ORDER BY id')).split('\n').filter(Boolean),
+        run,
+      );
       await run([...compose, 'stop', 'app', 'worker']);
       const volumes = await projectVolumes();
       await createBackup({
@@ -130,7 +134,19 @@ try {
     const oldIds = (await query('SELECT id FROM projects').catch(() => ''))
       .split('\n')
       .filter(Boolean);
-    for (const id of oldIds) {
+    const restoreIds = [
+      ...new Set([
+        ...oldIds,
+        ...manifest.volumes
+          .filter(
+            (volume) =>
+              volume.name.startsWith('repellet-') && volume.name !== 'repellet-agent-accounts',
+          )
+          .map((volume) => volume.name.slice(9, 45)),
+      ]),
+    ];
+    await stopProjectDatabases(restoreIds, run, true);
+    for (const id of restoreIds) {
       if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Invalid stored project ID');
       const name = 'repellet-project-' + id;
       const exists = await run(
@@ -225,6 +241,9 @@ try {
     // Older backups do not contain the additive workspace tables yet. New metadata
     // is restored by pg_restore, but a restored process cannot still be running.
     await query(`DO $$ BEGIN
+      IF to_regclass('project_databases') IS NOT NULL THEN
+        UPDATE project_databases SET status='stopped', error=NULL WHERE status<>'deleting';
+      END IF;
       IF to_regclass('workspace_processes') IS NOT NULL THEN
         UPDATE workspace_processes SET status='stopped', finished_at=now() WHERE status IN ('starting','running');
         UPDATE project_preview_targets SET allocated_port=NULL, status='stopped', http_status=NULL, last_probe=NULL;
