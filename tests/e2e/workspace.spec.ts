@@ -540,7 +540,11 @@ for (const starter of [
             })
           ).ok(),
         ).toBe(true);
-        await page.keyboard.press('ControlOrMeta+P');
+        // Preview readiness can precede editor restoration. Target a visible workspace
+        // control so Quick Open runs after loading and outside the preview iframe.
+        const files = page.getByRole('button', { name: 'Files', exact: true });
+        await expect(files).toBeVisible();
+        await files.press('ControlOrMeta+P');
         await page.getByLabel('Search file paths').fill(path);
         await expect(page.getByRole('option', { name: path, exact: true })).toBeVisible();
         await page.getByLabel('Search file paths').press('Enter');
