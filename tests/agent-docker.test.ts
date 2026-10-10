@@ -579,8 +579,12 @@ describe.skipIf(!enabled)('real Pi 1.1.0 in the unprivileged workspace container
       (thread: any) => thread.name === 'Imported workspace history',
     );
     expect(imported).toBeTruthy();
+    // Imported Codex history retains ChatGPT as its API. Continuing through the
+    // fixture proxy requires an explicit selection rather than a silent fallback.
     await rpc('turn/start', {
       threadId: imported.id,
+      api: 'cliproxyapi',
+      model: 'repellet-test-model',
       input: [{ type: 'text', text: 'Continue the imported work' }],
     });
     await vi.waitFor(() => expect(projects.agentActivity(id).active).toBe(false), {
