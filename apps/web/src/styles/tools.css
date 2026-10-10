@@ -372,3 +372,19 @@
   font-size: var(--text-sm);
   color: var(--color-text-subtle);
 }
+
+.workspace-root {
+  padding-left: var(--space-3);
+  color: var(--color-text-secondary);
+}
+.file-row.drop-target {
+  border-color: var(--color-accent-text);
+  background: var(--color-accent-tint);
+  color: var(--color-accent-text);
+}
+.file-drop-status {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
