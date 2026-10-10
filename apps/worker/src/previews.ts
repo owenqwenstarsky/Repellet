@@ -59,6 +59,40 @@ export function listPreviews() {
     targetPort: p.targetPort,
   }));
 }
+export async function probePreview(
+  id: string,
+  targetPort: number,
+): Promise<{ responding: boolean; httpStatus?: number }> {
+  const preview = [...previews.entries()].find(
+    ([, p]) => p.project === id && p.targetPort === targetPort,
+  );
+  if (!preview) return { responding: false };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const destination = await target(id, targetPort);
+    const publicUrl = new URL(config.publicUrl);
+    publicUrl.port = String(preview[0]);
+    return await new Promise<{ responding: boolean; httpStatus?: number }>((resolve, reject) => {
+      // Node fetch strips Host overrides. Match the gateway's public Host while
+      // connecting directly to the workspace, without forwarding IDE credentials.
+      const request = http.request(
+        destination,
+        { method: 'GET', headers: { host: publicUrl.host } },
+        (response) => {
+          response.destroy();
+          resolve({ responding: true, httpStatus: response.statusCode });
+        },
+      );
+      request.once('error', reject);
+      timer = setTimeout(() => request.destroy(new Error('Preview probe timed out')), 2000);
+      request.end();
+    });
+  } catch {
+    return { responding: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 export async function enablePreview(id: string, targetPort: number, requested?: number | null) {
   const existing = [...previews.entries()].find(([, p]) => p.project === id);
   if (existing && existing[1].targetPort === targetPort) return existing[0];
