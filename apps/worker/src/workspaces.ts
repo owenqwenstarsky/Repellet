@@ -63,7 +63,7 @@ async function ensureNetwork() {
   }
 }
 async function initVolumes(id: string) {
-  for (const kind of ['files', 'home', 'agent']) {
+  for (const kind of ['files', 'home', 'agent', 'attachments']) {
     const name = volumeName(id, kind);
     try {
       await docker.getVolume(name).inspect();
@@ -79,7 +79,7 @@ async function initVolumes(id: string) {
     User: 'root',
     Entrypoint: ['/bin/sh', '-c'],
     Cmd: [
-      `chown 1000:1000 /workspace /home/workspace && ${installManagedAgentContext} && chmod 2775 /workspace && setfacl -m g:1000:rwx,d:g:1000:rwx,d:m:rwx /workspace`,
+      `chown 1000:1000 /workspace /home/workspace && ${installManagedAgentContext} && chown 1001:1000 /home/agent/attachments && chmod 700 /home/agent/attachments && chmod 2775 /workspace && setfacl -m g:1000:rwx,d:g:1000:rwx,d:m:rwx /workspace`,
     ],
     HostConfig: {
       AutoRemove: false,
@@ -87,6 +87,11 @@ async function initVolumes(id: string) {
         { Type: 'volume', Source: volumeName(id), Target: '/workspace' },
         { Type: 'volume', Source: volumeName(id, 'home'), Target: '/home/workspace' },
         { Type: 'volume', Source: volumeName(id, 'agent'), Target: '/home/agent' },
+        {
+          Type: 'volume',
+          Source: volumeName(id, 'attachments'),
+          Target: '/home/agent/attachments',
+        },
       ],
     },
     Labels: { 'repellet.helper': 'true' },
@@ -132,6 +137,7 @@ export async function ensureWorkspace(id: string, options: EnsureOptions) {
       current &&
       (current.Image !== desiredImage.Id ||
         !current.Mounts.some((mount) => mount.Destination === '/home/agent') ||
+        !current.Mounts.some((mount) => mount.Destination === '/home/agent/attachments') ||
         (!config.inDocker &&
           !current.NetworkSettings.Ports[`${options.previewTargetPort || 3000}/tcp`]))
     ) {
@@ -163,6 +169,12 @@ export async function ensureWorkspace(id: string, options: EnsureOptions) {
             { Type: 'volume', Source: volumeName(id), Target: '/workspace' },
             { Type: 'volume', Source: volumeName(id, 'home'), Target: '/home/workspace' },
             { Type: 'volume', Source: volumeName(id, 'agent'), Target: '/home/agent' },
+            {
+              Type: 'volume',
+              Source: volumeName(id, 'attachments'),
+              Target: '/home/agent/attachments',
+              ReadOnly: true,
+            },
           ],
           ...(config.inDocker
             ? {}
@@ -234,7 +246,7 @@ export async function removeWorkspace(id: string) {
   return locked(id, async () => {
     const current = await inspect(id);
     if (current) await docker.getContainer(current.Id).remove({ force: true });
-    for (const kind of ['files', 'home', 'agent'])
+    for (const kind of ['files', 'home', 'agent', 'attachments'])
       try {
         await docker.getVolume(volumeName(id, kind)).remove();
       } catch (e) {

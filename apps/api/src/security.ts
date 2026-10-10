@@ -118,7 +118,7 @@ export async function issueSession(user: AuthUser, reply: FastifyReply) {
 }
 
 /** Agent ownership deliberately excludes site-administrator privileges. */
-export async function projectAgentAccess(user: AuthUser, id: string) {
+export async function projectAgentAccess(user: AuthUser, id: string, requireRunning = true) {
   const [currentUser] = await db
     .select({ enabled: users.enabled })
     .from(users)
@@ -131,7 +131,7 @@ export async function projectAgentAccess(user: AuthUser, id: string) {
   const [project] = await db.select().from(projects).where(eq(projects.id, id));
   if (!project || project.ownerId !== user.id)
     throw Object.assign(new Error('Project owner access required for agents'), { statusCode: 403 });
-  if (project.state !== 'running')
+  if (requireRunning && project.state !== 'running')
     throw Object.assign(new Error('Start the workspace to load agent conversations'), {
       statusCode: 409,
     });

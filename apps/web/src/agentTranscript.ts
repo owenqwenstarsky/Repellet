@@ -32,8 +32,14 @@ function messageKey(item: ThreadItem) {
     return (
       'user:' +
       item.content
-        .filter((content) => content.type === 'text')
-        .map((content) => content.text)
+        .filter((content) => content.type === 'text' || content.type === 'attachment')
+        .map((content) =>
+          content.type === 'text'
+            ? content.text
+            : content.type === 'attachment'
+              ? `attachment:${content.attachment.id}`
+              : '',
+        )
         .join('\n')
     );
   return null;

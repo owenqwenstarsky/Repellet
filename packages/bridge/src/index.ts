@@ -325,7 +325,7 @@ app.get('/usage', async () => {
     suspended = false;
     emit({ type: 'storage', exceeded: false, bytes: measured });
   }
-  return { bytes: measured, exceeded };
+  return { bytes: measured, exceeded, limitBytes: storageLimit };
 });
 app.get('/git/remote', async () => {
   const fetch = (await git(['remote', 'get-url', '--all', 'origin'])).stdout.trim().split('\n');

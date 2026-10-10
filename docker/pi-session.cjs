@@ -136,6 +136,44 @@ function toolItem(name, id, args, result, running = false) {
     durationMs: null,
   };
 }
+function prepareInput(
+  input,
+  read = (id) => fs.readFileSync(path.join('/home/agent/attachments', id, 'data')),
+) {
+  const parts = [],
+    images = [];
+  for (const item of input) {
+    if (item.type === 'text') {
+      parts.push(item.text);
+      continue;
+    }
+    const attachment = item.attachment;
+    if (!attachment || !/^[a-f0-9-]{36}$/i.test(attachment.id))
+      throw new Error('Invalid attachment reference');
+    const data = read(attachment.id);
+    if (data.length !== attachment.bytes) throw new Error('Attachment is incomplete');
+    if (attachment.kind === 'image')
+      images.push({ type: 'image', mimeType: attachment.mimeType, data: data.toString('base64') });
+    else
+      parts.push(
+        `Attached text file: ${JSON.stringify(attachment.label || attachment.name)}\n${data.toString('utf8')}`,
+      );
+  }
+  return { text: parts.join('\n\n'), images };
+}
+
+/** Associate queued inputs with the actual Pi user message, including normalized images. */
+function attachInputMetadata(message, queue) {
+  if (message.role !== 'user' || message.repelletInput || !queue?.length) return;
+  const content = text(message.content);
+  const at = queue.findIndex((input) =>
+    input.text
+      ? content.startsWith(input.text)
+      : Array.isArray(message.content) && message.content.some((part) => part.type === 'image'),
+  );
+  if (at !== -1) message.repelletInput = queue.splice(at, 1)[0].input;
+}
+
 function messageItems(message, tools = new Map(), idOverride) {
   const id = idOverride || messageId(message);
   if (message.role === 'user')
@@ -144,7 +182,7 @@ function messageItems(message, tools = new Map(), idOverride) {
         type: 'userMessage',
         id,
         clientId: null,
-        content: [{ type: 'text', text: text(message.content) }],
+        content: message.repelletInput || [{ type: 'text', text: text(message.content) }],
       },
     ];
   if (message.role === 'assistant') {
@@ -585,6 +623,8 @@ function translatePiEvent(id, event, active, notify, redact = (value) => value) 
   }
 }
 module.exports = {
+  prepareInput,
+  attachInputMetadata,
   planMode,
   redactStreaming,
   redactPayload,

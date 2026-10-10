@@ -4,6 +4,99 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 const h = createRequire(import.meta.url)('../docker/pi-session.cjs');
+it('supplies image and text-file contents to Pi but keeps references in live and saved transcripts', () => {
+  const image = {
+    id: 'a'.repeat(8) + '-aaaa-4aaa-8aaa-' + 'a'.repeat(12),
+    kind: 'image',
+    name: 'image.png',
+    mimeType: 'image/png',
+    bytes: 3,
+  };
+  const pasted = {
+    id: 'b'.repeat(8) + '-bbbb-4bbb-8bbb-' + 'b'.repeat(12),
+    kind: 'text',
+    name: 'pasted-text.txt',
+    label: 'Pasted text',
+    mimeType: 'text/plain',
+    bytes: 5,
+  };
+  const input = [
+    { type: 'text', text: 'Inspect this' },
+    { type: 'attachment', attachment: image },
+    { type: 'attachment', attachment: pasted },
+  ];
+  const prepared = h.prepareInput(input, (id: string) =>
+    Buffer.from(id === image.id ? 'png' : 'hello'),
+  );
+  expect(prepared.images).toEqual([
+    { type: 'image', data: Buffer.from('png').toString('base64'), mimeType: 'image/png' },
+  ]);
+  expect(prepared.text).toContain('Attached text file: "Pasted text"\nhello');
+  const message = {
+    role: 'user',
+    timestamp: 9,
+    content: [{ type: 'text', text: prepared.text }, ...prepared.images],
+  };
+  const queue = [{ text: prepared.text, input }];
+  h.attachInputMetadata(message, queue);
+  expect(queue).toEqual([]);
+  const live = h.messageItems(message)[0];
+  expect(live.content).toEqual(input);
+  expect(JSON.stringify(live)).not.toContain(prepared.images[0].data);
+  const manager = {
+    getBranch: () => [
+      { type: 'custom', customType: 'repellet.turn', data: { id: 'turn' } },
+      { type: 'message', id: 'message', message: JSON.parse(JSON.stringify(message)) },
+    ],
+  };
+  expect(h.transcript(manager)[0].items[0]).toEqual(live);
+  expect(() => h.prepareInput(input, () => Buffer.from('wrong-size'))).toThrow('incomplete');
+});
+
+it('retains attachment references in Pi session entries without including image payloads in the public transcript', async () => {
+  const { SessionManager } = await h.sdk();
+  const manager = SessionManager.inMemory('/workspace');
+  const input = [
+    {
+      type: 'attachment',
+      attachment: {
+        id: 'attachment-id',
+        kind: 'image',
+        name: 'shot.png',
+        mimeType: 'image/png',
+        bytes: 3,
+      },
+    },
+  ];
+  manager.appendCustomEntry('repellet.turn', { id: 'turn' });
+  manager.appendMessage({
+    role: 'user',
+    timestamp: 1,
+    content: [{ type: 'image', mimeType: 'image/png', data: 'private-base64-payload' }],
+    repelletInput: input,
+  });
+  expect(h.transcript(manager)[0].items[0].content).toEqual(input);
+  expect(JSON.stringify(h.transcript(manager))).not.toContain('private-base64-payload');
+});
+
+it('associates steering attachments independently and preserves image-only user messages', () => {
+  const input = [{ type: 'attachment', attachment: { id: 'image-id', kind: 'image' } }];
+  const queue = [
+    { text: 'First prompt', input: [{ type: 'text', text: 'First prompt' }] },
+    { text: '', input },
+  ];
+  const message = {
+    role: 'user',
+    timestamp: 1,
+    content: [{ type: 'image', mimeType: 'image/png', data: 'large-base64' }],
+  };
+  h.attachInputMetadata(message, queue);
+  expect(h.messageItems(message)[0].content).toEqual(input);
+  expect(queue).toHaveLength(1);
+  const assistant = { role: 'assistant', content: [{ type: 'text', text: 'First prompt' }] };
+  h.attachInputMetadata(assistant, queue);
+  expect(assistant).not.toHaveProperty('repelletInput');
+});
 let root = '';
 beforeEach(async () => {
   root = await mkdtemp(path.join(os.tmpdir(), 'repellet-pi-'));

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { resolveAttachmentInputs } from './attachments.js';
 import type { WebSocket } from 'ws';
 import {
   agentRpcSchema,
@@ -254,6 +255,8 @@ export async function agentRpc(projectId: string, userId: string, input: unknown
       throw error('Agent process changed. Refresh status and history before continuing.');
     const { connection, settings } = session;
     const params = { ...rpc.params };
+    if (params.input?.some((item: { type: string }) => item.type === 'attachment'))
+      params.input = await resolveAttachmentInputs(projectId, params.input);
     if (params.threadId) {
       // Read by ID from this project's private Pi session directory; never accept rollout paths/history.
       const thread =
@@ -342,6 +345,7 @@ export async function agentUsage(projectId: string) {
   const usage = (await (await bridgeRequest(projectId, '/usage')).json()) as {
     bytes: number;
     exceeded: boolean;
+    limitBytes?: number;
   };
   if (usage.exceeded && agentActivity(projectId).active) await stopAgent(projectId);
   return usage;

@@ -4,9 +4,18 @@ export async function workerRequest(route: string, method = 'GET', body?: unknow
     method,
     headers: {
       authorization: `Bearer ${config.workerToken}`,
-      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      ...(body === undefined
+        ? {}
+        : {
+            'content-type': Buffer.isBuffer(body) ? 'application/octet-stream' : 'application/json',
+          }),
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body:
+      body === undefined
+        ? undefined
+        : Buffer.isBuffer(body)
+          ? (body as unknown as BodyInit)
+          : JSON.stringify(body),
     signal: AbortSignal.timeout(
       route.endsWith('/ensure') || route.endsWith('/build') ? 30 * 60 * 1000 : 180000,
     ),

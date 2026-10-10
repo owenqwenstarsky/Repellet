@@ -22,6 +22,10 @@ Agent and Preview share the resizable right panel. The Agent tab opens to a sear
 
 Browser saves and collaborative documents flush before starting or steering work. One top-level turn executes per project; different projects can execute concurrently. Questions survive reconnects. Workspace stop, rebuild, deletion, maintenance, or disabling the owner account interrupts work. A lost mutation response reconciles status/history without replaying the prompt.
 
+The composer accepts files through **Attach files**, drag-and-drop, and clipboard paste. Each message can include four images (PNG, JPEG, WebP, GIF; up to 20 MiB each) and four UTF-8 text files (up to 1 MiB each). Text MIME types and common `.txt`, `.md`, `.json`, `.csv`, `.log`, and `.xml` files are supported. Pasting 1,000–5,000 characters offers inline text or a file; more than 5,000 characters becomes a **Pasted text** attachment automatically. Attachments have removable previews, upload progress, and retry controls. They work for both new turns and steering.
+
+Images and text files persist in `repellet-PROJECT_UUID-attachments`, mounted privately at `/home/agent/attachments`. UUID references and filenames remain in saved user messages, while Pi receives image content and labeled text-file content. Downloads are owner-only, including when a project is stopped. Attachments count toward monitored project storage, are included in backups, and are removed with the project. Removed draft uploads remain stored until project deletion; project duplication copies files without private history or attachments.
+
 Project agent homes persist in `repellet-PROJECT_UUID-agent`, mounted at `/home/agent` with private permissions. Shared terminals cannot read this home. Project files use a shared group and ACLs; private agent bytes count toward project storage limits.
 
 Every project agent home receives Repellet's managed global context at `/home/agent/.pi/agent/SYSTEM.md`. It stays outside `/workspace`, is refreshed at every agent start, and is advisory. Put project-specific instructions in the project's own `AGENTS.md`.
@@ -38,4 +42,4 @@ The **Plan mode** button sits in the composer beside Run settings. It runs the e
 
 Planning questions appear in the browser. A completed plan appears in the transcript and pauses for **Implement the plan**, **Make changes**, or **Keep planning**. Implementation restores write tools and queues the extension's implementation prompt. Changes collect feedback before the extension revises the plan. Interrupting a review clears the pending question and retains plan mode.
 
-The workspace base is now `repellet/workspace-base:0.6.1`. Stop and start older workspaces to receive the bundled extensions. Existing project files and canonical session histories remain in their volumes.
+The workspace base is now `repellet/workspace-base:0.6.2`. Stop and start older workspaces to receive attachment support and the bundled extensions. Existing project files and canonical session histories remain in their volumes.

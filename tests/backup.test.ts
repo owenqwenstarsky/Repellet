@@ -242,13 +242,18 @@ describe.skipIf(!enabled)('backup restoration with PostgreSQL and Docker volumes
   }, 300000);
 });
 
-it('backs up agent history and private accounts while accepting older backups', async () => {
+it('backs up agent history, attachments and private accounts while accepting older backups', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'repellet-agent-backup-'));
   try {
     const envFile = path.join(root, 'installation.env');
     await writeFile(envFile, 'KEY=test\n');
     const id = randomUUID();
-    const volumes = [`repellet-${id}-files`, `repellet-${id}-agent`, 'repellet-agent-accounts'];
+    const volumes = [
+      `repellet-${id}-files`,
+      `repellet-${id}-agent`,
+      `repellet-${id}-attachments`,
+      'repellet-agent-accounts',
+    ];
     const destination = path.join(root, 'new');
     await createBackup({
       destination,

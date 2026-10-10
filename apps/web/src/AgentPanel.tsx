@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Plus, Settings2, Square, MoreHorizontal, ListChecks } from 'lucide-react';
+import { Plus, Settings2, Square, MoreHorizontal, ListChecks, Paperclip } from 'lucide-react';
 import {
   projectAgentEvent,
   type AgentSettings as Settings,
@@ -13,6 +13,7 @@ import { api, post, wsUrl, errorMessage } from './api';
 import { AgentSettings } from './AgentSettings';
 import { agentTranscript } from './agentTranscript';
 import { AgentTranscriptItems } from './AgentItems';
+import { useAgentAttachments, AgentDraftAttachments, attachmentAccept } from './AgentAttachments';
 export { AgentItem, AgentTranscriptItems } from './AgentItems';
 import { flushOpenDocuments } from './documentSaves';
 import { Button, IconButton, Banner, Spinner, MenuButton, MenuItem, useUi } from './ui';
@@ -42,6 +43,14 @@ export function AgentPanel({
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
   const [text, setText] = useState('');
+  const attachments = useAgentAttachments(projectId, selectedThread);
+  const filePicker = useRef<HTMLInputElement>(null);
+  const [pasteChoice, setPasteChoice] = useState<{
+    text: string;
+    start: number;
+    end: number;
+  } | null>(null);
+  const [dragging, setDragging] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [connectionRevision, setConnectionRevision] = useState(0);
@@ -62,6 +71,8 @@ export function AgentPanel({
     restored.current = false;
     if (element) element.scrollTop = scrollPositions.current.get(selectedThread) || 0;
     setRunSettingsOpen(false);
+    setPasteChoice(null);
+    setDragging(false);
     return () => {
       if (element) scrollPositions.current.set(selectedThread, element.scrollTop);
     };
@@ -298,6 +309,26 @@ export function AgentPanel({
   const activeHere = active?.threadId === selectedThread;
   const unavailable = busy || !connected || !snapshot?.connected;
   const items = agentTranscript(selectedThread, history, snapshot?.items || []);
+  function insertPaste(value: { text: string; start: number; end: number }, attach: boolean) {
+    if (
+      attach &&
+      !attachments.add(
+        [new File([value.text], 'pasted-text.txt', { type: 'text/plain' })],
+        ui.notify,
+        'Pasted text',
+      )
+    )
+      return;
+    setText((currentText) => {
+      const next =
+        currentText.slice(0, value.start) +
+        (attach ? '' : value.text) +
+        currentText.slice(value.end);
+      drafts.current.set(selectedThread, next);
+      return next;
+    });
+    setPasteChoice(null);
+  }
   return (
     <div className="agent-panel">
       {!selectedThread ? (
@@ -495,7 +526,7 @@ export function AgentPanel({
             role="log"
           >
             {!snapshot && !error && <Spinner />}
-            <AgentTranscriptItems items={items} onOpenFile={onOpenFile} />
+            <AgentTranscriptItems items={items} onOpenFile={onOpenFile} projectId={projectId} />
             {snapshot?.pending
               .filter(
                 (question) =>
@@ -542,11 +573,36 @@ export function AgentPanel({
             )}
           </div>
           <form
-            className="agent-composer"
+            className={`agent-composer${dragging ? ' agent-composer-dragging' : ''}`}
+            onDragOver={(event) => {
+              if (!event.dataTransfer.types.includes('Files')) return;
+              event.preventDefault();
+              if (!busy && !archived) setDragging(true);
+            }}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                setDragging(false);
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDragging(false);
+              if (!busy && !archived) attachments.add([...event.dataTransfer.files], ui.notify);
+            }}
             onSubmit={(event) => {
               event.preventDefault();
-              if (!text.trim() || unavailable) return;
+              if (
+                (!text.trim() && !attachments.input.length) ||
+                unavailable ||
+                archived ||
+                attachments.blocked ||
+                pasteChoice
+              )
+                return;
               const submitted = text;
+              const input = [
+                ...(submitted.trim() ? [{ type: 'text', text: submitted }] : []),
+                ...attachments.input,
+              ];
               void mutate(async () => {
                 await flushOpenDocuments(projectId);
                 const threadId = selectedThread || (await newThread());
@@ -557,22 +613,58 @@ export function AgentPanel({
                   await rpc('turn/steer', {
                     threadId,
                     expectedTurnId: turn.turnId,
-                    input: [{ type: 'text', text: submitted }],
+                    input,
                   });
                 } else
                   await rpc('turn/start', {
                     threadId,
-                    input: [{ type: 'text', text: submitted }],
+                    input,
                     ...(model ? { model } : {}),
                     ...(effort ? { effort } : {}),
                   });
                 if (alive.current) {
                   drafts.current.delete(threadId);
-                  setText('');
+                  attachments.clear(threadId);
+                  if (selected.current === threadId) setText('');
                 }
               });
             }}
           >
+            <input
+              ref={filePicker}
+              type="file"
+              multiple
+              accept={attachmentAccept}
+              className="hidden"
+              aria-label="Attach images or text files"
+              disabled={busy || archived}
+              onChange={(event) => {
+                attachments.add([...(event.currentTarget.files || [])], ui.notify);
+                event.currentTarget.value = '';
+              }}
+            />
+            <AgentDraftAttachments
+              entries={attachments.entries}
+              disabled={busy || archived}
+              onRemove={attachments.remove}
+              onRetry={(entry) => {
+                void attachments.retry(entry);
+              }}
+            />
+            {pasteChoice && (
+              <div className="agent-paste-choice" role="group" aria-label="Paste large text">
+                <span>Paste {pasteChoice.text.length.toLocaleString()} characters</span>
+                <Button size="sm" onClick={() => insertPaste(pasteChoice, true)}>
+                  Attach as text file
+                </Button>
+                <Button size="sm" onClick={() => insertPaste(pasteChoice, false)}>
+                  Paste inline
+                </Button>
+                <Button size="sm" onClick={() => setPasteChoice(null)}>
+                  Cancel
+                </Button>
+              </div>
+            )}
             <textarea
               aria-label="Message agent"
               placeholder={activeHere ? 'Guide the active turn…' : 'Message agent…'}
@@ -581,17 +673,45 @@ export function AgentPanel({
                 setText(e.target.value);
                 drafts.current.set(selectedThread, e.target.value);
               }}
+              onPaste={(event) => {
+                if (busy || archived || pasteChoice) {
+                  event.preventDefault();
+                  return;
+                }
+                const files = [...event.clipboardData.files];
+                if (files.length) {
+                  event.preventDefault();
+                  attachments.add(files, ui.notify);
+                  return;
+                }
+                const pasted = event.clipboardData.getData('text/plain');
+                if (pasted.length < 1000) return;
+                event.preventDefault();
+                const value = {
+                  text: pasted,
+                  start: event.currentTarget.selectionStart,
+                  end: event.currentTarget.selectionEnd,
+                };
+                if (pasted.length > 5000) insertPaste(value, true);
+                else setPasteChoice(value);
+              }}
               onKeyDown={(event) => {
                 if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
-              disabled={busy || archived}
+              disabled={busy || archived || !!pasteChoice}
               rows={3}
               maxLength={100000}
             />
             <div className="agent-composer-options" role="group" aria-label="Composer actions">
+              <IconButton
+                label="Attach files"
+                icon={<Paperclip size={15} />}
+                disabled={busy || archived}
+                onClick={() => filePicker.current?.click()}
+              />
               <div className="agent-run-settings-wrap">
                 <Button
                   size="sm"
@@ -688,7 +808,14 @@ export function AgentPanel({
               <Button
                 type="submit"
                 variant="primary"
-                disabled={unavailable || !text.trim() || archived || (!!active && !activeHere)}
+                disabled={
+                  unavailable ||
+                  (!text.trim() && !attachments.input.length) ||
+                  attachments.blocked ||
+                  !!pasteChoice ||
+                  archived ||
+                  (!!active && !activeHere)
+                }
               >
                 {activeHere ? 'Steer' : 'Send'}
               </Button>

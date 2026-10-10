@@ -4,14 +4,71 @@ import { db } from './db.js';
 import { projects } from './schema.js';
 import { WebSocket } from 'ws';
 import { z } from 'zod';
-import { agentSettingsSchema, agentRpcSchema } from '@repellet/shared';
+import { Readable } from 'node:stream';
+import {
+  agentSettingsSchema,
+  agentRpcSchema,
+  MAX_AGENT_IMAGE_BYTES,
+  agentAttachmentUploadSchema,
+} from '@repellet/shared';
 import { requireUser, projectAgentAccess, SESSION_COOKIE } from './security.js';
-import { workerJson } from './worker.js';
+import { workerJson, workerRequest } from './worker.js';
 import { flushProject } from './collaboration.js';
 import { serialize } from './lifecycle.js';
 import { track } from './live.js';
 import { config } from './config.js';
 export async function agentRoutes(app: FastifyInstance) {
+  await app.register(async (uploads) => {
+    uploads.addContentTypeParser(
+      'application/octet-stream',
+      { parseAs: 'buffer', bodyLimit: MAX_AGENT_IMAGE_BYTES },
+      (_req, body, done) => done(null, body),
+    );
+    const authorized = async (req: Parameters<typeof requireUser>[0]) => {
+      const id = z
+        .string()
+        .uuid()
+        .parse((req.params as { id: string }).id);
+      await projectAgentAccess(await requireUser(req), id);
+    };
+    uploads.post(
+      '/api/projects/:id/agent/attachments',
+      {
+        bodyLimit: MAX_AGENT_IMAGE_BYTES,
+        onRequest: authorized,
+        config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+      },
+      async (req) => {
+        const id = z
+          .string()
+          .uuid()
+          .parse((req.params as { id: string }).id);
+        const meta = agentAttachmentUploadSchema.parse(req.query);
+        if (!Buffer.isBuffer(req.body))
+          throw Object.assign(new Error('Send attachment bytes as application/octet-stream'), {
+            statusCode: 400,
+          });
+        return serialize(id, async () => {
+          await authorized(req);
+          const query = new URLSearchParams(meta).toString();
+          return workerJson(`/projects/${id}/agent/attachments?${query}`, 'POST', req.body);
+        });
+      },
+    );
+    uploads.get('/api/projects/:id/agent/attachments/:attachmentId', async (req, reply) => {
+      const params = z
+        .object({ id: z.string().uuid(), attachmentId: z.string().uuid() })
+        .parse(req.params);
+      await projectAgentAccess(await requireUser(req), params.id, false);
+      const response = await workerRequest(
+        `/projects/${params.id}/agent/attachments/${params.attachmentId}`,
+      );
+      return reply
+        .header('content-type', response.headers.get('content-type') || 'application/octet-stream')
+        .header('content-disposition', response.headers.get('content-disposition') || 'attachment')
+        .send(Readable.fromWeb(response.body as never));
+    });
+  });
   for (const operation of ['settings', 'account'] as const)
     app.get(`/api/agent/${operation}`, async (req) => {
       const user = await requireUser(req);
