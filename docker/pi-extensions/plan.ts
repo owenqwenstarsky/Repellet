@@ -1,5 +1,28 @@
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import extension from './upstream/plan/index.ts';
+
+const REVIEW_ENTRY = 'repellet.plan-review';
+
+function implementationApproved(ctx: ExtensionContext): boolean {
+  let approved = false;
+  let enabled = false;
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if (entry.type === 'custom' && entry.customType === 'plan-mode-state') {
+      enabled = (entry.data as { enabled?: boolean } | undefined)?.enabled === true;
+      if (enabled) approved = false;
+    } else if (entry.type === 'custom' && entry.customType === REVIEW_ENTRY) {
+      approved = (entry.data as { choice?: string } | undefined)?.choice === 'Implement the plan';
+    } else if (
+      entry.type === 'message' &&
+      entry.message.role === 'toolResult' &&
+      ['plan', 'plan_edit'].includes(entry.message.toolName) &&
+      !entry.message.isError
+    ) {
+      approved = false;
+    }
+  }
+  return approved && !enabled;
+}
 
 /** Use Repellet questions for the extension's terminal dialogs. No TUI is emulated. */
 export default function plan(pi: ExtensionAPI) {
@@ -36,8 +59,12 @@ export default function plan(pi: ExtensionAPI) {
             },
           ]);
           const answer = result.answers['plan-review']?.answers[0];
+          if (!options.includes(answer)) return undefined;
+          // UI answers are not model messages. Persist the decision before the
+          // upstream extension disables plan mode and queues implementation.
+          pi.appendEntry(REVIEW_ENTRY, { choice: answer });
           if (answer === 'Make changes') feedback = result.answers['plan-review']?.answers[1];
-          return options.includes(answer) ? answer : undefined;
+          return answer;
         },
         async editor(title: string) {
           // Plan review feedback is collected in the same browser form as the
@@ -116,4 +143,13 @@ export default function plan(pi: ExtensionAPI) {
       });
     },
   } as ExtensionAPI);
+
+  pi.on('before_agent_start', async (event, ctx) => {
+    if (!implementationApproved(ctx)) return;
+    return {
+      systemPrompt: `${event.systemPrompt}
+
+The user reviewed the current plan and explicitly selected "Implement the plan" in the plan review UI. That selection authorizes implementation of this plan. Plan mode is now off; the previous read-only planning restrictions applied to the planning phase. Proceed with the approved changes and verification. Do not ask again whether to implement the plan or claim that no execution choice was recorded. Ask a question only if new missing information or a separate required approval blocks the work.`,
+    };
+  });
 }

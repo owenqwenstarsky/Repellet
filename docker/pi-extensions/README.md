@@ -13,3 +13,6 @@ is required.
 `plan.ts` retains the upstream `/plan` command, tool filtering, shell guards,
 and branch-local plan/todo state. Its browser adapter replaces terminal
 questions and review dialogs with Repellet's owner-only question channel.
+Review choices are recorded on the session branch. Selecting "Implement the
+plan" supplies explicit implementation approval to subsequent model turns;
+entering plan mode again or changing the plan clears that approval.
