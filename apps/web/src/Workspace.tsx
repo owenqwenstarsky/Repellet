@@ -354,9 +354,10 @@ export function Workspace({
     />
   );
   if (!project) return loadingScreen;
-  const running = terminals.terminals.some(
-    (t) => (t.isMainRun ?? t.id === 'run') && t.isRun && t.alive,
-  );
+  const running =
+    ready &&
+    !terminals.error &&
+    terminals.terminals.some((t) => (t.isMainRun ?? t.id === 'run') && t.isRun && t.alive);
   const url = project.previewPort ? previewUrl(project.previewPort) : '';
   const { dimensions } = layout;
   return (

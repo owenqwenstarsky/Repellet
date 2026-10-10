@@ -20,6 +20,8 @@ Failed installations preserve the workspace for troubleshooting. **Retry prepara
 
 Run waits for open-document acknowledgements, flushes saved server documents, and replaces the previous process only after it has exited. The Run terminal retains app output. Readiness checks the actual HTTP target through the worker and sends no IDE credentials to the app. These checks do not update idle activity. HTTP errors still render with a warning. After 60 seconds without a response, troubleshooting guidance appears and the app remains running; **Retry readiness** checks again.
 
+Project badges show **Running** only while the main Run app process is verified alive, and **Idle** otherwise. An open workspace, terminals, tasks, and additional services do not count. HTTP readiness is separate: a live app still counts while its preview is starting or has timed out. Workspace startup progress and errors remain available in their existing views.
+
 Duplicating a project copies files, preparation and Run settings, and starter provenance. It skips scaffolding and never copies a member's GitHub connection or a project repository link. A ready duplicate can reuse copied dependencies. Existing projects keep their files and commands and have no automatic dependency setup.
 
 ## Workspace preferences and open files

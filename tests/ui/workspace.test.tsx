@@ -67,6 +67,66 @@ function mount() {
     </UiProvider>,
   );
 }
+it('keeps the badge and Run controls aligned with the live main app, then returns to Idle on Stop', async () => {
+  const main = { id: 'main', name: 'Run', isMainRun: true, isRun: true, alive: true };
+  const fallback = vi.mocked(api).getMockImplementation()!;
+  vi.mocked(api).mockImplementation(async (path, options) =>
+    path.endsWith('/terminals') ? [...terminals, main] : fallback(path, options),
+  );
+  vi.mocked(post).mockImplementation(async (path) => {
+    if (path.endsWith('/run/stop')) main.alive = false;
+    return {};
+  });
+  const { container } = mount();
+  await screen.findByRole('button', { name: 'Stop app' });
+  expect(container.querySelector('.workspace-header .status')?.textContent).toBe('Running');
+  expect(screen.getByRole('button', { name: 'Run' }).textContent).toBe('Restart');
+  fireEvent.click(screen.getByRole('button', { name: 'Stop app' }));
+  await waitFor(() =>
+    expect(container.querySelector('.workspace-header .status')?.textContent).toBe('Idle'),
+  );
+  expect(screen.queryByRole('button', { name: 'Stop app' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Run' }).textContent).toBe('Run');
+});
+it('does not show Running for an additional service or task', async () => {
+  const fallback = vi.mocked(api).getMockImplementation()!;
+  vi.mocked(api).mockImplementation(async (path, options) =>
+    path.endsWith('/terminals')
+      ? [
+          ...terminals,
+          { id: 'extra', name: 'Service', isMainRun: false, isRun: true, alive: true },
+          { id: 'task', name: 'Task', isMainRun: false, isRun: false, alive: true },
+        ]
+      : fallback(path, options),
+  );
+  const { container } = mount();
+  await screen.findByRole('button', { name: 'Run' });
+  expect(api).toHaveBeenCalledWith(
+    '/projects/project/terminals',
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  );
+  expect(container.querySelector('.workspace-header .status')?.textContent).toBe('Idle');
+  expect(screen.queryByRole('button', { name: 'Stop app' })).toBeNull();
+});
+it('returns the badge to Idle if live status verification fails after Run', async () => {
+  const fallback = vi.mocked(api).getMockImplementation()!;
+  let failed = false;
+  vi.mocked(api).mockImplementation(async (path, options) => {
+    if (path.endsWith('/terminals')) {
+      if (failed) throw new Error('Workspace offline');
+      return [{ id: 'run', name: 'Run', isRun: true, alive: true }];
+    }
+    return fallback(path, options);
+  });
+  const { container } = mount();
+  await screen.findByRole('button', { name: 'Stop app' });
+  failed = true;
+  fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+  await waitFor(() =>
+    expect(container.querySelector('.workspace-header .status')?.textContent).toBe('Idle'),
+  );
+  expect(screen.queryByRole('button', { name: 'Stop app' })).toBeNull();
+});
 it('opens the static starter index file from the starter catalog', async () => {
   defaults({
     ...project,

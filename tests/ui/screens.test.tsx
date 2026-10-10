@@ -85,6 +85,53 @@ it('dismisses project actions with Escape and restores focus', async () => {
   expect(screen.queryByText('Rename')).toBeNull();
   expect(document.activeElement).toBe(opener);
 });
+it('counts live main apps and shows Idle for every other project lifecycle state', async () => {
+  const list = [
+    { ...project, id: 'app', name: 'Live app', running: true },
+    { ...project, id: 'editor', name: 'Editor only', running: false },
+    ...(['stopped', 'building', 'starting', 'stopping', 'failed'] as const).map((state) => ({
+      ...project,
+      id: state,
+      name: state,
+      state,
+      running: false,
+    })),
+  ];
+  vi.mocked(api).mockResolvedValue(list);
+  const { container } = render(
+    <UiProvider>
+      <Projects user={user} onOpen={vi.fn()} />
+    </UiProvider>,
+  );
+  await screen.findByText('Live app');
+  expect(screen.getByText('1 running · Projects are private until you share them.')).toBeTruthy();
+  expect(container.querySelectorAll('.status.running')).toHaveLength(1);
+  expect(container.querySelectorAll('.status.idle')).toHaveLength(6);
+  expect(screen.getAllByText('Idle')).toHaveLength(6);
+});
+it('uses app activity for admin badges while retaining workspace Stop controls', async () => {
+  const fallback = vi.mocked(api).getMockImplementation()!;
+  vi.mocked(api).mockImplementation(async (path, options) =>
+    path === '/admin/projects'
+      ? [
+          { ...project, id: 'app', name: 'Live app', running: true, canOpen: true },
+          { ...project, id: 'idle', name: 'Editor only', running: false, canOpen: true },
+          { ...project, id: 'failed', name: 'Failed workspace', state: 'failed', canOpen: true },
+        ]
+      : fallback(path, options),
+  );
+  const { container } = render(
+    <UiProvider>
+      <Admin onOpen={vi.fn()} />
+    </UiProvider>,
+  );
+  await screen.findByRole('tab', { name: 'All projects' });
+  fireEvent.click(screen.getByRole('tab', { name: 'All projects' }));
+  await screen.findByText('Live app');
+  expect(container.querySelectorAll('.status.running')).toHaveLength(1);
+  expect(container.querySelectorAll('.status.idle')).toHaveLength(2);
+  expect(screen.getAllByRole('button', { name: 'Stop workspace' })).toHaveLength(2);
+});
 it('dismisses file context menus with Escape and restores the file row', async () => {
   render(
     <UiProvider>
