@@ -36,7 +36,14 @@ export function readPreferences(key: string): WorkspacePreferences {
     pane: ['files', 'search', 'git', 'problems'].includes(value.pane || '') ? value.pane! : 'files',
     showSidebar: value.showSidebar !== false,
     showPreview: value.showPreview !== false,
-    rightPanel: value.rightPanel === 'agent' ? 'agent' : 'preview',
+    rightPanel:
+      value.rightPanel === 'database' && value.databaseOpen === true
+        ? 'database'
+        : value.rightPanel === 'agent'
+          ? 'agent'
+          : 'preview',
+    databaseOpen: value.databaseOpen === true,
+    lastFixedRightPanel: value.lastFixedRightPanel === 'agent' ? 'agent' : 'preview',
     agentThread:
       typeof value.agentThread === 'string' && /^[a-zA-Z0-9_-]{1,200}$/.test(value.agentThread)
         ? value.agentThread

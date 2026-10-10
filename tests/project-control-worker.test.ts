@@ -12,6 +12,7 @@ const preferences = vi.hoisted((): AgentStoredSettings => ({
   personalProxy: { baseUrl: 'http://test-provider', apiKey: 'private-provider-key' },
 }));
 
+vi.mock('../apps/worker/src/databases.js', () => ({ databaseBytes: async () => 0 }));
 vi.mock('../apps/worker/src/config.js', () => ({
   config: { appUrl: 'http://test-api', token: 'private-worker-token' },
 }));

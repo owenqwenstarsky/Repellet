@@ -1,3 +1,5 @@
+import { forwardResourceControl } from './resource-control.js';
+import { databaseBytes } from '../databases.js';
 import { randomUUID } from 'node:crypto';
 import { resolveAttachmentInputs } from './attachments.js';
 import type { WebSocket } from 'ws';
@@ -82,11 +84,18 @@ async function serverRequest(session: Session, request: ServerRequest) {
   const requestId = request.id,
     requestedMethod: string = request.method;
   try {
-    if (request.method === 'repellet/project/control') {
+    if (
+      request.method === 'repellet/project/control' ||
+      request.method === 'repellet/resource/control'
+    ) {
       const controller = new AbortController();
       session.controls.set(request.id, controller);
       try {
-        const result = await forwardProjectControl(
+        const result = await (
+          request.method === 'repellet/project/control'
+            ? forwardProjectControl
+            : forwardResourceControl
+        )(
           {
             projectId: session.projectId,
             userId: session.userId,
@@ -454,6 +463,9 @@ export async function agentRpc(projectId: string, userId: string, input: unknown
 }
 export async function agentUsage(projectId: string) {
   const agentBytes = await projectAgentBytes(projectId);
+  await bridgeRequest(projectId, '/database-usage', 'PUT', {
+    bytes: await databaseBytes(projectId),
+  });
   await bridgeRequest(projectId, '/agent-usage', 'PUT', { bytes: agentBytes });
   const usage = (await (await bridgeRequest(projectId, '/usage')).json()) as {
     bytes: number;

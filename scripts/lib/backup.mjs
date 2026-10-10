@@ -16,12 +16,7 @@ export async function createBackup({ destination, envFile, dump, volumes, archiv
   });
   await dump(path.join(destination, 'database.dump'));
   for (const volume of volumes) {
-    if (
-      !/^(?:repellet-[a-f0-9-]{36}-(?:files|home|agent|attachments)|repellet-agent-accounts)$/.test(
-        volume,
-      )
-    )
-      throw new Error('Unexpected workspace volume name');
+    if (!isBackupVolume(volume)) throw new Error('Unexpected workspace volume name');
     const file = volume + '.tar.gz';
     await archiveVolume(volume, path.join(destination, file));
     manifest.volumes.push({ name: volume, file });
@@ -62,9 +57,7 @@ export async function verifyBackup(directory) {
   const volumeNames = new Set();
   for (const volume of manifest.volumes) {
     if (
-      !/^(?:repellet-[a-f0-9-]{36}-(?:files|home|agent|attachments)|repellet-agent-accounts)$/.test(
-        volume.name,
-      ) ||
+      !isBackupVolume(volume.name) ||
       volume.file !== volume.name + '.tar.gz' ||
       !names.has(volume.file) ||
       volumeNames.has(volume.name)
@@ -86,4 +79,22 @@ export async function restoreBackup({
   for (const volume of manifest.volumes)
     await restoreVolume(volume.name, path.join(directory, volume.file));
   return manifest;
+}
+
+/** Quiesce only this installation's project database containers before volume archives. */
+export async function stopProjectDatabases(ids, run, remove = false) {
+  for (const id of ids) {
+    if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Invalid stored project ID');
+    const name = 'repellet-database-' + id;
+    const exists = await run(
+      ['ps', '-a', '--filter', 'name=^/' + name + '$', '--format', '{{.ID}}'],
+      { capture: true },
+    );
+    if (exists) await run(remove ? ['rm', '-f', exists] : ['stop', '--time', '20', exists]);
+  }
+}
+export function isBackupVolume(name) {
+  return /^(?:repellet-[a-f0-9-]{36}-(?:files|home|agent|attachments|database)|repellet-agent-accounts)$/.test(
+    name,
+  );
 }

@@ -275,7 +275,9 @@ export type WorkspacePreferences = {
   pane: string;
   showSidebar: boolean;
   showPreview: boolean;
-  rightPanel?: 'preview' | 'agent';
+  rightPanel?: 'preview' | 'agent' | 'database';
+  databaseOpen?: boolean;
+  lastFixedRightPanel?: 'preview' | 'agent';
   agentThread?: string;
   bottomPanelTab?: 'terminal' | 'preparation';
   showTerminal: boolean;
@@ -438,3 +440,5 @@ export * from './agentProjection.js';
 export * from './workspace.js';
 export * from './attachments.js';
 export * from './projectControl.js';
+
+export * from './database.js';

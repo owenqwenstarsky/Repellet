@@ -1,6 +1,6 @@
 # Repellet
 
-A self-hosted browser IDE for trusted, invited users. Create projects with Python, Node.js, Go, Rust, or combinations; edit together, use real shared terminals, run apps, and open private previews. No AI features or public registration.
+A self-hosted browser IDE for trusted, invited users. Create projects with Python, Node.js, Go, Rust, or combinations; edit together, use real shared terminals, run apps, and open private previews. Private project agents and development databases; no public registration.
 
 ## Install
 
@@ -50,7 +50,7 @@ npm audit
 
 Database tests create disposable databases; Docker tests create disposable containers/volumes. Browser tests use their own database, ports, worker, and preview range. They never reset the owner account in your installation. Build before browser tests. See [verification notes](docs/verification.md) for platform coverage and limitations.
 
-See [Codex agents and personal provider settings](docs/agents.md).
+See [project agents and personal provider settings](docs/agents.md) and [development databases and environment tools](docs/databases.md).
 
 See [starters, workspace preferences, GitHub setup, and recovery](docs/workflows.md).
 

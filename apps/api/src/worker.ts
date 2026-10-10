@@ -1,5 +1,10 @@
 import { config } from './config.js';
-export async function workerRequest(route: string, method = 'GET', body?: unknown) {
+export async function workerRequest(
+  route: string,
+  method = 'GET',
+  body?: unknown,
+  signal?: AbortSignal,
+) {
   const response = await fetch(config.workerUrl + route, {
     method,
     headers: {
@@ -16,9 +21,12 @@ export async function workerRequest(route: string, method = 'GET', body?: unknow
         : Buffer.isBuffer(body)
           ? (body as unknown as BodyInit)
           : JSON.stringify(body),
-    signal: AbortSignal.timeout(
-      route.endsWith('/ensure') || route.endsWith('/build') ? 30 * 60 * 1000 : 180000,
-    ),
+    signal: AbortSignal.any([
+      ...(signal ? [signal] : []),
+      AbortSignal.timeout(
+        route.endsWith('/ensure') || route.endsWith('/build') ? 30 * 60 * 1000 : 180000,
+      ),
+    ]),
   });
   if (!response.ok) {
     let message = await response.text();
@@ -36,14 +44,16 @@ export async function workerJson<T = any>(
   route: string,
   method = 'GET',
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
-  return (await workerRequest(route, method, body)).json() as Promise<T>;
+  return (await workerRequest(route, method, body, signal)).json() as Promise<T>;
 }
 export async function bridge<T = any>(
   id: string,
   path: string,
   method = 'GET',
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
-  return workerJson(`/projects/${id}/request`, 'POST', { path, method, body });
+  return workerJson(`/projects/${id}/request`, 'POST', { path, method, body }, signal);
 }

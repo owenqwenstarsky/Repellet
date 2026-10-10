@@ -1,3 +1,4 @@
+import { DatabasePanel } from './DatabasePanel';
 import { useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react';
 import type { User, TerminalInfo, WorkspacePreferences } from '@repellet/shared';
 import { api, post, errorMessage, previewUrl } from './api';
@@ -130,13 +131,28 @@ export function Workspace({
     preparationPhase.current = phase;
   }, [ready, project?.preparation.status]);
   const agentOwner = project?.ownerId === user.id;
-  const [rightPanel, setRightPanel] = useState<'preview' | 'agent'>(saved.rightPanel || 'preview');
+  const [rightPanel, setRightPanel] = useState<'preview' | 'agent' | 'database'>(
+    saved.rightPanel || 'preview',
+  );
+  const [databaseOpen, setDatabaseOpen] = useState(saved.databaseOpen === true);
+  const [lastFixedRightPanel, setLastFixedRightPanel] = useState<'preview' | 'agent'>(
+    saved.lastFixedRightPanel || (saved.rightPanel === 'agent' ? 'agent' : 'preview'),
+  );
+  const [databaseRevision, setDatabaseRevision] = useState(0);
+  useEffect(() => {
+    if (rightPanel !== 'database') setLastFixedRightPanel(rightPanel);
+  }, [rightPanel]);
   const [agentThread, setAgentThread] = useState(saved.agentThread || '');
   const [agentVisited, setAgentVisited] = useState(saved.rightPanel === 'agent');
   useEffect(() => {
     if (rightPanel === 'agent') setAgentVisited(true);
   }, [rightPanel]);
-  const selectedRightPanel = agentOwner ? rightPanel : 'preview';
+  const selectedRightPanel =
+    rightPanel === 'database' && databaseOpen && editable
+      ? 'database'
+      : rightPanel === 'agent' && agentOwner
+        ? 'agent'
+        : 'preview';
   const [quickOpen, setQuickOpen] = useState(false);
   const [settings, setSettings] = useState(false);
   const [peers, setPeers] = useState<{ id: string; name: string }[]>([]);
@@ -165,6 +181,8 @@ export function Workspace({
         setRevision((v) => v + 1);
         setIndexRevision((v) => v + 1);
       }
+      if (['database', 'environment', 'resync'].includes(message.type))
+        setDatabaseRevision((value) => value + 1);
       if (message.type === 'document') editor.observeDocument(message.document);
       if (message.type === 'presence') setPeers(message.peers);
       if (message.type === 'file' || message.type === 'files') setRevision((v) => v + 1);
@@ -211,6 +229,8 @@ export function Workspace({
       showPreview: layout.showPreview,
       rightPanel: selectedRightPanel,
       agentThread,
+      databaseOpen,
+      lastFixedRightPanel,
       bottomPanelTab,
       showTerminal: layout.showTerminal,
       leftWidth: layout.leftWidth,
@@ -227,6 +247,8 @@ export function Workspace({
     layout.showSidebar,
     layout.showPreview,
     selectedRightPanel,
+    databaseOpen,
+    lastFixedRightPanel,
     agentThread,
     bottomPanelTab,
     layout.showTerminal,
@@ -422,6 +444,13 @@ export function Workspace({
                     selectedRightPanel === 'preview' ? !layout.showPreview : true,
                   );
                 }}
+                databaseAllowed={editable}
+                databaseActive={layout.showPreview && selectedRightPanel === 'database'}
+                onDatabase={() => {
+                  setDatabaseOpen(true);
+                  setRightPanel('database');
+                  layout.setShowPreview(true);
+                }}
                 agentOwner={agentOwner}
                 agentActive={layout.showPreview && selectedRightPanel === 'agent'}
                 onAgent={() => {
@@ -538,14 +567,17 @@ export function Workspace({
                         className="workspace-right-panel"
                         style={{ width: dimensions.preview }}
                       >
-                        {agentOwner && (
+                        {(agentOwner || (databaseOpen && editable)) && (
                           <Tabs
                             label="Workspace right panel"
                             value={selectedRightPanel}
                             onChange={setRightPanel}
                             items={[
                               { id: 'preview', label: 'Preview' },
-                              { id: 'agent', label: 'Agent' },
+                              ...(agentOwner ? [{ id: 'agent' as const, label: 'Agent' }] : []),
+                              ...(databaseOpen && editable
+                                ? [{ id: 'database' as const, label: 'Database' }]
+                                : []),
                             ]}
                           />
                         )}
@@ -566,6 +598,28 @@ export function Workspace({
                             }
                           />
                         </div>
+                        {databaseOpen && editable && (
+                          <div
+                            className="workspace-right-content"
+                            hidden={selectedRightPanel !== 'database'}
+                          >
+                            <DatabasePanel
+                              key={id}
+                              projectId={id}
+                              owner={agentOwner}
+                              revision={databaseRevision}
+                              onClose={() => {
+                                setDatabaseOpen(false);
+                                if (rightPanel === 'database')
+                                  setRightPanel(
+                                    lastFixedRightPanel === 'agent' && agentOwner
+                                      ? 'agent'
+                                      : 'preview',
+                                  );
+                              }}
+                            />
+                          </div>
+                        )}
                         {agentOwner && agentVisited && (
                           <div
                             className="workspace-right-content"

@@ -69,5 +69,6 @@ export function formatSnapshot(snapshot: PlanSnapshot): string {
 	const todos = snapshot.todos.length
 		? snapshot.todos.map((todo) => `[${todo.done ? "x" : " "}] #${todo.id}: ${todo.text}`).join("\n")
 		: "(No todos.)";
-	return `Plan:\n${plan}\n\nTodos:\n${todos}`;
+	const heading = /^\s*Plan:[ \t]*(?:\r?\n|$)/.test(plan) ? "" : "Plan:\n";
+	return `${heading}${plan}\n\nTodos:\n${todos}`;
 }

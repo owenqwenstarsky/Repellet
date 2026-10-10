@@ -26,7 +26,7 @@ jobs:
           printf '%s host.docker.internal\n' "$gateway" | sudo tee -a /etc/hosts
       - run: npm run check
       - run: npm run format:check
-      - run: docker build -f docker/workspace.Dockerfile -t repellet/workspace-base:0.6.5 .
+      - run: docker build -f docker/workspace.Dockerfile -t repellet/workspace-base:0.7.1 .
       - run: npm run test:docker
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e

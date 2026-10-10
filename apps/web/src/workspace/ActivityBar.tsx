@@ -6,6 +6,7 @@ import {
   PanelRight,
   TerminalSquare,
   Bot,
+  Database,
 } from 'lucide-react';
 const tools = [
   ['files', 'Files', Files],
@@ -24,7 +25,13 @@ export function ActivityBar({
   agentOwner = false,
   agentActive = false,
   onAgent,
+  databaseAllowed = false,
+  databaseActive = false,
+  onDatabase,
 }: {
+  databaseAllowed?: boolean;
+  databaseActive?: boolean;
+  onDatabase?: () => void;
   agentOwner?: boolean;
   agentActive?: boolean;
   onAgent?: () => void;
@@ -74,6 +81,17 @@ export function ActivityBar({
       >
         <TerminalSquare size={19} />
       </button>
+      {databaseAllowed && (
+        <button
+          aria-label="Database"
+          title="Database"
+          aria-pressed={databaseActive}
+          className={databaseActive ? 'active-subtle' : ''}
+          onClick={onDatabase}
+        >
+          <Database size={19} />
+        </button>
+      )}
       <button
         aria-pressed={showPreview}
         aria-label="Toggle preview"

@@ -52,6 +52,7 @@ vi.mock('@earendil-works/pi-ai/compat', () => ({
   getSupportedThinkingLevels: () => ['off', 'medium', 'high'],
 }));
 vi.mock('../apps/worker/src/config.js', () => ({ config: {}, projectId: (id: string) => id }));
+vi.mock('../apps/worker/src/databases.js', () => ({ databaseBytes: async () => 0 }));
 vi.mock('../apps/worker/src/workspaces.js', () => ({
   locked: async (_id: string, operation: any) => operation(),
   bridgeRequest: async () => new Response(JSON.stringify({ bytes: 0, exceeded: false })),

@@ -30,7 +30,9 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
     headers: {
       ...(options.body ? { 'content-type': 'application/json' } : {}),
       ...(['POST', 'PUT', 'DELETE'].includes(options.method || '') &&
-      /^\/projects\/[0-9a-f-]+(?:\/(?:open|stop|duplicate|environment))?$/.test(path)
+      /^\/projects\/[0-9a-f-]+(?:\/(?:open|stop|duplicate|environment|database(?:\/retry)?))?$/.test(
+        path,
+      )
         ? { 'idempotency-key': idempotencyKey() }
         : {}),
       ...options.headers,

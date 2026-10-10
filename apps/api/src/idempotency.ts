@@ -19,9 +19,10 @@ function canonical(value: unknown): unknown {
 /** Retried side effects never execute twice, including after a lost HTTP response. */
 export function idempotencyHooks(app: FastifyInstance) {
   app.addHook('preHandler', async (req, reply) => {
-    const match = /^\/api\/projects\/([0-9a-f-]+)(?:\/(open|stop|duplicate|environment))?$/.exec(
-      req.url.split('?')[0]!,
-    );
+    const match =
+      /^\/api\/projects\/([0-9a-f-]+)(?:\/(open|stop|duplicate|environment|database(?:\/retry)?))?$/.exec(
+        req.url.split('?')[0]!,
+      );
     if (!match || !['POST', 'PUT', 'DELETE'].includes(req.method)) return;
     if (!(match[2] || req.method === 'DELETE')) return;
     const header = req.headers['idempotency-key'];

@@ -832,6 +832,28 @@ it('keeps unfamiliar tool output intact, escapes HTML, and shows pending and fai
   expect(screen.getByLabelText('Tool output').textContent).toBe('{partial');
 });
 
+it.each(['', 'Plan:\n', 'Plan: Plan:\n', 'Plan:\nPlan:\n', 'Plan:\n\nPlan:\r\nPlan:\n'])(
+  'renders saved plans with prefix %j without duplicate labels and preserves content',
+  (prefix) => {
+    const text = `${prefix}\n1. **Create** — Add \`main.go\`.\n2. **Serve** — Serve files.\n\nTodos:\n[ ] #1: Create executable\n[x] #2: Serve files\n\n\`\`\`text\nPlan: Plan:\n\`\`\``;
+    const item = { type: 'plan', id: 'saved-plan', text } as const;
+    const view = render(<AgentItem item={item} onOpenFile={vi.fn()} />);
+    const content = view.container.querySelector('.agent-plan-content')!;
+    if (prefix) expect(content.firstElementChild?.textContent).toBe('Plan:');
+    else expect(content.firstElementChild?.tagName).toBe('OL');
+    expect(content.querySelectorAll('ol li')).toHaveLength(2);
+    expect(content.querySelector('strong')?.textContent).toBe('Create');
+    expect(content.querySelector('li code')?.textContent).toBe('main.go');
+    const todos = [...content.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+    expect(todos.map((todo) => ({ checked: todo.checked, disabled: todo.disabled }))).toEqual([
+      { checked: false, disabled: true },
+      { checked: true, disabled: true },
+    ]);
+    expect(content.querySelector('pre')?.textContent).toBe('Plan: Plan:\n');
+    expect(item.text).toBe(text);
+  },
+);
+
 it('renders GFM plans and readable structured file tools with safe file actions', () => {
   const openFile = vi.fn();
   const view = render(

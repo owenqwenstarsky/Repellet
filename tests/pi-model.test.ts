@@ -98,7 +98,7 @@ function host(models = [...catalog], configuredModel = '') {
   const source = readFileSync(new URL('../docker/pi-host.cjs', import.meta.url), 'utf8');
   const service = runInNewContext(
     source.slice(0, source.lastIndexOf('main().catch(')) +
-      '\nruntime = testRuntime; api = testApi; ({ handle, load, isActive: () => active !== null, respond: (id, result) => pending.get(id).resolve(result) });',
+      '\nruntime = testRuntime; api = testApi; ({ handle, load, environment: process.env, isActive: () => active !== null, respond: (id, result) => pending.get(id).resolve(result) });',
     {
       require: (name: string) =>
         ({ 'node:fs': fs, 'node:path': path, 'node:crypto': crypto, './pi-session.cjs': helpers })[
@@ -153,6 +153,50 @@ it('routes project extension requests through the current host turn and loads th
   f.respond(outbound.id, { outcome: 'status' });
   await vi.waitFor(() => expect(resolve).toHaveBeenCalledWith({ outcome: 'status' }));
   expect(reject).not.toHaveBeenCalled();
+  finish();
+});
+
+it('routes resources through the active host turn and refreshes variables without restarting it', async () => {
+  const f = host();
+  let finish!: () => void;
+  f.session.prompt.mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  await f.handle({ method: 'thread/start' });
+  const { turn } = await f.handle({
+    method: 'turn/start',
+    params: { threadId: 'thread', input: [{ type: 'text', text: 'Inspect database' }] },
+  });
+  expect(f.loaderOptions[0].additionalExtensionPaths).toContain('/opt/pi/extensions/resources.ts');
+  for (const variables of [{ DATABASE_URL: 'connection', TOKEN: 'value' }, { DB: 'connection' }]) {
+    const resolve = vi.fn(),
+      reject = vi.fn();
+    f.events.get('repellet:resource-control')({
+      operation: 'environment_sync',
+      arguments: {},
+      resolve,
+      reject,
+    });
+    const outbound = f.output
+      .filter((message) => message.method === 'repellet/resource/control')
+      .at(-1);
+    expect(outbound.params).toEqual({
+      threadId: 'thread',
+      turnId: turn.id,
+      operation: 'environment_sync',
+      arguments: {},
+    });
+    f.respond(outbound.id, { data: variables });
+    await vi.waitFor(() => expect(resolve).toHaveBeenCalled());
+    expect(reject).not.toHaveBeenCalled();
+    expect(f.isActive()).toBe(true);
+  }
+  expect(f.environment).toMatchObject({ DB: 'connection' });
+  expect(f.environment).not.toHaveProperty('TOKEN');
+  expect(f.environment).not.toHaveProperty('DATABASE_URL');
   finish();
 });
 

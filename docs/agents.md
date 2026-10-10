@@ -44,7 +44,7 @@ The **Plan mode** button sits in the composer beside Run settings. It runs the e
 
 Planning questions appear in the browser. A completed plan appears in the transcript and pauses for **Implement the plan**, **Make changes**. Implementation restores write tools and queues the extension's implementation prompt. Make changes reveals an empty feedback field in the review form. Unanswered questions do not expire. The transcript keeps one current plan with compact progress entries. Interrupting a review clears the pending question and retains plan mode.
 
-The workspace base is now `repellet/workspace-base:0.6.5`. Stop and start older workspaces, or rebuild their environment, to receive the main Run app tools and updated bridge. Stopping only the app does not update a workspace. Existing project files and canonical session histories remain in their volumes. No database migration is required.
+The workspace base is now `repellet/workspace-base:0.7.1`. Stop and start older workspaces, or rebuild their environment, to receive the main Run app tools and updated bridge. Stopping only the app does not update a workspace. Existing project files and canonical session histories remain in their volumes. The Agent APIs feature requires no database migration; project databases use the normal application migrations.
 
 ## Main Run app tools
 
@@ -68,4 +68,8 @@ The worker fetches `/models` using the private connection key, preserves API pat
 
 The worker enforces the current effective connection and allowed model catalog for turns and compaction. Administrator changes let admitted turns finish, then refresh affected hosts before further model execution. API/model/effort changes are disabled during turns and compaction, and web search follows the active provider and model.
 
-The workspace base is `repellet/workspace-base:0.6.5`. Stop and start existing workspaces, or rebuild their environments, to receive the updated host. Older adapters are rejected with upgrade guidance before model execution. Files and canonical session history remain in their volumes. Verification for this change uses mocked in-memory storage, provider requests, authentication, Pi sessions, and React rendering; it does not start containers, browsers, databases, or external services.
+The workspace base is `repellet/workspace-base:0.7.1`. Stop and start existing workspaces, or rebuild their environments, to receive the updated host. Older adapters are rejected with upgrade guidance before model execution. Files and canonical session history remain in their volumes. Verification for this change uses mocked in-memory storage, provider requests, authentication, Pi sessions, and React rendering; it does not start containers, browsers, databases, or external services.
+
+## Database and environment tools
+
+Workspaces using base image `repellet/workspace-base:0.7.0` include database inspection/execution and saved environment-variable management tools. Owners create/delete databases in the closable Database tab; agents operate an existing PostgreSQL or MongoDB development database. Plan mode exposes inspection and variable list/get while hiding and blocking writes. Agent shell tools refresh saved project variables before each launch, including after a rename or deletion. See [development databases](databases.md) for operations, limits, and upgrade details.

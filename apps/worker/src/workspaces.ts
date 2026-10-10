@@ -1,3 +1,11 @@
+import {
+  ensureDatabase,
+  stopDatabase,
+  removeDatabase,
+  databaseBytes,
+  databaseUrl,
+  type DatabaseSpec,
+} from './databases.js';
 import { docker, ensureImage, BASE_IMAGE } from './images.js';
 import { config, bridgeToken, projectId } from './config.js';
 import { installManagedAgentContext } from './agent-context.js';
@@ -33,7 +41,13 @@ export async function bridgeAddress(id: string) {
   if (!binding) throw new Error('Workspace bridge port is missing');
   return `http://127.0.0.1:${binding.HostPort}`;
 }
-export async function bridgeRequest(id: string, route: string, method = 'GET', body?: unknown) {
+export async function bridgeRequest(
+  id: string,
+  route: string,
+  method = 'GET',
+  body?: unknown,
+  signal?: AbortSignal,
+) {
   const url = (await bridgeAddress(id)) + route;
   const response = await fetch(url, {
     method,
@@ -42,7 +56,12 @@ export async function bridgeRequest(id: string, route: string, method = 'GET', b
       ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(method === 'POST' && route === '/git' ? 180000 : 30000),
+    signal: AbortSignal.any([
+      ...(signal ? [signal] : []),
+      AbortSignal.timeout(
+        route === '/database' ? 35000 : method === 'POST' && route === '/git' ? 180000 : 30000,
+      ),
+    ]),
   });
   if (!response.ok) {
     let message = await response.text();
@@ -115,6 +134,7 @@ export async function prepareWorkspace(id: string, runtimes: Runtime[], rebuild 
     if (rebuild) {
       const old = await inspect(id);
       if (old?.State.Running) await docker.getContainer(old.Id).stop({ t: 10 });
+      await stopDatabase(id);
     }
     await ensureImage(id, runtimes);
     return { ok: true };
@@ -128,6 +148,7 @@ export type EnsureOptions = {
   prepared?: boolean;
   cloneUrl?: string;
   previewTargetPort?: number;
+  database?: DatabaseSpec;
 };
 export async function ensureWorkspace(id: string, options: EnsureOptions) {
   return locked(id, async () => {
@@ -135,6 +156,7 @@ export async function ensureWorkspace(id: string, options: EnsureOptions) {
     if (options.rebuild) {
       const old = await inspect(id);
       if (old?.State.Running) await docker.getContainer(old.Id).stop({ t: 10 });
+      await stopDatabase(id);
     }
     const image = await ensureImage(id, options.runtimes, !options.prepared);
     let current = await inspect(id);
@@ -229,6 +251,28 @@ export async function ensureWorkspace(id: string, options: EnsureOptions) {
           : 'Workspace service did not start. Check worker logs.',
       );
     }
+    let databaseStatus: 'ready' | 'failed' | undefined;
+    if (options.database) {
+      try {
+        await ensureDatabase(id, options.database, containerName(id));
+        await bridgeRequest(id, '/database/ping', 'POST', {
+          database: {
+            id: options.database.id,
+            type: options.database.type,
+            url: databaseUrl(id, options.database),
+          },
+        });
+        databaseStatus = 'ready';
+      } catch {
+        databaseStatus = 'failed';
+      }
+      try {
+        await bridgeRequest(id, '/database-usage', 'PUT', { bytes: await databaseBytes(id) });
+      } catch {
+        // A database failure must not prevent editing or recovery in the workspace.
+        // The regular usage monitor retries measurement and synchronization.
+      }
+    }
     await bridgeRequest(id, '/environment', 'PUT', options.environment);
     await bridgeRequest(id, '/limits', 'PUT', { storageMb: options.limits.storageMb });
     if (options.cloneUrl) {
@@ -243,7 +287,12 @@ export async function ensureWorkspace(id: string, options: EnsureOptions) {
       bytes: number;
       exceeded: boolean;
     };
-    return { state: 'running', storageBytes: usage.bytes, storageExceeded: usage.exceeded };
+    return {
+      state: 'running',
+      storageBytes: usage.bytes,
+      storageExceeded: usage.exceeded,
+      databaseStatus,
+    };
   });
 }
 export async function stopWorkspace(id: string) {
@@ -253,6 +302,7 @@ export async function stopWorkspace(id: string) {
       await bridgeRequest(id, '/shutdown', 'POST').catch(() => {});
       await docker.getContainer(current.Id).stop({ t: 10 });
     }
+    await stopDatabase(id);
     return { state: 'stopped' };
   });
 }
@@ -260,6 +310,7 @@ export async function removeWorkspace(id: string) {
   return locked(id, async () => {
     const current = await inspect(id);
     if (current) await docker.getContainer(current.Id).remove({ force: true });
+    await removeDatabase(id);
     for (const kind of ['files', 'home', 'agent', 'attachments'])
       try {
         await docker.getVolume(volumeName(id, kind)).remove();
