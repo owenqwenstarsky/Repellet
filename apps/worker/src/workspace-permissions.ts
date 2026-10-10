@@ -1,7 +1,13 @@
 import { finished } from 'node:stream/promises';
+import type { MountSettings } from 'dockerode';
 import { docker, BASE_IMAGE } from './images.js';
 
-export const workspacePermissionMarker = '/home/agent/.repellet-workspace-permissions-v1';
+// Repair volumes whose v1 permissions could have been reset by Docker copy-up.
+export const workspacePermissionMarker = '/home/agent/.repellet-workspace-permissions-v2';
+// Empty workspaces must retain their prepared directory permissions instead of
+// receiving image metadata whenever a container or helper is created. Docker
+// accepts NoCopy alone; dockerode's types also require unrelated driver fields.
+export const workspaceVolumeOptions = { NoCopy: true } as MountSettings['VolumeOptions'];
 
 /** Run with the workspace stopped so permission changes cannot flood its file watcher. */
 export async function prepareWorkspacePermissions(workspaceVolume: string, agentVolume: string) {
@@ -17,7 +23,12 @@ export async function prepareWorkspacePermissions(workspaceVolume: string, agent
       CapDrop: ['ALL'],
       CapAdd: ['CHOWN', 'FOWNER', 'DAC_OVERRIDE'],
       Mounts: [
-        { Type: 'volume', Source: workspaceVolume, Target: '/workspace' },
+        {
+          Type: 'volume',
+          Source: workspaceVolume,
+          Target: '/workspace',
+          VolumeOptions: workspaceVolumeOptions,
+        },
         { Type: 'volume', Source: agentVolume, Target: '/home/agent' },
       ],
     },
