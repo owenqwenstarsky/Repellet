@@ -401,8 +401,9 @@ it('keeps terminal creation and session selection independent of the panel tab',
     return {} as any;
   });
   mount();
-  fireEvent.click(await screen.findByLabelText('Toggle bottom panel'));
-  fireEvent.click(screen.getByRole('button', { name: 'New terminal' }));
+  // Label queries also find controls inside the inert loading workspace.
+  fireEvent.click(await screen.findByRole('button', { name: 'Toggle bottom panel' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'New terminal' }));
   // Change panel selection while the asynchronous create dialog is open.
   fireEvent.click(screen.getByRole('tab', { name: 'Preparation Logs' }));
   fireEvent.submit(screen.getByRole('dialog').querySelector('form')!);
