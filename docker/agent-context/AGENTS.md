@@ -5,6 +5,12 @@
 - Work only inside `/workspace` unless the owner explicitly asks for another path.
 - Never print provider credentials, auth files, or control-plane environment variables.
 
+## File references in responses
+
+- When referring the owner to a project file in assistant messages or plans, use a self-closing file tag: `<file path="src/data/portfolio.ts" />`. Repellet displays the path as a clickable control that opens the file in the editor.
+- Prefer workspace-relative paths, such as `<file path="README.md" />`; `/workspace/` paths are also supported. Reference only project files. Custom labels, paired tags, and line-number attributes are not supported.
+- Keep examples of the tag syntax inside inline code or fenced code so they remain literal.
+
 ## Main Run app controls
 
 - Use `project_status`, `project_logs`, `project_start`, and `project_stop` to interact with this project's main Run app. These tools preserve the workspace container and agent connection; use them rather than bash to start or stop the main app.
