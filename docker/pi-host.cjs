@@ -258,7 +258,11 @@ async function load(id) {
       }
       return result;
     };
-    session.subscribe((event) => h.translatePiEvent(id, event, active, notify, redact));
+    session.subscribe((event) => {
+      if (event.type === 'message_start' && active?.id === id)
+        h.attachInputMetadata(event.message, active.inputQueue);
+      h.translatePiEvent(id, event, active, notify, redact);
+    });
     await session.bindExtensions({
       mode: 'rpc',
       onError: () =>
@@ -272,6 +276,7 @@ async function run(id, params) {
   if (active) throw new Error('Another turn is active');
   if (entry(id).archived) throw new Error('Unarchive this thread to continue');
   const s = await load(id);
+  const prepared = h.prepareInput(params.input);
   if (params.model) {
     const selected = params.model;
     const prefix = provider + '/';
@@ -300,6 +305,7 @@ async function run(id, params) {
       aborted: false,
       controller: new AbortController(),
       error: null,
+      inputQueue: [{ text: prepared.text, input: params.input }],
     };
   active = a;
   s.sessionManager.appendCustomEntry('repellet.turn', { id: turnId });
@@ -321,7 +327,7 @@ async function run(id, params) {
   };
   notify('turn/started', { threadId: id, turn });
   void s
-    .prompt(params.input.map((p) => p.text || '').join('\n'))
+    .prompt(prepared.text, { images: prepared.images })
     .catch(() => {
       a.error = 'Agent request failed. Check your provider and retry.';
     })
@@ -402,8 +408,18 @@ async function handle({ method, params = {} }) {
   if (method === 'turn/steer') {
     if (!active || active.id !== params.threadId || active.turnId !== params.expectedTurnId)
       throw new Error('Active turn changed');
-    sessions.get(active.id).steer(params.input.map((p) => p.text || '').join('\n'));
-    return { turnId: active.turnId };
+    const current = active;
+    const prepared = h.prepareInput(params.input);
+    const queued = { text: prepared.text, input: params.input };
+    current.inputQueue.push(queued);
+    try {
+      await sessions.get(current.id).steer(prepared.text, prepared.images);
+    } catch (error) {
+      const at = current.inputQueue.indexOf(queued);
+      if (at !== -1) current.inputQueue.splice(at, 1);
+      throw error;
+    }
+    return { turnId: current.turnId };
   }
   if (method === 'turn/interrupt') {
     if (!active || active.id !== params.threadId || active.turnId !== params.turnId)

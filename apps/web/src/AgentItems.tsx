@@ -2,6 +2,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ChevronRight, FileCode2 } from 'lucide-react';
 import type { ThreadItem } from '@repellet/agent-protocol';
+import { agentAttachmentUrl } from '@repellet/shared';
 import { Button } from './ui';
 import { groupAgentTools, type AgentTranscriptEntry } from './agentTranscript';
 import {
@@ -135,13 +136,22 @@ function normalizedDiff(args: Record<string, unknown>, output: string): string {
 export function AgentTranscriptItems({
   items,
   onOpenFile,
+  projectId,
 }: {
   items: AgentTranscriptEntry[];
   onOpenFile: (path: string) => void;
+  projectId?: string;
 }) {
   return groupAgentTools(items).map((group) => {
     if (group.type === 'item')
-      return <AgentItem key={group.key} item={group.entry.item} onOpenFile={onOpenFile} />;
+      return (
+        <AgentItem
+          key={group.key}
+          item={group.entry.item}
+          onOpenFile={onOpenFile}
+          projectId={projectId}
+        />
+      );
     const failed = group.entries.filter(({ item }) => toolFailed(item)).length;
     const running = group.entries.some(
       ({ item }) => 'status' in item && ['inProgress', 'in_progress'].includes(item.status),
@@ -169,9 +179,11 @@ export function AgentTranscriptItems({
 export function AgentItem({
   item,
   onOpenFile,
+  projectId,
 }: {
   item: ThreadItem;
   onOpenFile: (path: string) => void;
+  projectId?: string;
 }) {
   if (item.type === 'agentMessage')
     return (
@@ -189,7 +201,26 @@ export function AgentItem({
     return (
       <article className="agent-item userMessage">
         {item.content.map((content, index) =>
-          content.type === 'text' ? <p key={index}>{content.text}</p> : null,
+          content.type === 'text' ? (
+            <p key={index}>{content.text}</p>
+          ) : content.type === 'attachment' && projectId ? (
+            <a
+              className="agent-attachment"
+              key={index}
+              href={agentAttachmentUrl(projectId, content.attachment.id)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {content.attachment.kind === 'image' && (
+                <img
+                  src={agentAttachmentUrl(projectId, content.attachment.id)}
+                  alt={content.attachment.name}
+                  loading="lazy"
+                />
+              )}
+              <span>{content.attachment.label || content.attachment.name}</span>
+            </a>
+          ) : null,
         )}
       </article>
     );

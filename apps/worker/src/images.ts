@@ -9,7 +9,7 @@ import { config } from './config.js';
 export const docker = new Docker({
   socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock',
 });
-export const BASE_IMAGE = 'repellet/workspace-base:0.6.2';
+export const BASE_IMAGE = 'repellet/workspace-base:0.6.3';
 let baseBuild: Promise<void> | null = null;
 const builds = new Map<string, Promise<string>>();
 const logs = new Map<string, string>();

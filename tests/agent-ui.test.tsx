@@ -1,16 +1,17 @@
 // @vitest-environment jsdom
 import { beforeEach, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, renderHook, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { useState } from 'react';
 import { randomUUID } from 'node:crypto';
 import { AgentPanel, AgentItem } from '../apps/web/src/AgentPanel';
+import { useAgentAttachments } from '../apps/web/src/AgentAttachments';
 import { agentTranscript } from '../apps/web/src/agentTranscript';
 import { groupAgentTools } from '../apps/web/src/agentTranscript';
 import type { Thread, ThreadItem } from '@repellet/agent-protocol';
 import { AgentSettings } from '../apps/web/src/AgentSettings';
 import { ActivityBar } from '../apps/web/src/workspace/ActivityBar';
 import { UiProvider } from '../apps/web/src/ui';
-import { api, post, put } from '../apps/web/src/api';
+import { api, post, put, uploadAgentAttachment } from '../apps/web/src/api';
 import { flushOpenDocuments } from '../apps/web/src/documentSaves';
 import { FakeSocket } from './web-support';
 import type { AgentSnapshot } from '@repellet/shared';
@@ -18,6 +19,7 @@ vi.mock('../apps/web/src/api', () => ({
   api: vi.fn(),
   post: vi.fn(),
   put: vi.fn(),
+  uploadAgentAttachment: vi.fn(),
   wsUrl: (value: string) => value,
   errorMessage: (error: Error) => error.message,
 }));
@@ -90,6 +92,23 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ ...settings, hasApiKey: true });
   vi.mocked(flushOpenDocuments).mockReset().mockResolvedValue();
+  vi.stubGlobal(
+    'URL',
+    class extends URL {
+      static createObjectURL = vi.fn(() => 'blob:test-image');
+      static revokeObjectURL = vi.fn();
+    },
+  );
+  vi.mocked(uploadAgentAttachment)
+    .mockReset()
+    .mockImplementation(async (_projectId, file, mimeType, label) => ({
+      id: randomUUID(),
+      name: file.name,
+      mimeType,
+      kind: mimeType.startsWith('image/') ? 'image' : 'text',
+      bytes: file.size,
+      ...(label ? { label } : {}),
+    }));
 });
 function Panel() {
   const [threadId, setThreadId] = useState('thread');
@@ -117,6 +136,210 @@ async function mountPanel() {
   );
   await screen.findByRole('heading', { name: 'My conversation' });
 }
+it('uploads picker attachments, shows progress and sends an image-only turn after upload completes', async () => {
+  await mountPanel();
+  let finish: (value: any) => void = () => {};
+  vi.mocked(uploadAgentAttachment).mockImplementationOnce(
+    (_project, file, mime, _label, progress) => {
+      progress(50);
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    },
+  );
+  const file = new File(['png'], 'screenshot.png', { type: 'image/png' });
+  fireEvent.change(screen.getByLabelText('Attach images or text files'), {
+    target: { files: [file] },
+  });
+  expect(screen.getByAltText('screenshot.png')).toBeTruthy();
+  expect(screen.getByRole('progressbar').getAttribute('value')).toBe('50');
+  expect(
+    (screen.getByRole('button', { name: 'Send', exact: true }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  const id = randomUUID();
+  await act(async () =>
+    finish({ id, name: file.name, kind: 'image', mimeType: file.type, bytes: file.size }),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
+  await waitFor(() => expect(rpcCalls.some((call) => call.method === 'turn/start')).toBe(true));
+  expect(rpcCalls.find((call) => call.method === 'turn/start').params.input).toEqual([
+    { type: 'attachment', attachmentId: id, kind: 'image' },
+  ]);
+  await waitFor(() => expect(screen.queryByLabelText('Message attachments')).toBeNull());
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-image');
+});
+
+it('supports dropped files and clipboard images with separate per-kind counts and removal', async () => {
+  await mountPanel();
+  const textarea = screen.getByLabelText('Message agent');
+  fireEvent.drop(textarea.closest('form')!, {
+    dataTransfer: {
+      files: Array.from(
+        { length: 5 },
+        (_, index) => new File(['x'], `file${index}.txt`, { type: 'text/plain' }),
+      ),
+    },
+  });
+  await waitFor(() => expect(uploadAgentAttachment).toHaveBeenCalledTimes(4));
+  expect(screen.getByText('Attach at most 4 text files per message.')).toBeTruthy();
+  fireEvent.paste(textarea, {
+    clipboardData: {
+      files: [new File(['png'], 'clipboard.png', { type: 'image/png' })],
+      getData: () => '',
+    },
+  });
+  await waitFor(() => expect(uploadAgentAttachment).toHaveBeenCalledTimes(5));
+  expect(screen.getByAltText('clipboard.png')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Remove clipboard.png' }));
+  expect(screen.queryByAltText('clipboard.png')).toBeNull();
+});
+
+it.each([1000, 5000])(
+  'offers inline or attachment choices for %i pasted characters',
+  async (size) => {
+    await mountPanel();
+    const textarea = screen.getByLabelText('Message agent') as HTMLTextAreaElement;
+    fireEvent.paste(textarea, { clipboardData: { files: [], getData: () => 'x'.repeat(size) } });
+    expect(screen.getByRole('group', { name: 'Paste large text' })).toBeTruthy();
+    expect(uploadAgentAttachment).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Paste inline' }));
+    expect(textarea.value).toBe('x'.repeat(size));
+    expect(screen.queryByRole('group', { name: 'Paste large text' })).toBeNull();
+  },
+);
+
+it('automatically converts large pastes into a clean Pasted text pill and keeps other draft text', async () => {
+  await mountPanel();
+  const textarea = screen.getByLabelText('Message agent') as HTMLTextAreaElement;
+  fireEvent.change(textarea, { target: { value: 'Look here' } });
+  textarea.setSelectionRange(9, 9);
+  fireEvent.paste(textarea, { clipboardData: { files: [], getData: () => 'x'.repeat(5001) } });
+  await waitFor(() => expect(uploadAgentAttachment).toHaveBeenCalledTimes(1));
+  expect(uploadAgentAttachment).toHaveBeenCalledWith(
+    'project',
+    expect.objectContaining({ name: 'pasted-text.txt', size: 5001 }),
+    'text/plain',
+    'Pasted text',
+    expect.any(Function),
+    expect.any(AbortSignal),
+  );
+  expect(screen.getByText('Pasted text')).toBeTruthy();
+  expect(textarea.value).toBe('Look here');
+  expect(screen.queryByRole('group', { name: 'Paste large text' })).toBeNull();
+});
+
+it('allows attaching a medium paste and refuses over-limit pastes without losing content', async () => {
+  await mountPanel();
+  const textarea = screen.getByLabelText('Message agent') as HTMLTextAreaElement;
+  fireEvent.paste(textarea, { clipboardData: { files: [], getData: () => 'x'.repeat(1000) } });
+  fireEvent.click(screen.getByRole('button', { name: 'Attach as text file' }));
+  await waitFor(() => expect(screen.getByText('Pasted text')).toBeTruthy());
+  fireEvent.change(textarea, { target: { value: 'keep me' } });
+  fireEvent.paste(textarea, {
+    clipboardData: { files: [], getData: () => 'x'.repeat(1024 * 1024 + 1) },
+  });
+  expect(screen.getByText(/text files must be/)).toBeTruthy();
+  expect(textarea.value).toBe('keep me');
+  expect(uploadAgentAttachment).toHaveBeenCalledTimes(1);
+});
+
+it('retains failed uploads for retry and sends attachment references when steering', async () => {
+  await mountPanel();
+  vi.mocked(uploadAgentAttachment).mockRejectedValueOnce(new Error('Disconnected'));
+  fireEvent.change(screen.getByLabelText('Attach images or text files'), {
+    target: { files: [new File(['text'], 'notes.txt', { type: 'text/plain' })] },
+  });
+  await screen.findByRole('alert');
+  expect(
+    (screen.getByRole('button', { name: 'Send', exact: true }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  await act(async () =>
+    FakeSocket.instances[0]!.message({
+      type: 'snapshot',
+      snapshot: { ...snapshot, active: { threadId: 'thread', turnId: 'turn' } },
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      (screen.getByRole('button', { name: 'Steer', exact: true }) as HTMLButtonElement).disabled,
+    ).toBe(false),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Steer', exact: true }));
+  await waitFor(() => expect(rpcCalls.some((call) => call.method === 'turn/steer')).toBe(true));
+  expect(rpcCalls.find((call) => call.method === 'turn/steer').params).toMatchObject({
+    expectedTurnId: 'turn',
+    input: [{ type: 'attachment', kind: 'text' }],
+  });
+});
+
+it('renders persisted image and text attachments with project-scoped authenticated URLs', () => {
+  const id = randomUUID();
+  render(
+    <AgentItem
+      projectId="project"
+      onOpenFile={vi.fn()}
+      item={{
+        type: 'userMessage',
+        id: 'message',
+        clientId: null,
+        content: [
+          {
+            type: 'attachment',
+            attachment: { id, name: 'shot.png', kind: 'image', mimeType: 'image/png', bytes: 3 },
+          },
+          {
+            type: 'attachment',
+            attachment: {
+              id: 'text-id',
+              name: 'pasted-text.txt',
+              label: 'Pasted text',
+              kind: 'text',
+              mimeType: 'text/plain',
+              bytes: 5,
+            },
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getByAltText('shot.png').getAttribute('src')).toBe(
+    `/api/projects/project/agent/attachments/${id}`,
+  );
+  expect(screen.getByRole('link', { name: 'Pasted text' }).getAttribute('href')).toBe(
+    '/api/projects/project/agent/attachments/text-id',
+  );
+});
+
+it('isolates attachment drafts between projects even when thread identifiers match', async () => {
+  const { result, rerender } = renderHook(
+    ({ projectId }) => useAgentAttachments(projectId, 'thread'),
+    { initialProps: { projectId: 'first-project' } },
+  );
+  act(() => {
+    result.current.add([new File(['text'], 'draft.txt', { type: 'text/plain' })], vi.fn());
+  });
+  await waitFor(() => expect(result.current.blocked).toBe(false));
+  expect(result.current.input).toHaveLength(1);
+  rerender({ projectId: 'second-project' });
+  expect(result.current.entries).toHaveLength(0);
+  expect(result.current.input).toHaveLength(0);
+});
+
+it('keeps attachment drafts associated with their thread through navigation', async () => {
+  await mountPanel();
+  fireEvent.change(screen.getByLabelText('Attach images or text files'), {
+    target: { files: [new File(['text'], 'draft.txt', { type: 'text/plain' })] },
+  });
+  await waitFor(() => expect(uploadAgentAttachment).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole('button', { name: /Threads/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /^My conversation/ }));
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Remove draft.txt' })).toBeTruthy(),
+  );
+});
+
 it('toggles plan mode from the composer outside Run settings and restores its state after navigation', async () => {
   await mountPanel();
   const button = screen.getByRole('button', { name: 'Plan mode', exact: true });

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_AGENT_IMAGES, MAX_AGENT_TEXT_FILES } from './attachments.js';
 import type {
   ServerNotification,
   ThreadItem,
@@ -53,9 +54,33 @@ const id = z
   .regex(/^[a-zA-Z0-9_-]+$/);
 const model = z.string().trim().min(1).max(200).optional();
 const input = z
-  .array(z.object({ type: z.literal('text'), text: z.string().min(1).max(100000) }).strict())
+  .array(
+    z.union([
+      z.object({ type: z.literal('text'), text: z.string().min(1).max(100000) }).strict(),
+      z
+        .object({
+          type: z.literal('attachment'),
+          attachmentId: z.string().uuid(),
+          kind: z.enum(['image', 'text']),
+        })
+        .strict(),
+    ]),
+  )
   .min(1)
-  .max(10);
+  .max(18)
+  .superRefine((items, ctx) => {
+    for (const [kind, limit] of [
+      ['image', MAX_AGENT_IMAGES],
+      ['text', MAX_AGENT_TEXT_FILES],
+    ] as const)
+      if (items.filter((item) => item.type === 'attachment' && item.kind === kind).length > limit)
+        ctx.addIssue({ code: 'custom', message: `Attach at most ${limit} ${kind} files` });
+    const ids = items.filter((item) => item.type === 'attachment').map((item) => item.attachmentId);
+    if (new Set(ids).size !== ids.length)
+      ctx.addIssue({ code: 'custom', message: 'Duplicate attachment' });
+    if (items.filter((item) => item.type === 'text').length > 10)
+      ctx.addIssue({ code: 'custom', message: 'Too many text inputs' });
+  });
 const thread = z.object({ threadId: id }).strict();
 const methods = {
   'thread/start': z.object({ model }).strict(),

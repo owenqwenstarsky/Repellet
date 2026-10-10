@@ -27,7 +27,59 @@ import {
   closeAllAgents,
 } from './projects.js';
 import { killProjectAgent } from './process.js';
+import { MAX_AGENT_IMAGE_BYTES, agentAttachmentUploadSchema } from '@repellet/shared';
+import { storeAttachment, readAttachment } from './attachments.js';
+import { locked, inspect } from '../workspaces.js';
 export async function agentRoutes(app: FastifyInstance) {
+  await app.register(async (uploads) => {
+    uploads.addContentTypeParser(
+      'application/octet-stream',
+      { parseAs: 'buffer', bodyLimit: MAX_AGENT_IMAGE_BYTES },
+      (_req, body, done) => done(null, body),
+    );
+    uploads.post(
+      '/projects/:id/agent/attachments',
+      { bodyLimit: MAX_AGENT_IMAGE_BYTES },
+      async (req) => {
+        const id = projectId((req.params as { id: string }).id);
+        const meta = agentAttachmentUploadSchema.parse(req.query);
+        return locked(id, async () => {
+          const workspace = await inspect(id);
+          if (
+            !workspace?.State.Running ||
+            !workspace.Mounts.some((mount) => mount.Destination === '/home/agent/attachments')
+          )
+            throw Object.assign(new Error('Stop and start the workspace to enable attachments'), {
+              statusCode: 409,
+            });
+          const usage = await agentUsage(id);
+          const data = req.body as Buffer;
+          if (!Buffer.isBuffer(data))
+            throw Object.assign(new Error('Send attachment bytes as application/octet-stream'), {
+              statusCode: 400,
+            });
+          if (
+            usage.exceeded ||
+            (usage.limitBytes !== undefined && usage.bytes + data.length > usage.limitBytes)
+          )
+            throw Object.assign(new Error('Project storage limit reached'), { statusCode: 507 });
+          return storeAttachment(id, meta, data);
+        });
+      },
+    );
+    uploads.get('/projects/:id/agent/attachments/:attachmentId', async (req, reply) => {
+      const params = req.params as { id: string; attachmentId: string };
+      const { meta, data } = await readAttachment(projectId(params.id), params.attachmentId, true);
+      return reply
+        .header('content-type', meta.mimeType)
+        .header(
+          'content-disposition',
+          `${meta.kind === 'image' ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(meta.name)}`,
+        )
+        .header('x-content-type-options', 'nosniff')
+        .send(data);
+    });
+  });
   const userFrom = (req: { params: unknown }) => userId((req.params as { userId: string }).userId);
   app.get('/agent/users/:userId/settings', async (req) =>
     publicSettings(await privateSettings(userFrom(req))),

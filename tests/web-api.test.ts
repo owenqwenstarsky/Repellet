@@ -1,7 +1,61 @@
 // @vitest-environment jsdom
 import { it, expect, vi, afterEach } from 'vitest';
-import { api, ApiError } from '../apps/web/src/api';
+import { api, ApiError, uploadAgentAttachment } from '../apps/web/src/api';
 afterEach(() => vi.unstubAllGlobals());
+it('uploads attachment bytes with progress and aborts when removed', async () => {
+  const requests: any[] = [];
+  vi.stubGlobal(
+    'XMLHttpRequest',
+    class {
+      upload: any = {};
+      status = 200;
+      responseText = JSON.stringify({ id: 'attachment' });
+      open = vi.fn();
+      setRequestHeader = vi.fn();
+      send = vi.fn();
+      onload: () => void = () => {};
+      onabort: () => void = () => {};
+      abort = vi.fn(() => this.onabort());
+      constructor() {
+        requests.push(this);
+      }
+    },
+  );
+  const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+  const progress = vi.fn();
+  const pending = uploadAgentAttachment(
+    'project',
+    file,
+    file.type,
+    'Pasted text',
+    progress,
+    new AbortController().signal,
+  );
+  const request = requests[0];
+  expect(request.open).toHaveBeenCalledWith(
+    'POST',
+    '/api/projects/project/agent/attachments?name=notes.txt&mimeType=text%2Fplain&label=Pasted+text',
+  );
+  expect(request.setRequestHeader).toHaveBeenCalledWith('content-type', 'application/octet-stream');
+  expect(request.send).toHaveBeenCalledWith(file);
+  request.upload.onprogress({ lengthComputable: true, loaded: 2, total: 4 });
+  expect(progress).toHaveBeenCalledWith(50);
+  request.onload();
+  await expect(pending).resolves.toEqual({ id: 'attachment' });
+  const controller = new AbortController();
+  const cancelled = uploadAgentAttachment(
+    'project',
+    file,
+    file.type,
+    undefined,
+    progress,
+    controller.signal,
+  );
+  const rejected = expect(cancelled).rejects.toThrow('cancelled');
+  controller.abort();
+  await rejected;
+  expect(requests[1].abort).toHaveBeenCalledTimes(1);
+});
 it('exposes completed replacement files through ApiError', async () => {
   vi.stubGlobal(
     'fetch',

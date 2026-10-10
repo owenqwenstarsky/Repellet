@@ -105,6 +105,17 @@ export type TextElement = {
 };
 export type UserInput =
   | {
+      type: 'attachment';
+      attachment: {
+        id: string;
+        kind: 'image' | 'text';
+        name: string;
+        mimeType: string;
+        bytes: number;
+        label?: 'Pasted text';
+      };
+    }
+  | {
       type: 'text';
       text: string;
 

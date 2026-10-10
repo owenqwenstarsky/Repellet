@@ -45,7 +45,7 @@ async function projectVolumes() {
   const ids = (await query('SELECT id FROM projects ORDER BY id')).split('\n').filter(Boolean);
   const volumes = [];
   for (const id of ids)
-    for (const kind of ['files', 'home', 'agent']) {
+    for (const kind of ['files', 'home', 'agent', 'attachments']) {
       const name = `repellet-${id}-${kind}`;
       const found = await run(
         ['volume', 'ls', '--filter', `name=^${name}$`, '--format', '{{.Name}}'],

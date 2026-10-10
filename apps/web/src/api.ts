@@ -1,3 +1,4 @@
+import type { AgentAttachment } from '@repellet/shared';
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -58,6 +59,59 @@ export const patch = <T = any>(path: string, body: unknown) =>
 export const remove = (path: string) => api(path, { method: 'DELETE' });
 export const wsUrl = (path: string) =>
   `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${path}`;
+export function uploadAgentAttachment(
+  projectId: string,
+  file: File,
+  mimeType: string,
+  label: 'Pasted text' | undefined,
+  progress: (percent: number) => void,
+  signal: AbortSignal,
+): Promise<AgentAttachment> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const query = new URLSearchParams({ name: file.name, mimeType, ...(label ? { label } : {}) });
+    const abort = () => xhr.abort();
+    const finish = () => signal.removeEventListener('abort', abort);
+    xhr.open('POST', `/api/projects/${encodeURIComponent(projectId)}/agent/attachments?${query}`);
+    xhr.timeout = 180000;
+    xhr.setRequestHeader('content-type', 'application/octet-stream');
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) progress(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onload = () => {
+      finish();
+      let body: any;
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {}
+      if (xhr.status >= 200 && xhr.status < 300 && body) resolve(body);
+      else {
+        if (xhr.status === 401 && xhr.getResponseHeader('x-repellet-auth') === 'session')
+          window.dispatchEvent(new Event('repellet:unauthorized'));
+        reject(
+          new ApiError(body?.error || xhr.statusText || 'Attachment upload failed', xhr.status),
+        );
+      }
+    };
+    xhr.onerror = () => {
+      finish();
+      reject(new Error('Attachment upload failed. Retry when connected.'));
+    };
+    xhr.ontimeout = () => {
+      finish();
+      reject(new Error('Attachment upload timed out. Retry when connected.'));
+    };
+    xhr.onabort = () => {
+      finish();
+      reject(new Error('Attachment upload cancelled'));
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) {
+      finish();
+      reject(new Error('Attachment upload cancelled'));
+    } else xhr.send(file);
+  });
+}
 export const previewUrl = (port: number) =>
   `${location.protocol}//${location.hostname.includes(':') ? `[${location.hostname}]` : location.hostname}:${port}`;
 export function formatBytes(bytes: number) {
