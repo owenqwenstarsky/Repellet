@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Database, RefreshCw, X } from 'lucide-react';
+import { Database, KeyRound, MoreHorizontal, Plus, RefreshCw, X } from 'lucide-react';
 import type {
   DatabaseColumn,
   DatabaseOperation,
@@ -9,12 +9,25 @@ import type {
 } from '@repellet/shared';
 import { databaseColumnTypeSchema } from '@repellet/shared';
 import { api, post, remove, errorMessage } from './api';
-import { Button, IconButton, Modal, Spinner, Tabs, useUi } from './ui';
+import { Button, IconButton, MenuButton, MenuItem, Modal, Spinner, Tabs, useUi } from './ui';
 
 type Table = { name: string; schema?: string; columns?: DatabaseColumn[] };
 const tableKey = (table: Table) => JSON.stringify([table.schema || '', table.name]);
 const cell = (value: unknown) =>
   value === null ? 'NULL' : typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
+const columnWidth = (column?: DatabaseColumn) => {
+  if (!column) return 220;
+  if (column.type === 'uuid') return 240;
+  if (/text|char|json/.test(column.type) || column.type.endsWith('[]')) return 260;
+  return 160;
+};
+function DisplayValue({ value, full = false }: { value: unknown; full?: boolean }) {
+  if (value === null) return <span className="database-value-null">NULL</span>;
+  if (value === undefined) return <span className="database-value-missing">Missing</span>;
+  if (value === '') return <span className="database-value-empty">Empty string</span>;
+  const text = full && typeof value === 'object' ? JSON.stringify(value, null, 2) : cell(value);
+  return full ? <pre>{text}</pre> : <span className="database-cell-value">{text}</span>;
+}
 export function postgresEditorValue(value: string, column: DatabaseColumn): unknown {
   if (column.type === 'json' || column.type === 'jsonb' || column.type.endsWith('[]'))
     return JSON.parse(value);
@@ -45,11 +58,13 @@ export function DatabasePanel({
   const [selected, setSelected] = useState('');
   const [page, setPage] = useState(0);
   const [data, setData] = useState<DatabaseResult>();
+  const [readError, setReadError] = useState('');
   const [dataRevision, setDataRevision] = useState(0);
   const [section, setSection] = useState<'data' | 'schema' | 'console'>('data');
   const [command, setCommand] = useState('');
   const [result, setResult] = useState<DatabaseResult>();
   const [editing, setEditing] = useState<{ row?: Record<string, unknown> }>();
+  const [viewing, setViewing] = useState<Record<string, unknown>>();
   const [addingColumn, setAddingColumn] = useState(false);
   const alive = useRef(true),
     statusRequest = useRef(0),
@@ -95,8 +110,9 @@ export function DatabasePanel({
   }
   async function loadData() {
     const request = ++dataRequest.current;
+    setData(undefined);
+    setReadError('');
     if (!table || database?.status !== 'ready') {
-      setData(undefined);
       return;
     }
     try {
@@ -108,17 +124,15 @@ export function DatabasePanel({
       });
       if (alive.current && request === dataRequest.current) {
         setData(value);
-        setError('');
       }
     } catch (error) {
-      if (alive.current && request === dataRequest.current) setError(errorMessage(error));
+      if (alive.current && request === dataRequest.current) setReadError(errorMessage(error));
     }
   }
   useEffect(() => {
     void load();
   }, [projectId, revision]);
   useEffect(() => {
-    setData(undefined);
     void loadData();
   }, [selected, page, database?.id, database?.status, revision, dataRevision, objects]);
   async function run(action: () => Promise<unknown>, refresh = true): Promise<boolean> {
@@ -193,6 +207,10 @@ export function DatabasePanel({
     database?.type === 'postgresql'
       ? columns.map((column) => column.name)
       : [...new Set((data?.rows || []).flatMap((row) => Object.keys(row)))].slice(0, 100);
+  const widths = names.map((name) =>
+    columnWidth(database?.type === 'postgresql' ? columns.find((c) => c.name === name) : undefined),
+  );
+  const recordCount = data?.rows?.length || 0;
   return (
     <div className="database-panel">
       <header className="database-header">
@@ -251,31 +269,33 @@ export function DatabasePanel({
       ) : (
         <>
           <div className="database-connection">
-            <strong>{database.type === 'postgresql' ? 'PostgreSQL' : 'MongoDB'}</strong>
-            <span className={`status ${database.status}`}>{database.status}</span>
-            <p>
-              Applications connect with <code>{database.variableName}</code>.
-            </p>
-            <p className="muted">
-              Rename the connection variable in Project settings → Environment. Its value is managed
-              by Repellet.
-            </p>
+            <div className="database-connection-summary">
+              <strong>{database.type === 'postgresql' ? 'PostgreSQL' : 'MongoDB'}</strong>
+              <span className={`status ${database.status}`}>
+                <i aria-hidden="true" />
+                {database.status}
+              </span>
+              {owner && ['failed', 'stopped', 'creating'].includes(database.status) && (
+                <Button size="sm" busy={busy} onClick={() => void run(() => post(base + '/retry'))}>
+                  Retry database
+                </Button>
+              )}
+            </div>
             {database.error && (
               <p role="alert" className="field-error">
                 {database.error}
               </p>
             )}
-            {owner && (
-              <div className="database-actions">
-                {['failed', 'stopped', 'creating'].includes(database.status) && (
-                  <Button
-                    size="sm"
-                    busy={busy}
-                    onClick={() => void run(() => post(base + '/retry'))}
-                  >
-                    Retry database
-                  </Button>
-                )}
+            <details className="database-details">
+              <summary>Database details</summary>
+              <p>
+                Applications connect with <code>{database.variableName}</code>.
+              </p>
+              <p className="muted">
+                Rename the connection variable in Project settings → Environment. Its value is
+                managed by Repellet.
+              </p>
+              {owner && (
                 <Button
                   size="sm"
                   variant="danger"
@@ -295,8 +315,8 @@ export function DatabasePanel({
                 >
                   {database.status === 'deleting' ? 'Retry deletion' : 'Delete database'}
                 </Button>
-              </div>
-            )}
+              )}
+            </details>
           </div>
           {database.status === 'ready' && (
             <>
@@ -312,9 +332,9 @@ export function DatabasePanel({
               />
               {section !== 'console' ? (
                 <>
-                  <div className="database-actions">
+                  <div className="database-toolbar">
                     <label className="database-selector">
-                      {database.type === 'postgresql' ? 'Table' : 'Collection'}
+                      <span>{database.type === 'postgresql' ? 'Table' : 'Collection'}</span>
                       <select
                         aria-label="Database object"
                         value={selected}
@@ -335,49 +355,136 @@ export function DatabasePanel({
                         ))}
                       </select>
                     </label>
-                    <Button size="sm" disabled={busy} onClick={() => void createObject()}>
-                      Create {database.type === 'postgresql' ? 'table' : 'collection'}
-                    </Button>
+                    {objects.length > 0 && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => void createObject()}
+                      >
+                        Create {database.type === 'postgresql' ? 'table' : 'collection'}
+                      </Button>
+                    )}
+                    {table &&
+                      (section === 'data' ? (
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          icon={<Plus size={13} />}
+                          disabled={busy}
+                          onClick={() => setEditing({})}
+                        >
+                          Insert record
+                        </Button>
+                      ) : (
+                        <>
+                          {database.type === 'postgresql' && (
+                            <Button
+                              size="sm"
+                              icon={<Plus size={13} />}
+                              disabled={busy}
+                              onClick={() => setAddingColumn(true)}
+                            >
+                              Add column
+                            </Button>
+                          )}
+                          <MenuButton
+                            label={
+                              database.type === 'postgresql'
+                                ? 'Table actions'
+                                : 'Collection actions'
+                            }
+                            icon={<MoreHorizontal size={16} />}
+                          >
+                            <MenuItem danger disabled={busy} onSelect={() => void drop()}>
+                              Delete {database.type === 'postgresql' ? 'table' : 'collection'}
+                            </MenuItem>
+                          </MenuButton>
+                        </>
+                      ))}
                   </div>
-                  {!objects.length && <p className="muted">No tables or collections yet.</p>}
+                  {!objects.length && (
+                    <div className="database-empty database-workspace-state">
+                      <Database size={24} aria-hidden="true" />
+                      <h3>No {database.type === 'postgresql' ? 'tables' : 'collections'} yet</h3>
+                      <p className="muted">
+                        Create a {database.type === 'postgresql' ? 'table' : 'collection'} to start
+                        adding records.
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={busy}
+                        onClick={() => void createObject()}
+                      >
+                        Create {database.type === 'postgresql' ? 'table' : 'collection'}
+                      </Button>
+                    </div>
+                  )}
                   {table &&
                     (section === 'data' ? (
                       <>
-                        <div className="database-actions">
-                          <Button size="sm" disabled={busy} onClick={() => setEditing({})}>
-                            Insert record
-                          </Button>
-                          <Button
-                            size="sm"
-                            disabled={busy || page === 0}
-                            onClick={() => setPage((page) => page - 1)}
-                          >
-                            Previous
-                          </Button>
-                          <span>Page {page + 1}</span>
-                          <Button
-                            size="sm"
-                            disabled={busy || !data?.hasMore}
-                            onClick={() => setPage((page) => page + 1)}
-                          >
-                            Next
-                          </Button>
-                        </div>
                         {!canTarget && (
-                          <p className="muted">
+                          <p className="muted database-notice">
                             This table has no primary key. Use the console to update or delete
                             records.
                           </p>
                         )}
-                        {data ? (
-                          <div className="database-grid">
-                            <table>
+                        {readError ? (
+                          <div className="database-workspace-state">
+                            <p role="alert" className="field-error">
+                              {readError}
+                            </p>
+                            <Button size="sm" onClick={() => void loadData()}>
+                              Retry records
+                            </Button>
+                          </div>
+                        ) : data ? (
+                          <div
+                            className="database-grid"
+                            role="region"
+                            aria-label="Records"
+                            tabIndex={0}
+                          >
+                            <table
+                              aria-label="Database records"
+                              style={{ width: widths.reduce((sum, width) => sum + width, 48) }}
+                            >
+                              <colgroup>
+                                {names.map((name, index) => (
+                                  <col key={name} style={{ width: widths[index] }} />
+                                ))}
+                                <col style={{ width: 48 }} />
+                              </colgroup>
                               <thead>
                                 <tr>
-                                  {names.map((name) => (
-                                    <th key={name}>{name}</th>
-                                  ))}
-                                  <th>Actions</th>
+                                  {names.map((name) => {
+                                    const column =
+                                      database.type === 'postgresql'
+                                        ? columns.find((c) => c.name === name)
+                                        : undefined;
+                                    return (
+                                      <th key={name} scope="col" title={name}>
+                                        <div className="database-column-name">
+                                          {column?.primaryKey && (
+                                            <KeyRound size={12} aria-label="Primary key" />
+                                          )}
+                                          <span>{name}</span>
+                                        </div>
+                                        {column && (
+                                          <span
+                                            className="database-column-type"
+                                            title={column.type}
+                                          >
+                                            {column.type}
+                                          </span>
+                                        )}
+                                      </th>
+                                    );
+                                  })}
+                                  <th scope="col" className="database-row-actions">
+                                    <span className="sr-only">Actions</span>
+                                  </th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -385,86 +492,150 @@ export function DatabasePanel({
                                   <tr key={index}>
                                     {names.map((name) => (
                                       <td key={name} title={cell(row[name]).slice(0, 2000)}>
-                                        {cell(row[name]).slice(0, 200)}
+                                        <DisplayValue value={row[name]} />
                                       </td>
                                     ))}
-                                    <td>
-                                      <Button
-                                        size="sm"
-                                        disabled={busy || !canTarget}
-                                        onClick={() => setEditing({ row })}
+                                    <td className="database-row-actions">
+                                      <MenuButton
+                                        label={`Record ${page * 100 + index + 1} actions`}
+                                        icon={<MoreHorizontal size={16} />}
                                       >
-                                        Edit
-                                      </Button>
-                                      <Button
-                                        size="sm"
-                                        variant="danger"
-                                        disabled={busy || !canTarget}
-                                        onClick={() => void deleteRow(row)}
-                                      >
-                                        Delete
-                                      </Button>
+                                        <MenuItem onSelect={() => setViewing(row)}>
+                                          View record
+                                        </MenuItem>
+                                        <MenuItem
+                                          disabled={busy || !canTarget}
+                                          onSelect={() => setEditing({ row })}
+                                        >
+                                          Edit
+                                        </MenuItem>
+                                        <MenuItem
+                                          danger
+                                          disabled={busy || !canTarget}
+                                          onSelect={() => void deleteRow(row)}
+                                        >
+                                          Delete
+                                        </MenuItem>
+                                      </MenuButton>
                                     </td>
                                   </tr>
                                 ))}
                               </tbody>
                             </table>
-                            {!data.rows?.length && <p className="muted">No records.</p>}
-                            {data.truncated && (
-                              <p className="muted">
-                                Result limited. Use a narrower command to inspect more.
-                              </p>
+                            {!recordCount && (
+                              <div className="database-empty">
+                                <h3>No records on this page</h3>
+                                <p className="muted">
+                                  {page === 0
+                                    ? 'Insert the first record to populate this object.'
+                                    : 'Return to the previous page or insert a record.'}
+                                </p>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={busy}
+                                  onClick={() => setEditing({})}
+                                >
+                                  Insert a record
+                                </Button>
+                              </div>
                             )}
                           </div>
                         ) : (
-                          <Spinner label="Loading records…" />
+                          <div className="database-workspace-state" role="status">
+                            <Spinner label="Loading records…" />
+                          </div>
                         )}
+                        <footer className="database-footer">
+                          <span className="database-record-range" role="status">
+                            {data
+                              ? recordCount
+                                ? `Records ${page * 100 + 1}–${page * 100 + recordCount}`
+                                : '0 records on this page'
+                              : readError
+                                ? 'Records unavailable'
+                                : 'Loading records…'}
+                          </span>
+                          <div
+                            className="database-pagination"
+                            role="group"
+                            aria-label="Record pages"
+                          >
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={busy || !data || page === 0}
+                              onClick={() => setPage((page) => page - 1)}
+                            >
+                              Previous
+                            </Button>
+                            <span>Page {page + 1}</span>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={busy || !data?.hasMore}
+                              onClick={() => setPage((page) => page + 1)}
+                            >
+                              Next
+                            </Button>
+                          </div>
+                          {data?.truncated && (
+                            <p className="muted database-limit">
+                              Result limited. Use a narrower command to inspect more.
+                            </p>
+                          )}
+                        </footer>
                       </>
                     ) : (
                       <>
-                        <div className="database-actions">
-                          {database.type === 'postgresql' && (
-                            <Button size="sm" disabled={busy} onClick={() => setAddingColumn(true)}>
-                              Add column
-                            </Button>
-                          )}
-                          <Button
-                            size="sm"
-                            variant="danger"
-                            disabled={busy}
-                            onClick={() => void drop()}
-                          >
-                            Delete {database.type === 'postgresql' ? 'table' : 'collection'}
-                          </Button>
-                        </div>
                         {database.type === 'mongodb' ? (
                           <p className="muted">
                             MongoDB collections contain documents with flexible fields. Edit
                             documents in Data; manage indexes and validation in Console.
                           </p>
                         ) : (
-                          <div className="database-grid">
-                            <table>
+                          <div
+                            className="database-grid database-schema-grid"
+                            role="region"
+                            aria-label="Schema"
+                            tabIndex={0}
+                          >
+                            <table aria-label="Database columns" style={{ width: 664 }}>
+                              <colgroup>
+                                <col style={{ width: 160 }} />
+                                <col style={{ width: 260 }} />
+                                <col style={{ width: 100 }} />
+                                <col style={{ width: 144 }} />
+                              </colgroup>
                               <thead>
                                 <tr>
-                                  <th>Column</th>
-                                  <th>Type</th>
-                                  <th>Nullable</th>
-                                  <th>Actions</th>
+                                  <th scope="col">Column</th>
+                                  <th scope="col">Type</th>
+                                  <th scope="col">Nullable</th>
+                                  <th scope="col" className="database-row-actions">
+                                    Actions
+                                  </th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {columns.map((column) => (
                                   <tr key={column.name}>
-                                    <td>
-                                      {column.name}
-                                      {column.primaryKey && ' (PK)'}
+                                    <td title={column.name}>
+                                      <div className="database-column-name">
+                                        {column.primaryKey && (
+                                          <KeyRound size={12} aria-label="Primary key" />
+                                        )}
+                                        <span>{column.name}</span>
+                                      </div>
                                     </td>
-                                    <td>{column.type}</td>
+                                    <td title={column.type}>
+                                      <span className="database-cell-value">{column.type}</span>
+                                    </td>
                                     <td>{column.nullable ? 'Yes' : 'No'}</td>
-                                    <td>
+                                    <td className="database-row-actions">
                                       <Button
                                         size="sm"
+                                        variant="ghost"
                                         disabled={busy}
                                         onClick={async () => {
                                           const newName = await ui.ask({
@@ -487,7 +658,8 @@ export function DatabasePanel({
                                       </Button>
                                       <Button
                                         size="sm"
-                                        variant="danger"
+                                        variant="ghost"
+                                        className="danger-text"
                                         disabled={busy}
                                         onClick={async () => {
                                           if (
@@ -558,7 +730,7 @@ export function DatabasePanel({
                       }
                     />
                   </label>
-                  <Button type="submit" variant="primary" busy={busy}>
+                  <Button type="submit" size="sm" variant="primary" busy={busy}>
                     Execute command
                   </Button>
                   <p className="muted">
@@ -584,6 +756,32 @@ export function DatabasePanel({
             </>
           )}
         </>
+      )}
+      {viewing && (
+        <Modal title="View record" onClose={() => setViewing(undefined)}>
+          <dl className="database-record-view">
+            {[...new Set([...names, ...Object.keys(viewing)])].map((name) => {
+              const column =
+                database?.type === 'postgresql' ? columns.find((c) => c.name === name) : undefined;
+              return (
+                <div key={name}>
+                  <dt>
+                    <span>{name}</span>
+                    {column && <span className="muted">{column.type}</span>}
+                    {column?.primaryKey && <span className="muted">Primary key</span>}
+                    {column?.generated && <span className="muted">Generated</span>}
+                  </dt>
+                  <dd>
+                    <DisplayValue value={viewing[name]} full />
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
+          <div className="modal-actions">
+            <Button onClick={() => setViewing(undefined)}>Close</Button>
+          </div>
+        </Modal>
       )}
       {editing && table && database && (
         <RecordEditor

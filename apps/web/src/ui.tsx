@@ -300,6 +300,8 @@ export function MenuItem({
     <button
       type="button"
       className={danger ? 'danger-text' : ''}
+      role="menuitem"
+      tabIndex={-1}
       disabled={disabled}
       onClick={() => {
         close();
