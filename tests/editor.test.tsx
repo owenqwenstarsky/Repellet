@@ -8,8 +8,24 @@ const mocks = vi.hoisted(() => ({
   language: vi.fn(),
   binding: vi.fn(),
   destroy: vi.fn(),
+  createEditor: vi.fn(),
+  setupEvents: [] as { type: string; options?: unknown }[],
 }));
-vi.mock('monaco-editor', () => ({ editor: { defineTheme: vi.fn() } }));
+vi.mock('monaco-editor', () => ({
+  editor: { defineTheme: vi.fn() },
+  typescript: {
+    typescriptDefaults: {
+      setModeConfiguration: vi.fn((options) =>
+        mocks.setupEvents.push({ type: 'typescript', options }),
+      ),
+    },
+    javascriptDefaults: {
+      setModeConfiguration: vi.fn((options) =>
+        mocks.setupEvents.push({ type: 'javascript', options }),
+      ),
+    },
+  },
+}));
 vi.mock('monaco-editor/editor/editor.worker?worker', () => ({ default: class {} }));
 vi.mock('monaco-editor/language/json/json.worker?worker', () => ({ default: class {} }));
 vi.mock('monaco-editor/language/css/css.worker?worker', () => ({ default: class {} }));
@@ -31,7 +47,9 @@ vi.mock('../apps/web/src/language', () => ({
 }));
 vi.mock('@monaco-editor/react', () => ({
   loader: { config: vi.fn() },
-  default: function Editor({ onMount }: any) {
+  default: function Editor({ onMount, language }: any) {
+    mocks.setupEvents.push({ type: 'editor' });
+    mocks.createEditor(language);
     useEffect(() => onMount(mocks.editor), []);
     return <div>Monaco</div>;
   },
@@ -73,6 +91,32 @@ function props(path = 'main.ts', viewStates = new Map()) {
     viewStates,
   };
 }
+describe('workspace language ownership', () => {
+  it.each([
+    ['src/App.tsx', 'typescript'],
+    ['src/App.jsx', 'javascript'],
+  ])(
+    'disables browser providers before opening %s and preserves syntax coloring',
+    async (path, language) => {
+      render(
+        <UiProvider>
+          <CodeEditor {...props(path)} />
+        </UiProvider>,
+      );
+      await act(async () => {});
+      expect(mocks.createEditor).toHaveBeenCalledWith(language);
+      // Preserve setup events independently of Vitest's reset of module-level mock calls.
+      for (const type of ['typescript', 'javascript']) {
+        expect(mocks.setupEvents.filter((event) => event.type === type)).toEqual([
+          { type, options: {} },
+        ]);
+        expect(mocks.setupEvents.findIndex((event) => event.type === type)).toBeLessThan(
+          mocks.setupEvents.findIndex((event) => event.type === 'editor'),
+        );
+      }
+    },
+  );
+});
 describe('editor view state and status ownership', () => {
   it('restores saved cursor/scroll state when returning to a tab without resetting to line 1', async () => {
     const viewStates = new Map();

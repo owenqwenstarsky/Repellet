@@ -25,7 +25,13 @@ vi.mock('@monaco-editor/react', () => ({
     return <div>Monaco rendering</div>;
   },
 }));
-vi.mock('monaco-editor', () => ({ editor: { defineTheme: vi.fn() } }));
+vi.mock('monaco-editor', () => ({
+  editor: { defineTheme: vi.fn() },
+  typescript: {
+    typescriptDefaults: { setModeConfiguration: vi.fn() },
+    javascriptDefaults: { setModeConfiguration: vi.fn() },
+  },
+}));
 vi.mock('y-monaco', () => ({
   MonacoBinding: class {
     constructor(...args: unknown[]) {
