@@ -105,6 +105,40 @@ it('binds resources to the active owner/project and never retries writes', async
   expect(JSON.stringify(result)).not.toContain('private-key');
   expect(fetchMock).toHaveBeenCalledTimes(2);
 });
+it('forwards environment refresh through the authenticated API and blocks bash on failure', async () => {
+  const variables = { SHARED_PROJECT_VARIABLE: 'available-to-agent' };
+  fetchMock.mockResolvedValue(Response.json({ data: variables }));
+  const f = fixture();
+  f.emit.mockImplementation((_event, request) => {
+    void forwardResourceControl(
+      context(),
+      input(request.operation, request.arguments),
+      new AbortController().signal,
+    ).then(request.resolve, request.reject);
+  });
+  expect(await f.handlers.get('tool_call')({ toolName: 'bash' })).toBeUndefined();
+  expect(fetchMock).toHaveBeenCalledWith(
+    'http://internal-api/internal/agent/resource-control',
+    expect.objectContaining({
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer private-worker-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        projectId: 'current-project',
+        userId: 'current-owner',
+        control: { operation: 'environment_sync', arguments: {} },
+      }),
+    }),
+  );
+  fetchMock.mockRejectedValue(new Error('private-secret'));
+  expect(await f.handlers.get('tool_call')({ toolName: 'bash' })).toEqual({
+    block: true,
+    reason: 'Could not refresh project variables. Retry the shell command after reconnecting.',
+  });
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
 it('rejects stale turns, injected identity and all plan-mode writes at the worker', async () => {
   for (const request of [
     { ...input('database_status'), projectId: 'other' },
