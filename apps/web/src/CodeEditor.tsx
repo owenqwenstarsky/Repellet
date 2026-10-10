@@ -29,6 +29,9 @@ import { fonts, monacoTheme } from './theme';
             : new EditorWorker();
   },
 };
+// Workspace language servers own JS/TS analysis and can read project config and dependencies.
+monaco.typescript.typescriptDefaults.setModeConfiguration({});
+monaco.typescript.javascriptDefaults.setModeConfiguration({});
 loader.config({ monaco });
 monaco.editor.defineTheme('repellet', monacoTheme);
 const fromB64 = (value: string) => Uint8Array.from(atob(value), (c) => c.charCodeAt(0));

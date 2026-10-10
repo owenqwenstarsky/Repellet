@@ -83,7 +83,11 @@ class Service {
     this.notify('textDocument/didOpen', {
       textDocument: {
         uri: serverUri(doc.path),
-        languageId: doc.model.getLanguageId(),
+        languageId: doc.path.endsWith('.tsx')
+          ? 'typescriptreact'
+          : doc.path.endsWith('.jsx')
+            ? 'javascriptreact'
+            : doc.model.getLanguageId(),
         version: doc.version,
         text: doc.model.getValue(),
       },
