@@ -2,6 +2,21 @@
 import { it, expect, vi, afterEach } from 'vitest';
 import { api, ApiError, uploadAgentAttachment } from '../apps/web/src/api';
 afterEach(() => vi.unstubAllGlobals());
+it('adds lifecycle idempotency keys to database creation, deletion, and retry only', async () => {
+  const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+  vi.stubGlobal('fetch', fetch);
+  const base = '/projects/11111111-1111-4111-8111-111111111111/database';
+  for (const [path, method] of [
+    [base, 'POST'],
+    [base, 'DELETE'],
+    [base + '/retry', 'POST'],
+    [base + '/operations', 'POST'],
+  ])
+    await api(path!, { method });
+  for (let i = 0; i < 3; i++)
+    expect(fetch.mock.calls[i]![1].headers['idempotency-key']).toMatch(/^[A-Za-z0-9_-]{8,128}$/);
+  expect(fetch.mock.calls[3]![1].headers).not.toHaveProperty('idempotency-key');
+});
 it('uploads attachment bytes with progress and aborts when removed', async () => {
   const requests: any[] = [];
   vi.stubGlobal(

@@ -122,7 +122,14 @@ export function emit(projectId: string, event: unknown) {
           ? 'document'
           : rawType === 'app'
             ? 'preview'
-            : ['state', 'storage', 'preparation', 'preparation-log'].includes(rawType || '')
+            : [
+                  'state',
+                  'storage',
+                  'preparation',
+                  'preparation-log',
+                  'database',
+                  'environment',
+                ].includes(rawType || '')
               ? 'project'
               : rawType === 'terminals'
                 ? 'terminal'

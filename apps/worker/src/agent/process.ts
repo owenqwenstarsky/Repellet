@@ -89,6 +89,7 @@ export async function startProjectProcess(
       delete environment[key];
   const safeEnv = {
     ...environment,
+    REPELLET_PROJECT_ENV_NAMES: JSON.stringify(Object.keys(environment)),
     PATH: base.PATH || '/usr/local/bin:/usr/bin:/bin',
     HOME: '/home/agent',
     PI_CODING_AGENT_DIR: '/home/agent/.pi/agent',

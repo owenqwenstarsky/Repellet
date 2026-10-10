@@ -1,7 +1,10 @@
+import { RESOURCE_READ_TOOLS, RESOURCE_WRITE_TOOLS } from './resources.ts';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import extension from './upstream/plan/index.ts';
 import { PROJECT_READ_TOOLS, PROJECT_WRITE_TOOLS, projectPlanMode } from './project.ts';
 
+const READ_TOOLS = [...PROJECT_READ_TOOLS, ...RESOURCE_READ_TOOLS];
+const WRITE_TOOLS = [...PROJECT_WRITE_TOOLS, ...RESOURCE_WRITE_TOOLS];
 const REVIEW_ENTRY = 'repellet.plan-review';
 
 function implementationApproved(ctx: ExtensionContext): boolean {
@@ -80,26 +83,23 @@ export default function plan(pi: ExtensionAPI) {
     setActiveTools(names: string[]) {
       const planning = names.includes('ask_questions');
       const available = new Set(pi.getAllTools().map((tool) => tool.name));
-      const projectTools = [...PROJECT_READ_TOOLS, ...(planning ? [] : PROJECT_WRITE_TOOLS)].filter(
-        (name) => available.has(name),
+      const projectTools = [...READ_TOOLS, ...(planning ? [] : WRITE_TOOLS)].filter((name) =>
+        available.has(name),
       );
       pi.setActiveTools([
         ...new Set([
-          ...names.filter((name) => !planning || !PROJECT_WRITE_TOOLS.includes(name)),
+          ...names.filter((name) => !planning || !WRITE_TOOLS.includes(name)),
           ...projectTools,
         ]),
       ]);
     },
     on(event: any, handler: any) {
       pi.on(event, (value: any, ctx: any) => {
-        if (
-          event === 'tool_call' &&
-          PROJECT_WRITE_TOOLS.includes(value.toolName) &&
-          projectPlanMode(ctx)
-        )
+        if (event === 'tool_call' && WRITE_TOOLS.includes(value.toolName) && projectPlanMode(ctx))
           return {
             block: true,
-            reason: 'Plan mode is read-only. Leave plan mode before starting or stopping the app.',
+            reason:
+              'Plan mode is read-only. Leave plan mode before changing the app, database, or variables.',
           };
         return handler(value, context(ctx));
       });

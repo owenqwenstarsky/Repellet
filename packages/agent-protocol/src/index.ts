@@ -73,6 +73,16 @@ export type ToolRequestUserInputParams = {
 export type ToolRequestUserInputResponse = { answers: Record<string, { answers: string[] }> };
 export type ServerRequest =
   | {
+      method: 'repellet/resource/control';
+      id: string | number;
+      params: {
+        threadId: string;
+        turnId: string;
+        operation: string;
+        arguments: Record<string, unknown>;
+      };
+    }
+  | {
       id: string | number;
       method: 'repellet/project/control';
       params: import('./project-control.js').ProjectControlRequest;
@@ -121,3 +131,5 @@ export type ClientRequest = {
 };
 export * from './rpc.js';
 export * from './project-control.js';
+
+export * from './resource-control.js';

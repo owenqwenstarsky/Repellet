@@ -16,6 +16,10 @@ import { AgentConnection } from '../apps/worker/src/agent/connection.js';
 import { readAuthCache } from '../apps/worker/src/agent/auth-cache.js';
 import type { Thread } from '@repellet/agent-protocol';
 const state = vi.hoisted(() => ({ root: '', usage: 0, connections: new Map<string, any>() }));
+vi.mock('../apps/worker/src/agent/resource-control.js', () => ({
+  forwardResourceControl: vi.fn(),
+}));
+vi.mock('../apps/worker/src/databases.js', () => ({ databaseBytes: async () => 0 }));
 vi.mock('../apps/worker/src/agent/process.js', async () => {
   const { AgentConnection } = await import('../apps/worker/src/agent/connection.js');
   return {

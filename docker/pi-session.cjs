@@ -715,3 +715,30 @@ module.exports = {
   writeIndex,
   importHistory,
 };
+
+// Replace only tracked project keys. Provider/control-plane credentials and base
+// process settings never become project variables or disappear on a rename.
+module.exports.replaceProjectEnvironment = function (environment, tracked, variables) {
+  const allowed = (key) =>
+    /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
+    !/^(REPELLET_|PI_CODING_AGENT_|BRIDGE_TOKEN$|WORKER_TOKEN$|STORAGE_LIMIT_MB$|HOME$|PATH$|NODE_OPTIONS$|LD_PRELOAD$|LD_LIBRARY_PATH$|CARGO_HOME$)/.test(
+      key,
+    );
+  if (
+    !variables ||
+    typeof variables !== 'object' ||
+    Array.isArray(variables) ||
+    Object.values(variables).some((value) => typeof value !== 'string')
+  )
+    throw new Error('Invalid project environment');
+  for (const key of tracked) if (allowed(key)) delete environment[key];
+  const keys = Object.keys(variables).filter(allowed);
+  for (const key of keys)
+    Object.defineProperty(environment, key, {
+      value: variables[key],
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  return keys;
+};

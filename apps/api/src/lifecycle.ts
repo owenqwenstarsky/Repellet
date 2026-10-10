@@ -1,3 +1,9 @@
+import {
+  databaseRecord,
+  databaseSpec,
+  setDatabaseState,
+  retryDatabaseWithinOperation,
+} from './databases.js';
 import { eq, and, inArray } from 'drizzle-orm';
 import { WebSocket } from 'ws';
 import { db } from './db.js';
@@ -130,19 +136,21 @@ export async function ensureProject(
       const environment =
         changes?.environment ||
         (project.environment ? JSON.parse(decrypt(project.environment)) : {});
-      const usage = await workerJson<{ storageBytes: number; storageExceeded: boolean }>(
-        `/projects/${id}/ensure`,
-        'POST',
-        {
-          runtimes: changes?.runtimes || project.runtimes,
-          limits: currentLimits,
-          environment,
-          rebuild: !!changes?.runtimes,
-          prepared: true,
-          cloneUrl: project.cloneUrl,
-          previewTargetPort: project.runConfig.port,
-        },
-      );
+      const database = await databaseRecord(id);
+      const usage = await workerJson<{
+        storageBytes: number;
+        storageExceeded: boolean;
+        databaseStatus?: 'ready' | 'failed';
+      }>(`/projects/${id}/ensure`, 'POST', {
+        runtimes: changes?.runtimes || project.runtimes,
+        limits: currentLimits,
+        environment,
+        ...(database && database.status !== 'deleting' ? { database: databaseSpec(database) } : {}),
+        rebuild: !!changes?.runtimes,
+        prepared: true,
+        cloneUrl: project.cloneUrl,
+        previewTargetPort: project.runConfig.port,
+      });
       await cloneGithub(project);
       const preview = await workerJson<{ port: number }>(`/projects/${id}/preview`, 'POST', {
         targetPort: project.runConfig.port,
@@ -166,9 +174,18 @@ export async function ensureProject(
           .set({ state: 'succeeded', finishedAt: new Date() })
           .where(eq(jobs.id, job.id));
       await watch(id);
-      await autoStartProfiles(id).catch((error) =>
-        emit(id, { type: 'error', message: `Automatic Run failed: ${(error as Error).message}` }),
-      );
+      if (database && database.status !== 'deleting')
+        await setDatabaseState(
+          id,
+          usage.databaseStatus || 'failed',
+          usage.databaseStatus === 'ready'
+            ? null
+            : 'Database could not start. Retry from the Database tab.',
+        );
+      if (!database || usage.databaseStatus === 'ready')
+        await autoStartProfiles(id).catch((error) =>
+          emit(id, { type: 'error', message: `Automatic Run failed: ${(error as Error).message}` }),
+        );
     } catch (e) {
       await setState(id, 'failed', (e as Error).message);
       if (job)
@@ -198,6 +215,8 @@ export async function stopProjectWithinOperation(id: string) {
   try {
     await workerJson(`/projects/${id}/stop`, 'POST');
     await finishWorkspaceProcesses(id);
+    const database = await databaseRecord(id);
+    if (database && database.status !== 'deleting') await setDatabaseState(id, 'stopped');
     await setState(id, 'stopped');
   } catch (e) {
     await setState(id, 'failed', (e as Error).message);
@@ -226,6 +245,24 @@ export async function reconcile() {
     }
     try {
       const state = await workerJson<{ running: boolean; oomKilled: boolean }>(`/projects/${p.id}`);
+      if (state.running)
+        await db.update(projects).set({ state: 'running' }).where(eq(projects.id, p.id));
+      const database = await databaseRecord(p.id);
+      if (database && database.status !== 'deleting') {
+        const live = await workerJson<{ exists: boolean; running: boolean; id?: string }>(
+          `/projects/${p.id}/database`,
+        );
+        if (state.running && live.running && live.id === database.id)
+          await retryDatabaseWithinOperation(p.id);
+        else {
+          if (!state.running && live.running) await workerJson(`/projects/${p.id}/stop`, 'POST');
+          await setDatabaseState(
+            p.id,
+            state.running ? 'failed' : 'stopped',
+            state.running ? 'Database is not running. Retry from the Database tab.' : null,
+          );
+        }
+      }
       if (state.running) {
         await reconcileProcesses(p.id).catch(() => {}); // Older bridges upgrade on rebuild.
         await db
@@ -273,6 +310,9 @@ export async function monitor() {
           `/projects/${p.id}`,
         );
         if (!status.running) {
+          await workerJson(`/projects/${p.id}/stop`, 'POST');
+          const database = await databaseRecord(p.id);
+          if (database && database.status !== 'deleting') await setDatabaseState(p.id, 'stopped');
           await finishWorkspaceProcesses(p.id);
           await setState(
             p.id,
@@ -283,6 +323,16 @@ export async function monitor() {
           );
           closeProject(p.id);
           continue;
+        }
+        const database = await databaseRecord(p.id);
+        if (database && database.status === 'ready') {
+          const live = await workerJson<{ running: boolean }>(`/projects/${p.id}/database`);
+          if (!live.running)
+            await setDatabaseState(
+              p.id,
+              'failed',
+              'Database stopped unexpectedly. Retry from the Database tab.',
+            );
         }
         if (['available', 'starting', 'timeout'].includes(p.appStatus.status)) {
           const mainIds = await mainRunProcessIds(p.id);

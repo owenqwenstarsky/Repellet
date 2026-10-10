@@ -18,6 +18,8 @@ let provider: Awaited<ReturnType<typeof fakeResponsesProvider>>,
   temp = '',
   threadId = '',
   managedContext = '';
+let restoreFetch: (() => void) | undefined;
+const resourceRequests: unknown[] = [];
 async function rpc(method: string, params: unknown = {}) {
   return projects.agentRpc(id, userId, {
     generation: (await projects.agentStatus(id, userId)).generation,
@@ -77,6 +79,25 @@ describe.skipIf(!enabled)('real Pi 1.1.0 in the unprivileged workspace container
     projects = await import('../apps/worker/src/agent/projects.js');
     accounts = await import('../apps/worker/src/agent/accounts.js');
     provider = await fakeResponsesProvider();
+    // This suite runs the worker and Pi without the control-plane API. Keep the
+    // real resource transport, but supply the saved environment at its HTTP boundary.
+    const { config } = await import('../apps/worker/src/config.js');
+    const realFetch = globalThis.fetch;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, options) => {
+      if (url !== `${config.appUrl}/internal/agent/resource-control`)
+        return realFetch(url, options);
+      expect(options?.method).toBe('POST');
+      expect(new Headers(options?.headers).get('authorization')).toBe(`Bearer ${config.token}`);
+      const request = JSON.parse(String(options?.body));
+      resourceRequests.push(request);
+      expect(request).toEqual({
+        projectId: id,
+        userId,
+        control: { operation: 'environment_sync', arguments: {} },
+      });
+      return Response.json({ data: { SHARED_PROJECT_VARIABLE: 'available-to-agent' } });
+    });
+    restoreFetch = () => fetchSpy.mockRestore();
     await worker.ensureWorkspace(id, {
       runtimes: ['node'],
       limits: defaultLimits,
@@ -98,6 +119,7 @@ describe.skipIf(!enabled)('real Pi 1.1.0 in the unprivileged workspace container
     if (worker) await worker.removeWorkspace(id);
     if (provider) await provider.close();
     if (temp) await rm(temp, { recursive: true, force: true });
+    restoreFetch?.();
   });
   it('pins Pi and denies shared terminals access to private state', async () => {
     expect((await exec('1000:1000', ['pi', '--version'])).text.trim()).toBe('1.1.0');
@@ -229,6 +251,7 @@ describe.skipIf(!enabled)('real Pi 1.1.0 in the unprivileged workspace container
     });
   }, 60000);
   it('uses Pi command tools, excludes the provider key, and shares agent file changes with the bridge', async () => {
+    const previousResourceRequests = resourceRequests.length;
     await rpc('turn/start', { threadId, input: [{ type: 'text', text: 'create agent file' }] });
     await vi.waitFor(() => expect(projects.agentActivity(id).active).toBe(false), {
       timeout: 30000,
@@ -240,6 +263,7 @@ describe.skipIf(!enabled)('real Pi 1.1.0 in the unprivileged workspace container
       result.thread.turns.at(-1).items.some((item: any) => item.type === 'commandExecution'),
     ).toBe(true);
     expect(JSON.stringify(streamed)).toContain('PROVIDER_KEY_HIDDEN');
+    expect(resourceRequests.length).toBeGreaterThan(previousResourceRequests);
     const file = (await (
       await worker.bridgeRequest(id, '/file?path=agent-result.txt')
     ).json()) as any;

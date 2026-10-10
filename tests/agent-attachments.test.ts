@@ -12,6 +12,10 @@ const state = vi.hoisted(() => ({
   workspace: null as any,
   usage: { bytes: 0, exceeded: false, limitBytes: 100 * 1024 * 1024 },
 }));
+vi.mock('../apps/worker/src/databases.js', () => ({
+  databaseBytes: async () => 0,
+  removeDatabase: async () => {},
+}));
 vi.mock('../apps/worker/src/agent/accounts.js', () => ({ closeAccounts: vi.fn() }));
 vi.mock('../apps/worker/src/agent/process.js', () => ({ killProjectAgent: vi.fn() }));
 vi.mock('../apps/worker/src/agent/projects.js', () => ({

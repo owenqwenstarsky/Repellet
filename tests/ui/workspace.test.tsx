@@ -401,8 +401,9 @@ it('keeps terminal creation and session selection independent of the panel tab',
     return {} as any;
   });
   mount();
-  fireEvent.click(await screen.findByLabelText('Toggle bottom panel'));
-  fireEvent.click(screen.getByRole('button', { name: 'New terminal' }));
+  // Label queries also find controls inside the inert loading workspace.
+  fireEvent.click(await screen.findByRole('button', { name: 'Toggle bottom panel' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'New terminal' }));
   // Change panel selection while the asynchronous create dialog is open.
   fireEvent.click(screen.getByRole('tab', { name: 'Preparation Logs' }));
   fireEvent.submit(screen.getByRole('dialog').querySelector('form')!);
@@ -434,4 +435,41 @@ it('opens failed preparation for viewers without exposing retry or terminal muta
   expect(screen.queryByRole('button', { name: 'New terminal' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Close Shell' })).toBeNull();
   expect(screen.getByText('Terminal rendering')).toBeTruthy();
+});
+
+it('opens and closes the optional Database tab while preserving fixed tabs and saved preferences', async () => {
+  const original = vi.mocked(api).getMockImplementation()!;
+  vi.mocked(api).mockImplementation((path, options) =>
+    path.endsWith('/database') ? Promise.resolve(null) : original(path, options),
+  );
+  const view = mount();
+  await screen.findByRole('button', { name: 'Database', exact: true });
+  fireEvent.click(screen.getByRole('button', { name: 'Database', exact: true }));
+  await screen.findByText('Add a development database');
+  expect(
+    screen.getByRole('tab', { name: 'Database', exact: true }).getAttribute('aria-selected'),
+  ).toBe('true');
+  expect(screen.getByRole('tab', { name: 'Preview', exact: true })).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Agent', exact: true })).toBeTruthy();
+  await waitFor(() =>
+    expect(readPreferences(preferenceKey(user.id, project.id)).databaseOpen).toBe(true),
+  );
+  view.unmount();
+  mount();
+  await screen.findByRole('tab', { name: 'Database', exact: true });
+  fireEvent.click(screen.getByLabelText('Close Database tab'));
+  expect(screen.queryByRole('tab', { name: 'Database', exact: true })).toBeNull();
+  expect(
+    screen.getByRole('tab', { name: 'Preview', exact: true }).getAttribute('aria-selected'),
+  ).toBe('true');
+  await waitFor(() =>
+    expect(readPreferences(preferenceKey(user.id, project.id)).databaseOpen).toBe(false),
+  );
+});
+
+it('does not expose a Database button to viewers', async () => {
+  defaults({ ...project, role: 'viewer' });
+  mount();
+  await screen.findByLabelText('Toggle preview');
+  expect(screen.queryByRole('button', { name: 'Database', exact: true })).toBeNull();
 });

@@ -16,6 +16,7 @@ const baseUrl = process.env.REPELLET_PI_BASE_URL;
 let access = process.env.REPELLET_CHATGPT_ACCESS_TOKEN;
 let accountId = process.env.REPELLET_CHATGPT_ACCOUNT_ID;
 const secrets = [key, access].filter(Boolean);
+let projectEnvironmentNames = JSON.parse(process.env.REPELLET_PROJECT_ENV_NAMES || '[]');
 for (const k of Object.keys(process.env))
   if (/^(REPELLET_|BRIDGE_TOKEN$|WORKER_TOKEN$|STORAGE_LIMIT_MB$)/.test(k)) delete process.env[k];
 const indexFile = path.join(agentDir, 'repellet-sessions.json');
@@ -163,6 +164,31 @@ async function load(id) {
         ).then(resolve, reject);
       },
     );
+    eventBus.on(
+      'repellet:resource-control',
+      ({ operation, arguments: args, signal, resolve, reject }) => {
+        if (active?.id !== id || active.controller.signal.aborted)
+          return reject(new Error('No active turn for this resource request'));
+        const cancel = signal
+          ? AbortSignal.any([signal, active.controller.signal])
+          : active.controller.signal;
+        void request(
+          'repellet/resource/control',
+          { operation, arguments: args, threadId: id, turnId: active.turnId },
+          cancel,
+        )
+          .then((result) => {
+            if (operation === 'environment_sync' && !result.error)
+              projectEnvironmentNames = h.replaceProjectEnvironment(
+                process.env,
+                projectEnvironmentNames,
+                result.data,
+              );
+            resolve(result);
+          })
+          .catch(reject);
+      },
+    );
     eventBus.on('repellet:question', ({ questions, signal, itemId, resolve, reject }) => {
       if (active?.id !== id) return reject(new Error('No active turn for this question'));
       const cancel = signal
@@ -189,8 +215,8 @@ async function load(id) {
       settingsManager: settings,
       noExtensions: true,
       eventBus,
-      additionalExtensionPaths: ['websearch.ts', 'project.ts', 'plan.ts'].map((name) =>
-        path.join(extensionsDir, name),
+      additionalExtensionPaths: ['websearch.ts', 'project.ts', 'resources.ts', 'plan.ts'].map(
+        (name) => path.join(extensionsDir, name),
       ),
       disabledBuiltinExtensions: ['mcp'],
       noSkills: true,

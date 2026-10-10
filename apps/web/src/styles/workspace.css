@@ -858,3 +858,77 @@
     max-width: 140px;
   }
 }
+
+.database-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  overflow: auto;
+  min-height: 0;
+  height: 100%;
+}
+.database-header,
+.database-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.database-header strong {
+  flex: 1;
+}
+.database-connection {
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+.database-connection .status {
+  margin-left: var(--space-2);
+}
+.database-panel p {
+  margin: var(--space-2) 0;
+}
+.database-empty,
+.database-console,
+.database-record-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.database-selector {
+  flex: 1;
+  min-width: 100px;
+}
+.database-grid {
+  overflow: auto;
+  min-height: 80px;
+}
+.database-grid table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: var(--text-sm);
+}
+.database-grid th,
+.database-grid td {
+  text-align: left;
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  max-width: 280px;
+  overflow-wrap: anywhere;
+}
+.database-grid td:last-child {
+  white-space: nowrap;
+}
+.database-console textarea {
+  width: 100%;
+  resize: vertical;
+}
+.database-result {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 45vh;
+  overflow: auto;
+  padding: var(--space-2);
+  background: var(--color-panel);
+  font-size: var(--text-sm);
+}

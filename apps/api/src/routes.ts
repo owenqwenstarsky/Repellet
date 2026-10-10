@@ -1,3 +1,4 @@
+import { environmentSnapshot, saveEnvironment } from './environment.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
@@ -642,32 +643,26 @@ export async function routes(app: FastifyInstance) {
   });
   app.get('/api/projects/:id/environment', async (req) => {
     const p = await access(req, 'manage');
-    return {
-      runtimes: p.runtimes,
-      variables: p.environment ? JSON.parse(decrypt(p.environment)) : {},
-    };
+    return environmentSnapshot(p.id);
   });
   app.put('/api/projects/:id/environment', async (req, reply) => {
     const p = await access(req, 'manage');
-    const b = z.object({ runtimes: runtimesSchema, variables: environmentSchema }).parse(req.body);
+    const b = z
+      .object({
+        runtimes: runtimesSchema,
+        variables: environmentSchema,
+        revision: z.number().int().min(0).optional(),
+        databaseVariableName: z.string().nullable().optional(),
+        renames: z.record(z.string(), z.string()).optional(),
+      })
+      .parse(req.body);
+    const result = await saveEnvironment(p.id, b);
     const changed = [...b.runtimes].sort().join() !== [...p.runtimes].sort().join();
     if (changed) {
-      void ensureProject(p.id, { runtimes: b.runtimes, environment: b.variables })
-        .then(() =>
-          db
-            .update(projects)
-            .set({ environment: encrypt(JSON.stringify(b.variables)) })
-            .where(eq(projects.id, p.id)),
-        )
-        .catch((e) => req.log.error(e));
-      return reply.code(202).send({ rebuilding: true });
+      void ensureProject(p.id, { runtimes: b.runtimes }).catch((e) => req.log.error(e));
+      return reply.code(202).send({ ...result, rebuilding: true });
     }
-    await db
-      .update(projects)
-      .set({ environment: encrypt(JSON.stringify(b.variables)), updatedAt: new Date() })
-      .where(eq(projects.id, p.id));
-    if (p.state === 'running') await bridge(p.id, '/environment', 'PUT', b.variables);
-    return { ok: true };
+    return result;
   });
   app.get('/api/projects/:id/files', async (req) => {
     const p = await ready(req);

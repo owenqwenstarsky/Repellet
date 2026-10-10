@@ -63,6 +63,7 @@ export const projects = pgTable(
       .$type<{ command: string; cwd: string; port: number }>()
       .notNull(),
     environment: text(),
+    environmentRevision: integer('environment_revision').notNull().default(0),
     cloneUrl: text('clone_url'),
     starterId: text('starter_id'),
     starterVersion: integer('starter_version'),
@@ -285,4 +286,22 @@ export const githubStates = pgTable('github_states', {
     .references(() => users.id, { onDelete: 'cascade' }),
   kind: text().notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+});
+
+export const projectDatabases = pgTable('project_databases', {
+  projectId: uuid('project_id')
+    .primaryKey()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  id: uuid().notNull().unique(),
+  type: text().$type<import('@repellet/shared').DatabaseType>().notNull(),
+  image: text().notNull(),
+  credentials: text().notNull(),
+  initialized: boolean().notNull().default(false),
+  variableName: text('variable_name').notNull().default('DATABASE_URL'),
+  status: text()
+    .$type<import('@repellet/shared').DatabaseStatus['status']>()
+    .notNull()
+    .default('creating'),
+  error: text(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
