@@ -65,3 +65,27 @@ it('pins and distinguishes the main Run even when its process has a UUID session
   expect(screen.getByRole('button', { name: 'Close Shell' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Close Run' })).toBeNull();
 });
+
+it('recovers a pending terminal creation by refreshing the list without creating a duplicate', async () => {
+  const creation = deferred<typeof shell>();
+  vi.mocked(api).mockResolvedValueOnce([]).mockResolvedValue([shell]);
+  vi.mocked(post).mockReturnValue(creation.promise);
+  const { result } = renderHook(() =>
+    useTerminals('/projects/project', '', true, { current: true }),
+  );
+  let initial!: Promise<void>;
+  act(() => {
+    initial = result.current.reload();
+  });
+  await act(async () => {});
+  expect(result.current.initialReady).toBe(false);
+  await act(() => result.current.reload(true));
+  expect(result.current.initialReady).toBe(true);
+  expect(result.current.terminals).toEqual([shell]);
+  expect(post).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    creation.resolve({ ...shell, id: 'stale' });
+    await initial;
+  });
+  expect(result.current.terminals).toEqual([shell]);
+});

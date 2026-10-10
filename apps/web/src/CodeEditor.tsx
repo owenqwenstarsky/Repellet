@@ -74,6 +74,8 @@ export function CodeEditor({
   position,
   onPosition,
   active = true,
+  initialLoadAttempt = 0,
+  onInitialLoad,
 }: {
   projectId: string;
   path: string;
@@ -92,6 +94,8 @@ export function CodeEditor({
     scrollLeft: number;
   }) => void;
   active?: boolean;
+  initialLoadAttempt?: number;
+  onInitialLoad?: (error?: string) => void;
 }) {
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null);
   const [conflict, setConflict] = useState(false);
@@ -107,6 +111,8 @@ export function CodeEditor({
   status.current = onStatus;
   const languageStatus = useRef(onLanguageStatus);
   languageStatus.current = onLanguageStatus;
+  const initialLoadCallback = useRef(onInitialLoad);
+  initialLoadCallback.current = onInitialLoad;
   useEffect(() => {
     if (!editor) return;
     const saved = viewStates.get(path);
@@ -273,6 +279,7 @@ export function CodeEditor({
             editor!.setPosition({ lineNumber: pos.line, column: pos.column });
             editor!.setScrollPosition({ scrollTop: pos.scrollTop, scrollLeft: pos.scrollLeft });
           }
+          initialLoadCallback.current?.();
           publish(msg.dirty ? 'Saving…' : 'Saved');
         } else if (msg.type === 'update') Y.applyUpdate(doc, fromB64(msg.update), 'server');
         else if (msg.type === 'awareness')
@@ -299,6 +306,7 @@ export function CodeEditor({
           documentError = msg.message;
           setError(msg.message);
           status.current('Error');
+          initialLoadCallback.current?.(msg.message);
         }
       };
       socket.onclose = (e) => {
@@ -310,14 +318,19 @@ export function CodeEditor({
         if (e.code === 1008) {
           documentError = e.reason || 'Access changed. Reopen this file.';
           setError(documentError);
+          initialLoadCallback.current?.(documentError);
           publish('Error');
           return;
         }
         publish('Reconnecting…');
+        initialLoadCallback.current?.('Document connection interrupted. Reconnecting…');
         if (!disposed) timer = setTimeout(connect, 2000);
       };
       socket.onerror = () => {
-        if (!disposed) publish('Connection interrupted');
+        if (!disposed) {
+          publish('Connection interrupted');
+          initialLoadCallback.current?.('Document connection interrupted. Reconnecting…');
+        }
       };
     }
     editor.updateOptions({ readOnly: true });
@@ -340,7 +353,7 @@ export function CodeEditor({
       socket?.close();
       doc.destroy();
     };
-  }, [editor, projectId, path, user.id, editable]);
+  }, [editor, projectId, path, user.id, editable, initialLoadAttempt]);
   useEffect(() => {
     if (editor && selection && active) {
       editor.setPosition({ lineNumber: selection.line, column: selection.column });

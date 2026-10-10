@@ -7,14 +7,16 @@ export function WorkspaceStartScreen({
   logError,
   onStart,
   onRetryLog,
+  opening = false,
 }: {
   project: Project;
   buildLog: string;
   logError: string;
   onStart: () => void;
   onRetryLog: () => void;
+  opening?: boolean;
 }) {
-  const transitioning = ['building', 'starting', 'stopping'].includes(project.state);
+  const transitioning = opening || ['building', 'starting', 'stopping'].includes(project.state);
   return (
     <div className="workspace-preparing">
       <Box size={36} strokeWidth={1.5} />

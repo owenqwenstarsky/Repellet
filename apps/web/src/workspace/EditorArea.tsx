@@ -23,6 +23,8 @@ export function EditorArea({
   onPosition,
   onStatus,
   onLanguageStatus,
+  initialLoadAttempts,
+  onInitialLoad,
 }: {
   projectId: string;
   projectName: string;
@@ -39,6 +41,8 @@ export function EditorArea({
   onPosition: (path: string, position: Position) => void;
   onStatus: (status: string) => void;
   onLanguageStatus: (status: string) => void;
+  initialLoadAttempts?: Record<string, number>;
+  onInitialLoad?: (path: string, error?: string) => void;
 }) {
   return (
     <section className="editor-stack">
@@ -84,6 +88,8 @@ export function EditorArea({
                   user={user}
                   editable={editable}
                   active={active === path}
+                  initialLoadAttempt={initialLoadAttempts?.[path] || 0}
+                  onInitialLoad={(error) => onInitialLoad?.(path, error)}
                   onStatus={(s) => {
                     if (path === active) onStatus(s);
                   }}

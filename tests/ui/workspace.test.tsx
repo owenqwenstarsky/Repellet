@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, it, expect, vi } from 'vitest';
+import { useEffect } from 'react';
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Workspace } from '../../apps/web/src/Workspace';
@@ -20,9 +21,10 @@ vi.mock('../../apps/web/src/api', () => ({
   formatBytes: () => '0 B',
 }));
 vi.mock('../../apps/web/src/CodeEditor', () => ({
-  CodeEditor: ({ path, active }: any) => (
-    <textarea aria-label={`Editor ${path}`} data-active={active} />
-  ),
+  CodeEditor: ({ path, active, onInitialLoad }: any) => {
+    useEffect(() => onInitialLoad?.(), []);
+    return <textarea aria-label={`Editor ${path}`} data-active={active} />;
+  },
 }));
 vi.mock('../../apps/web/src/Terminal', () => ({ Terminal: () => <div>Terminal rendering</div> }));
 vi.mock('../../apps/web/src/documentSaves', () => ({ flushOpenDocuments: vi.fn() }));
@@ -98,7 +100,11 @@ it('does not show Running for an additional service or task', async () => {
       : fallback(path, options),
   );
   const { container } = mount();
-  await waitFor(() => expect(api).toHaveBeenCalledWith('/projects/project/terminals'));
+  await screen.findByRole('button', { name: 'Run' });
+  expect(api).toHaveBeenCalledWith(
+    '/projects/project/terminals',
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  );
   expect(container.querySelector('.workspace-header .status')?.textContent).toBe('Idle');
   expect(screen.queryByRole('button', { name: 'Stop app' })).toBeNull();
 });
@@ -420,9 +426,10 @@ it('opens failed preparation for viewers without exposing retry or terminal muta
     preparation: { ...project.preparation, status: 'interrupted', error: 'Interrupted' },
   });
   mount();
-  expect(await screen.findByText('Preparation interrupted')).toBeTruthy();
+  await screen.findByRole('tab', { name: 'Preparation Logs' });
+  expect(screen.getByText('Preparation interrupted')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Retry preparation' })).toBeNull();
-  fireEvent.click(screen.getByRole('tab', { name: 'Terminal', exact: true }));
+  fireEvent.click(await screen.findByRole('tab', { name: 'Terminal', exact: true }));
   expect(screen.queryByRole('button', { name: 'New terminal' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Close Shell' })).toBeNull();
   expect(screen.getByText('Terminal rendering')).toBeTruthy();

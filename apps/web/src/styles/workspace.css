@@ -5,6 +5,49 @@
   overflow: hidden;
   background: var(--color-panel);
 }
+.workspace-loading-screen {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: var(--space-8);
+  background: var(--color-panel);
+}
+.workspace-loading-content {
+  width: min(100%, 480px);
+  margin: auto;
+  text-align: center;
+}
+.workspace-loading-content > .brand,
+.workspace-loading-content > .page-actions {
+  justify-content: center;
+}
+.workspace-loading-content h1 {
+  margin-top: var(--space-6);
+  overflow-wrap: anywhere;
+  font-size: var(--text-2xl);
+  color: var(--color-text-strong);
+}
+.workspace-loading-content .loading {
+  padding: var(--space-6) 0;
+}
+.workspace-loading-content > p {
+  margin: var(--space-4) 0;
+}
+.workspace-loading-error {
+  color: var(--color-danger);
+  overflow-wrap: anywhere;
+}
+.workspace-loading-content details {
+  margin-top: var(--space-6);
+  text-align: left;
+}
+.workspace-loading-content .log {
+  max-height: 30vh;
+}
 .workspace-load-error {
   display: flex;
   align-items: center;

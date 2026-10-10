@@ -41,6 +41,8 @@ export function FileTree({
   revision,
   visible = true,
   structure,
+  initialLoadAttempt = 0,
+  onInitialLoad,
 }: {
   projectId: string;
   active: string;
@@ -49,12 +51,18 @@ export function FileTree({
   revision: number;
   visible?: boolean;
   structure?: StructureChange | StructureChange[];
+  initialLoadAttempt?: number;
+  onInitialLoad?: (error?: string) => void;
 }) {
   const [children, setChildren] = useState<Record<string, FileEntry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']));
   const [selected, setSelected] = useState('');
   const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
   const [loading, setLoading] = useState(true);
+  const rootLoaded = useRef(false);
+  const initialLoadCallback = useRef(onInitialLoad);
+  initialLoadCallback.current = onInitialLoad;
+  const controller = useRef<AbortController | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const epoch = useRef(0);
   const requests = useRef(new Map<string, number>());
@@ -73,6 +81,7 @@ export function FileTree({
     try {
       const list = await api<FileEntry[]>(
         `/projects/${projectId}/files?path=${encodeURIComponent(path)}`,
+        { signal: controller.current?.signal },
       );
       if (!current()) return;
       setErrors((old) => {
@@ -81,14 +90,24 @@ export function FileTree({
         return next;
       });
       setChildren((old) => ({ ...old, [path]: list }));
+      if (path === '') {
+        rootLoaded.current = true;
+        initialLoadCallback.current?.();
+      }
     } catch (e) {
-      if (current()) setErrors((old) => ({ ...old, [path]: errorMessage(e) }));
+      if (current()) {
+        const message = errorMessage(e);
+        setErrors((old) => ({ ...old, [path]: message }));
+        if (path === '' && !rootLoaded.current) initialLoadCallback.current?.(message);
+      }
     } finally {
       if (current()) setLoading(false);
     }
   }
   useEffect(() => {
     epoch.current++;
+    const abort = new AbortController();
+    controller.current = abort;
     let paths = expandedRef.current;
     if (structure && structure !== lastStructure.current) {
       lastStructure.current = structure;
@@ -110,10 +129,12 @@ export function FileTree({
       setMenu(null);
     }
     if (visible) for (const p of paths) void load(p);
+    else if (!rootLoaded.current && onInitialLoad) void load('');
     return () => {
       epoch.current++;
+      abort.abort();
     };
-  }, [projectId, revision, visible, structure]);
+  }, [projectId, revision, visible, structure, initialLoadAttempt]);
   const directory = selected
     ? Object.values(children)
         .flat()
