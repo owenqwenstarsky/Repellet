@@ -1,7 +1,7 @@
 import { docker, ensureImage, BASE_IMAGE } from './images.js';
 import { config, bridgeToken, projectId } from './config.js';
 import { installManagedAgentContext } from './agent-context.js';
-import { prepareWorkspacePermissions } from './workspace-permissions.js';
+import { prepareWorkspacePermissions, workspaceVolumeOptions } from './workspace-permissions.js';
 import type { Limits, Runtime } from '@repellet/shared';
 export const containerName = (id: string) => `repellet-project-${projectId(id)}`;
 export const volumeName = (id: string, kind = 'files') => `repellet-${projectId(id)}-${kind}`;
@@ -85,7 +85,12 @@ async function initVolumes(id: string) {
     HostConfig: {
       AutoRemove: false,
       Mounts: [
-        { Type: 'volume', Source: volumeName(id), Target: '/workspace' },
+        {
+          Type: 'volume',
+          Source: volumeName(id),
+          Target: '/workspace',
+          VolumeOptions: workspaceVolumeOptions,
+        },
         { Type: 'volume', Source: volumeName(id, 'home'), Target: '/home/workspace' },
         { Type: 'volume', Source: volumeName(id, 'agent'), Target: '/home/agent' },
         {
@@ -167,7 +172,12 @@ export async function ensureWorkspace(id: string, options: EnsureOptions) {
           Init: true,
           ExtraHosts: ['host.docker.internal:host-gateway'],
           Mounts: [
-            { Type: 'volume', Source: volumeName(id), Target: '/workspace' },
+            {
+              Type: 'volume',
+              Source: volumeName(id),
+              Target: '/workspace',
+              VolumeOptions: workspaceVolumeOptions,
+            },
             { Type: 'volume', Source: volumeName(id, 'home'), Target: '/home/workspace' },
             { Type: 'volume', Source: volumeName(id, 'agent'), Target: '/home/agent' },
             {
@@ -270,8 +280,19 @@ export async function duplicateWorkspace(from: string, to: string) {
       HostConfig: {
         AutoRemove: false,
         Mounts: [
-          { Type: 'volume', Source: volumeName(from), Target: '/source', ReadOnly: true },
-          { Type: 'volume', Source: volumeName(to), Target: '/workspace' },
+          {
+            Type: 'volume',
+            Source: volumeName(from),
+            Target: '/source',
+            ReadOnly: true,
+            VolumeOptions: workspaceVolumeOptions,
+          },
+          {
+            Type: 'volume',
+            Source: volumeName(to),
+            Target: '/workspace',
+            VolumeOptions: workspaceVolumeOptions,
+          },
         ],
       },
       Labels: { 'repellet.helper': 'true' },

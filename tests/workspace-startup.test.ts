@@ -3,9 +3,10 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
   workspace: null as any,
-  markers: new Set<string>(),
+  markers: new Map<string, string>(),
   calls: [] as string[],
   helpers: [] as any[],
+  workspaceAccess: new Map<string, boolean>(),
   migrationExit: 0,
   migrationWait: null as Promise<{ StatusCode: number }> | null,
   probeError: null as { statusCode: number } | null,
@@ -44,6 +45,12 @@ vi.mock('../apps/worker/src/images.js', () => {
       getVolume: () => ({ inspect: async () => ({}) }),
       getContainer: () => container,
       createContainer: async (options: any) => {
+        // Docker copies image directory metadata into empty volumes at container
+        // creation, even when a persistent migration marker already exists.
+        for (const mount of options.HostConfig.Mounts) {
+          if (['/workspace', '/source'].includes(mount.Target) && !mount.VolumeOptions?.NoCopy)
+            state.workspaceAccess.set(mount.Source, false);
+        }
         if (options.name) {
           state.workspace = {
             Id: 'container-id',
@@ -55,7 +62,7 @@ vi.mock('../apps/worker/src/images.js', () => {
           };
           return container;
         }
-        const migration = options.Cmd[0].includes('.repellet-workspace-permissions-v1');
+        const migration = options.Cmd[0].includes(workspacePermissionMarker);
         const kind = migration ? 'permissions' : options.Cmd[0].startsWith('cp ') ? 'copy' : 'init';
         const agentVolume = options.HostConfig.Mounts.find(
           (mount: any) => mount.Target === '/home/agent',
@@ -65,7 +72,8 @@ vi.mock('../apps/worker/src/images.js', () => {
           getArchive: vi.fn(async () => {
             state.calls.push('permissions.probe');
             if (state.probeError) throw state.probeError;
-            if (!state.markers.has(agentVolume)) throw { statusCode: 404 };
+            if (state.markers.get(agentVolume) !== workspacePermissionMarker)
+              throw { statusCode: 404 };
             return Readable.from([Buffer.alloc(0)]);
           }),
           start: vi.fn(async () => state.calls.push(kind + '.start')),
@@ -76,7 +84,14 @@ vi.mock('../apps/worker/src/images.js', () => {
                 : { StatusCode: state.migrationExit }
               : { StatusCode: 0 };
             state.calls.push(kind + '.finish');
-            if (migration && result.StatusCode === 0) state.markers.add(agentVolume);
+            if (migration && result.StatusCode === 0)
+              state.markers.set(agentVolume, workspacePermissionMarker);
+            if (result.StatusCode === 0 && (migration || kind === 'init')) {
+              const workspaceVolume = options.HostConfig.Mounts.find(
+                (mount: any) => mount.Target === '/workspace',
+              ).Source;
+              state.workspaceAccess.set(workspaceVolume, true);
+            }
             return result;
           }),
           remove: vi.fn(async () => state.calls.push(kind + '.remove')),
@@ -118,6 +133,7 @@ beforeEach(() => {
   state.markers.clear();
   state.calls.length = 0;
   state.helpers.length = 0;
+  state.workspaceAccess.clear();
   state.migrationExit = 0;
   state.migrationWait = null;
   state.probeError = null;
@@ -171,6 +187,33 @@ it('keeps the migration marker through container recreation and scopes it to the
   expect(state.markers.has('repellet-other-project-agent')).toBe(true);
 });
 
+it('preserves agent access to an empty workspace on restart and container recreation', async () => {
+  state.workspace = null;
+  await ensureWorkspace('project', options);
+  expect(state.workspaceAccess.get('repellet-project-files')).toBe(true);
+  await stopWorkspace('project');
+  await ensureWorkspace('project', options);
+  expect(permissionHelpers()[1].start).not.toHaveBeenCalled();
+  expect(state.workspaceAccess.get('repellet-project-files')).toBe(true);
+  await stopWorkspace('project');
+  state.workspace = null;
+  await ensureWorkspace('project', options);
+  expect(permissionHelpers()[2].start).not.toHaveBeenCalled();
+  expect(state.workspaceAccess.get('repellet-project-files')).toBe(true);
+});
+
+it('repairs volumes with an old marker before starting their bridge', async () => {
+  state.markers.set('repellet-project-agent', '/home/agent/.repellet-workspace-permissions-v1');
+  state.workspaceAccess.set('repellet-project-files', false);
+  await ensureWorkspace('project', options);
+  expect(permissionHelpers()[0].start).toHaveBeenCalled();
+  expect(state.workspaceAccess.get('repellet-project-files')).toBe(true);
+  expect(state.markers.get('repellet-project-agent')).toBe(workspacePermissionMarker);
+  expect(state.calls.indexOf('permissions.finish')).toBeLessThan(
+    state.calls.indexOf('workspace.start'),
+  );
+});
+
 it('prepares new volumes before migrating permissions and starting a new workspace', async () => {
   state.workspace = null;
   await ensureWorkspace('project', options);
@@ -212,8 +255,10 @@ it('does not interpret a marker read error as an absent marker', async () => {
 
 it('migrates a duplicate after copying files without inheriting the source marker', async () => {
   state.workspace = null;
-  state.markers.add('repellet-source-agent');
+  state.markers.set('repellet-source-agent', workspacePermissionMarker);
+  state.workspaceAccess.set('repellet-source-files', true);
   await duplicateWorkspace('source', 'project');
+  expect(state.workspaceAccess.get('repellet-source-files')).toBe(true);
   expect(state.markers.has('repellet-project-agent')).toBe(false);
   await ensureWorkspace('project', options);
   expect(state.calls.indexOf('copy.finish')).toBeLessThan(state.calls.indexOf('permissions.start'));
@@ -244,7 +289,12 @@ it('records success only after all permission commands and keeps private state o
   expect(steps.slice(0, -1).join(' && ')).not.toContain('/home/agent');
   expect(HostConfig.NetworkMode).toBe('none');
   expect(HostConfig.Mounts).toEqual([
-    { Type: 'volume', Source: 'repellet-project-files', Target: '/workspace' },
+    {
+      Type: 'volume',
+      Source: 'repellet-project-files',
+      Target: '/workspace',
+      VolumeOptions: { NoCopy: true },
+    },
     { Type: 'volume', Source: 'repellet-project-agent', Target: '/home/agent' },
   ]);
 });
