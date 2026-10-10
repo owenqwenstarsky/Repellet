@@ -1,6 +1,7 @@
 /* File tree */
 .file-tree {
   flex: 1;
+  min-height: 0;
   padding: var(--space-1-5) 0;
   overflow-y: auto;
 }
@@ -383,8 +384,13 @@
   color: var(--color-accent-text);
 }
 .file-drop-status {
-  padding: var(--space-2) var(--space-3);
+  flex-shrink: 0;
+  height: 26px;
+  line-height: 26px;
+  padding: 0 var(--space-3);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: var(--text-xs);
   color: var(--color-text-secondary);
-  overflow-wrap: anywhere;
 }

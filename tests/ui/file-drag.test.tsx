@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { Profiler } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { FileTree } from '../../apps/web/src/Files';
 import { UiProvider } from '../../apps/web/src/ui';
@@ -17,6 +18,11 @@ const root = [
   { name: 'a.txt', path: 'a.txt', kind: 'file' },
 ];
 const props = { projectId: 'project', active: '', onOpen: vi.fn(), editable: true, revision: 0 };
+const pointDescriptor = Object.getOwnPropertyDescriptor(document, 'elementFromPoint');
+afterEach(() => {
+  if (pointDescriptor) Object.defineProperty(document, 'elementFromPoint', pointDescriptor);
+  else Reflect.deleteProperty(document, 'elementFromPoint');
+});
 beforeEach(() => {
   vi.mocked(post).mockReset().mockResolvedValue({});
   vi.mocked(api)
@@ -97,6 +103,62 @@ function folderTransfer() {
           entry('folder', [entry('nested', [entry('x.txt')]), entry('empty', [])]),
       },
     ],
+  };
+}
+// jsdom has no DragEvent constructor, so its generic drag events omit mouse coordinates.
+function dragAt(
+  type: 'dragover' | 'drop',
+  target: Element,
+  data: ReturnType<typeof transfer>,
+  y: number,
+) {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 100, clientY: y });
+  Object.defineProperty(event, 'dataTransfer', { value: data });
+  fireEvent(target, event);
+}
+function hitTest(element: Element | null) {
+  const hit = vi.fn(() => element);
+  Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: hit });
+  return hit;
+}
+function scrolling(container: HTMLElement) {
+  const element = container.querySelector<HTMLElement>('.file-tree')!;
+  Object.defineProperties(element, {
+    clientHeight: { value: 100 },
+    scrollHeight: { value: 1000 },
+  });
+  vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+    left: 0,
+    right: 200,
+    top: 0,
+    bottom: 100,
+    width: 200,
+    height: 100,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
+  });
+  const frames = new Map<number, FrameRequestCallback>();
+  let next = 0;
+  const request = vi.fn((callback: FrameRequestCallback) => {
+    frames.set(++next, callback);
+    return next;
+  });
+  const cancel = vi.fn((id: number) => frames.delete(id));
+  vi.stubGlobal('requestAnimationFrame', request);
+  vi.stubGlobal('cancelAnimationFrame', cancel);
+  return {
+    element,
+    frames,
+    request,
+    cancel,
+    frame(time: number) {
+      act(() => {
+        const callbacks = [...frames.values()];
+        frames.clear();
+        callbacks.forEach((callback) => callback(time));
+      });
+    },
   };
 }
 it('uploads on root, folder and file-parent targets without bubbling', async () => {
@@ -392,4 +454,358 @@ it('stops subsequent uploads after changing projects', async () => {
   await act(async () => pending.resolve({}));
   expect(post).toHaveBeenCalledTimes(1);
   expect(screen.queryByText(/Upload complete/)).toBeNull();
+});
+it('keeps a permanent feedback footer outside the tree without inserting rows', async () => {
+  const { container } = await tree();
+  const element = container.querySelector('.file-tree')!;
+  const footer = container.querySelector('.file-drop-status')!;
+  const rows = [...element.querySelectorAll('.file-row')];
+  expect(footer.parentElement).toBe(element.parentElement);
+  expect(element.contains(footer)).toBe(false);
+  expect(footer.textContent).toBe('');
+  const data = transfer();
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+  fireEvent.dragOver(row('src'), { dataTransfer: data });
+  expect(screen.getByRole('status')).toBe(footer);
+  expect(footer.getAttribute('title')).toBe('Move to src');
+  expect([...element.querySelectorAll('.file-row')]).toEqual(rows);
+  fireEvent.dragEnd(row('a.txt'), { dataTransfer: data });
+  expect(container.querySelector('.file-drop-status')).toBe(footer);
+  expect(footer.textContent).toBe('');
+});
+it('does not commit React updates for repeated drag events on the same destination', async () => {
+  const commits = vi.fn();
+  render(
+    <UiProvider>
+      <Profiler id="tree" onRender={commits}>
+        <FileTree {...props} />
+      </Profiler>
+    </UiProvider>,
+  );
+  await screen.findByRole('button', { name: 'a.txt' });
+  const data = transfer();
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+  fireEvent.dragOver(row('src'), { dataTransfer: data });
+  commits.mockClear();
+  for (let i = 0; i < 20; i++)
+    fireEvent.dragOver(row('src').querySelector(i % 2 ? 'span' : 'svg')!, { dataTransfer: data });
+  expect(commits).not.toHaveBeenCalled();
+  expect(screen.getByRole('status').textContent).toBe('Move to src');
+});
+it('preserves hover when crossing icons and labels, including null related targets', async () => {
+  await tree();
+  vi.useFakeTimers();
+  const data = transfer();
+  const folder = row('src');
+  const icon = folder.querySelector('svg')!;
+  const label = folder.querySelector('span')!;
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+  fireEvent.dragEnter(folder, { dataTransfer: data });
+  fireEvent.dragOver(icon, { dataTransfer: data });
+  await act(async () => vi.advanceTimersByTime(300));
+  fireEvent.dragEnter(label, { dataTransfer: data });
+  fireEvent.dragLeave(icon, { dataTransfer: data, relatedTarget: label });
+  hitTest(label);
+  fireEvent.dragLeave(label, { dataTransfer: data, relatedTarget: null });
+  fireEvent.dragOver(label, { dataTransfer: data });
+  expect(folder.classList.contains('drop-target')).toBe(true);
+  await act(async () => vi.advanceTimersByTime(300));
+  expect(folder.getAttribute('aria-expanded')).toBe('true');
+  for (let i = 0; i < 5; i++) fireEvent.dragOver(folder, { dataTransfer: data });
+  await act(async () => vi.advanceTimersByTime(1200));
+  expect(vi.mocked(api).mock.calls.filter(([url]) => url.endsWith('path=src'))).toHaveLength(1);
+});
+it('cancels hover on a true exit and preserves the source for re-entry', async () => {
+  const { container } = await tree();
+  vi.useFakeTimers();
+  const data = transfer();
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+  fireEvent.dragEnter(row('src'), { dataTransfer: data });
+  fireEvent.dragOver(row('src'), { dataTransfer: data });
+  await act(async () => vi.advanceTimersByTime(300));
+  hitTest(null);
+  fireEvent.dragLeave(row('src'), { dataTransfer: data });
+  await act(async () => vi.advanceTimersByTime(600));
+  expect(row('src').getAttribute('aria-expanded')).toBe('false');
+  expect(screen.queryByRole('status')).toBeNull();
+  fireEvent.dragEnter(row('other'), { dataTransfer: data });
+  fireEvent.dragOver(row('other'), { dataTransfer: data });
+  expect(screen.getByRole('status').textContent).toBe('Move to other');
+  // An outside dragover also handles exits whose dragleave was missed by the browser.
+  fireEvent.dragOver(container, { dataTransfer: data });
+  expect(screen.queryByRole('status')).toBeNull();
+  await act(async () => vi.advanceTimersByTime(600));
+  expect(row('other').getAttribute('aria-expanded')).toBe('false');
+});
+it('highlights the actual parent when hovering file rows', async () => {
+  await tree();
+  fireEvent.click(row('src'));
+  await screen.findByRole('button', { name: 'b.txt' });
+  const data = transfer();
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+  fireEvent.dragOver(row('b.txt'), { dataTransfer: data });
+  expect(row('src').classList.contains('drop-target')).toBe(true);
+  expect(row('b.txt').classList.contains('drop-target')).toBe(false);
+  fireEvent.drop(row('b.txt'), { dataTransfer: data });
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledExactlyOnceWith('/projects/project/files/move', {
+      from: 'a.txt',
+      to: 'src/a.txt',
+    }),
+  );
+  await waitFor(() => expect(row('New file').hasAttribute('disabled')).toBe(false));
+  const back = transfer();
+  fireEvent.dragStart(row('b.txt'), { dataTransfer: back });
+  fireEvent.dragOver(row('a.txt'), { dataTransfer: back });
+  expect(row('Workspace root').classList.contains('drop-target')).toBe(true);
+  expect(row('a.txt').classList.contains('drop-target')).toBe(false);
+});
+it('scrolls at a frame-based speed and drops into the destination beneath the pointer', async () => {
+  const { container } = await tree();
+  const scroll = scrolling(container);
+  const hit = hitTest(row('src'));
+  const data = transfer();
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+  dragAt('dragover', row('src'), data, 84);
+  expect(scroll.frames.size).toBe(1);
+  scroll.frame(100);
+  expect(scroll.element.scrollTop).toBe(0);
+  scroll.frame(116);
+  expect(scroll.element.scrollTop).toBeCloseTo(3.84);
+  hit.mockReturnValue(row('other').querySelector('span')!);
+  scroll.frame(132);
+  expect(scroll.element.scrollTop).toBeCloseTo(7.68);
+  expect(screen.getByRole('status').textContent).toBe('Move to other');
+  expect(row('other').classList.contains('drop-target')).toBe(true);
+  // A delayed frame is capped to avoid large jumps after the tab was suspended.
+  scroll.frame(1000);
+  expect(scroll.element.scrollTop).toBeCloseTo(15.36);
+  // No browser drag data is needed between native drag events.
+  data.types = [];
+  scroll.frame(1016);
+  expect(screen.getByRole('status').textContent).toBe('Move to other');
+  data.types = [workspaceDragType];
+  dragAt('drop', row('src'), data, 84);
+  expect(scroll.frames.size).toBe(0);
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledExactlyOnceWith('/projects/project/files/move', {
+      from: 'a.txt',
+      to: 'other/a.txt',
+    }),
+  );
+});
+it('scrolls upward, stops in the middle, and respects scroll boundaries', async () => {
+  const { container } = await tree();
+  const scroll = scrolling(container);
+  hitTest(row('other'));
+  const data = transfer();
+  scroll.element.scrollTop = 100;
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+  dragAt('dragover', row('other'), data, 16);
+  scroll.frame(0);
+  scroll.frame(16);
+  expect(scroll.element.scrollTop).toBeCloseTo(96.16);
+  dragAt('dragover', row('other'), data, 50);
+  expect(scroll.frames.size).toBe(0);
+  scroll.element.scrollTop = 1;
+  dragAt('dragover', row('other'), data, 0);
+  scroll.frame(32);
+  scroll.frame(48);
+  expect(scroll.element.scrollTop).toBe(0);
+  scroll.frame(64);
+  expect(scroll.frames.size).toBe(0);
+  scroll.element.scrollTop = 899;
+  dragAt('dragover', row('other'), data, 99);
+  scroll.frame(80);
+  scroll.frame(96);
+  expect(scroll.element.scrollTop).toBe(900);
+  scroll.frame(112);
+  expect(scroll.frames.size).toBe(0);
+});
+it.each(['Escape', 'blur', 'dragend', 'outside', 'outside drop'])(
+  'stops scrolling and pending folder expansion on %s',
+  async (reason) => {
+    const { container } = await tree();
+    vi.useFakeTimers();
+    const scroll = scrolling(container);
+    hitTest(row('other'));
+    const data = transfer();
+    fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+    dragAt('dragover', row('other'), data, 84);
+    expect(scroll.frames.size).toBe(1);
+    if (reason === 'Escape') fireEvent.keyDown(window, { key: 'Escape' });
+    else if (reason === 'blur') fireEvent.blur(window);
+    else if (reason === 'dragend') fireEvent.dragEnd(row('a.txt'), { dataTransfer: data });
+    else if (reason === 'outside drop') {
+      const consumed = document.createElement('div');
+      document.body.append(consumed);
+      consumed.addEventListener('drop', (event) => event.stopPropagation());
+      fireEvent.drop(consumed, { dataTransfer: data });
+      consumed.remove();
+    } else fireEvent.dragOver(document.body, { dataTransfer: data });
+    expect(scroll.frames.size).toBe(0);
+    expect(screen.queryByRole('status')).toBeNull();
+    await act(async () => vi.advanceTimersByTime(600));
+    expect(row('other').getAttribute('aria-expanded')).toBe('false');
+    if (reason === 'Escape' || reason === 'blur') {
+      fireEvent.dragOver(row('other'), { dataTransfer: data });
+      fireEvent.drop(row('other'), { dataTransfer: data });
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(post).not.toHaveBeenCalled();
+    }
+  },
+);
+it.each([{ visible: false }, { editable: false }, { projectId: 'next' }])(
+  'cancels active drag work when props change to %j',
+  async (overrides) => {
+    const view = await tree();
+    vi.useFakeTimers();
+    const scroll = scrolling(view.container);
+    hitTest(row('other'));
+    const data = transfer();
+    fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+    dragAt('dragover', row('other'), data, 84);
+    expect(scroll.frames.size).toBe(1);
+    view.rerender(
+      <UiProvider>
+        <FileTree {...props} {...overrides} />
+      </UiProvider>,
+    );
+    expect(scroll.frames.size).toBe(0);
+    expect(screen.queryByRole('status')).toBeNull();
+    await act(async () => vi.advanceTimersByTime(600));
+    expect(row('other').getAttribute('aria-expanded')).toBe('false');
+    fireEvent.drop(row('other'), { dataTransfer: data });
+    expect(post).not.toHaveBeenCalled();
+  },
+);
+it('cancels scrolling and hover on unmount', async () => {
+  const view = await tree();
+  vi.useFakeTimers();
+  const scroll = scrolling(view.container);
+  hitTest(row('other'));
+  const data = transfer();
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+  dragAt('dragover', row('other'), data, 84);
+  expect(scroll.frames.size).toBe(1);
+  view.unmount();
+  expect(scroll.frames.size).toBe(0);
+  const calls = vi.mocked(api).mock.calls.length;
+  await act(async () => vi.advanceTimersByTime(600));
+  expect(api).toHaveBeenCalledTimes(calls);
+});
+it.each([{ from: 'a.txt' }, { from: 'a.txt', to: 'renamed.txt' }])(
+  'cancels a drag when a structure event changes its source: %j',
+  async (structure) => {
+    const view = await tree();
+    vi.useFakeTimers();
+    const scroll = scrolling(view.container);
+    hitTest(row('other'));
+    const data = transfer();
+    fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+    dragAt('dragover', row('other'), data, 84);
+    expect(scroll.frames.size).toBe(1);
+    view.rerender(
+      <UiProvider>
+        <FileTree {...props} revision={1} structure={[structure]} />
+      </UiProvider>,
+    );
+    expect(scroll.frames.size).toBe(0);
+    expect(screen.queryByRole('status')).toBeNull();
+    await act(async () => vi.advanceTimersByTime(600));
+    expect(row('other').getAttribute('aria-expanded')).toBe('false');
+    fireEvent.drop(row('other'), { dataTransfer: data });
+    expect(post).not.toHaveBeenCalled();
+  },
+);
+it('cancels when a refreshed listing no longer contains the source', async () => {
+  const view = await tree();
+  const data = transfer();
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+  fireEvent.dragOver(row('other'), { dataTransfer: data });
+  vi.mocked(api).mockResolvedValue(root.filter((entry) => entry.path !== 'a.txt'));
+  view.rerender(
+    <UiProvider>
+      <FileTree {...props} revision={1} />
+    </UiProvider>,
+  );
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'a.txt' })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+  fireEvent.drop(row('other'), { dataTransfer: data });
+  expect(post).not.toHaveBeenCalled();
+});
+it('cancels pending expansion when switching to an invalid destination', async () => {
+  await tree();
+  vi.useFakeTimers();
+  const data = transfer();
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+  fireEvent.dragOver(row('src'), { dataTransfer: data });
+  await act(async () => vi.advanceTimersByTime(300));
+  fireEvent.dragOver(row('Workspace root'), { dataTransfer: data });
+  expect(data.dropEffect).toBe('none');
+  expect(screen.queryByRole('status')).toBeNull();
+  await act(async () => vi.advanceTimersByTime(600));
+  expect(row('src').getAttribute('aria-expanded')).toBe('false');
+  fireEvent.drop(row('Workspace root'), { dataTransfer: data });
+  expect(post).not.toHaveBeenCalled();
+});
+it('sends only one move while a drop is pending and prevents new drags', async () => {
+  const pending = deferred();
+  vi.mocked(post).mockReturnValue(pending.promise);
+  await tree();
+  const data = transfer();
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+  fireEvent.drop(row('src'), { dataTransfer: data });
+  fireEvent.drop(row('other'), { dataTransfer: data });
+  expect(post).toHaveBeenCalledExactlyOnceWith('/projects/project/files/move', {
+    from: 'a.txt',
+    to: 'src/a.txt',
+  });
+  expect(fireEvent.dragStart(row('a.txt'), { dataTransfer: transfer() })).toBe(false);
+  await act(async () => pending.resolve({}));
+});
+it('stops drag work when a picker upload makes the tree busy', async () => {
+  const pending = deferred();
+  vi.mocked(post).mockReturnValue(pending.promise);
+  const view = await tree();
+  vi.useFakeTimers();
+  const scroll = scrolling(view.container);
+  hitTest(row('other'));
+  const data = transfer();
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: data });
+  dragAt('dragover', row('other'), data, 84);
+  expect(scroll.frames.size).toBe(1);
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [file()] },
+  });
+  expect(scroll.frames.size).toBe(0);
+  await act(async () => vi.advanceTimersByTime(600));
+  expect(row('other').getAttribute('aria-expanded')).toBe('false');
+  fireEvent.drop(row('other'), { dataTransfer: data });
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(post).mock.calls[0][0]).toContain('/upload');
+  await act(async () => pending.resolve({}));
+});
+it('allows a fresh internal drag and local upload after cancelling a session', async () => {
+  await tree();
+  const first = transfer();
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: first });
+  fireEvent.dragOver(row('src'), { dataTransfer: first });
+  fireEvent.keyDown(window, { key: 'Escape' });
+  const next = transfer();
+  fireEvent.dragStart(row('a.txt'), { dataTransfer: next });
+  fireEvent.dragOver(row('other'), { dataTransfer: next });
+  expect(screen.getByRole('status').textContent).toBe('Move to other');
+  fireEvent.keyDown(window, { key: 'Escape' });
+  const local = transfer([file()]);
+  fireEvent.dragEnter(row('src'), { dataTransfer: local });
+  fireEvent.dragOver(row('src'), { dataTransfer: local });
+  expect(screen.getByRole('status').textContent).toBe('Upload to src');
+  fireEvent.drop(row('src'), { dataTransfer: local });
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledExactlyOnceWith('/projects/project/files/upload', {
+      path: 'src/local.txt',
+      data: 'aGVsbG8=',
+    }),
+  );
 });
