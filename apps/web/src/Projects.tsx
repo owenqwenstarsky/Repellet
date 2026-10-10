@@ -84,7 +84,7 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
         (filter === 'mine' && p.ownerId === user.id) ||
         (filter === 'shared' && p.ownerId !== user.id)),
   );
-  const running = projects?.filter((p) => p.state === 'running').length || 0;
+  const running = projects?.filter((p) => p.running === true).length || 0;
   async function rename(p: Project) {
     const name = await ui.ask({
       title: 'Rename project',
@@ -197,7 +197,7 @@ export function Projects({ user, onOpen }: { user: User; onOpen: (id: string) =>
                   </span>
                 ))}
               </div>
-              <Status state={p.state} />
+              <Status state={p.running === true ? 'running' : 'idle'} />
               <span className="updated">
                 {new Date(p.updatedAt).toLocaleDateString(undefined, {
                   month: 'short',

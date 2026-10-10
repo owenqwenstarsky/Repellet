@@ -39,7 +39,7 @@ export function WorkspaceHeader({
         <strong className="workspace-title truncate" title={project.name}>
           {project.name}
         </strong>
-        <Status state={project.state} />
+        <Status state={running ? 'running' : 'idle'} />
       </div>
       <div className="workspace-header-spacer" />
       {peers.length > 0 && (
