@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react';
 import type { User, TerminalInfo, WorkspacePreferences } from '@repellet/shared';
 import { api, post, errorMessage, previewUrl } from './api';
 import { Spinner, useUi, hasOpenDialog } from './ui';
@@ -270,7 +270,8 @@ export function Workspace({
       setBusy(false);
     }
   }
-  useEffect(() => {
+  // Shortcuts must reflect readiness before the newly revealed workspace can receive input.
+  useLayoutEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!opened || e.defaultPrevented || hasOpenDialog()) return;
       const mod = e.metaKey || e.ctrlKey;
