@@ -5,6 +5,7 @@ import type { ThreadItem } from '@repellet/agent-protocol';
 import { agentAttachmentUrl } from '@repellet/shared';
 import { Button } from './ui';
 import { groupAgentTools, type AgentTranscriptEntry } from './agentTranscript';
+import { remarkFileReferences } from './remarkFileReferences';
 import {
   activityName,
   toolCategory,
@@ -18,14 +19,35 @@ import {
   workspaceFilePath,
 } from './toolActivity';
 
-function Markdown({ children }: { children: string }) {
+function Markdown({
+  children,
+  onOpenFile,
+}: {
+  children: string;
+  onOpenFile?: (path: string) => void;
+}) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={onOpenFile ? [remarkGfm, remarkFileReferences] : [remarkGfm]}
       skipHtml
       components={{
         img: () => null,
         input: ({ checked, ...props }) => <input {...props} checked={checked} disabled />,
+        span: ({ node, children }) => {
+          const path = node?.properties['data-file-reference'];
+          return typeof path === 'string' && onOpenFile ? (
+            <Button
+              variant="link"
+              className="agent-file-reference"
+              title={`Open file ${path}`}
+              onClick={() => onOpenFile(path)}
+            >
+              {path}
+            </Button>
+          ) : (
+            <span>{children}</span>
+          );
+        },
         a: ({ href, children }) => {
           const safe = href && /^(?:https?:|mailto:)/i.test(href) ? href : null;
           return safe ? (
@@ -77,7 +99,7 @@ function ToolText({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PlanContent({ text }: { text: string }) {
+function PlanContent({ text, onOpenFile }: { text: string; onOpenFile?: (path: string) => void }) {
   const displayText = text.replace(/^(\s*Plan:)(?:[ \t\r\n]+Plan:)+(?=\s|$)/, '$1');
   const blocks: Array<
     { type: 'markdown'; text: string } | { type: 'todo'; done: boolean; id?: string; text: string }
@@ -105,12 +127,17 @@ function PlanContent({ text }: { text: string }) {
   return (
     <div className="agent-plan-content">
       {blocks.map((block, index) => {
-        if (block.type === 'markdown') return <Markdown key={index}>{block.text}</Markdown>;
+        if (block.type === 'markdown')
+          return (
+            <Markdown key={index} onOpenFile={onOpenFile}>
+              {block.text}
+            </Markdown>
+          );
         return (
           <label className="agent-todo" key={index}>
             <input type="checkbox" disabled checked={block.done} />
             <span>{block.id ? `#${block.id}: ` : ''}</span>
-            <Markdown>{block.text}</Markdown>
+            <Markdown onOpenFile={onOpenFile}>{block.text}</Markdown>
           </label>
         );
       })}
@@ -189,13 +216,17 @@ export function AgentItem({
   if (item.type === 'agentMessage')
     return (
       <article className={`agent-item ${item.type}`}>
-        <Markdown>{item.text}</Markdown>
+        <Markdown onOpenFile={onOpenFile}>{item.text}</Markdown>
       </article>
     );
   if (item.type === 'plan')
     return (
       <article className="agent-item plan">
-        {item.text ? <PlanContent text={item.text} /> : <p>{item.summary || 'Plan updated'}</p>}
+        {item.text ? (
+          <PlanContent text={item.text} onOpenFile={onOpenFile} />
+        ) : (
+          <Markdown onOpenFile={onOpenFile}>{item.summary || 'Plan updated'}</Markdown>
+        )}
       </article>
     );
   if (item.type === 'userMessage')

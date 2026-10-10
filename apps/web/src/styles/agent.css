@@ -79,6 +79,18 @@
   line-height: 1.6;
   margin-bottom: 18px;
 }
+.button.link.agent-file-reference {
+  display: inline;
+  padding: 0;
+  font: inherit;
+  vertical-align: baseline;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: inherit;
+}
+.button.link.agent-file-reference:hover {
+  text-decoration: underline;
+}
 .agent-item > :first-child {
   margin-top: 0;
 }
