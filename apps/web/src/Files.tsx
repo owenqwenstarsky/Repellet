@@ -209,7 +209,7 @@ export function FileTree({
           expandedRef.current = next;
           setExpanded(next);
           void load(target);
-        }, 600);
+        }, 1500);
     }
     return true;
   }
