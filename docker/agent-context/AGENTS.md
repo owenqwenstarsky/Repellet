@@ -20,11 +20,20 @@
 - Act within the user's authorized task. Ask the owner when intent is unclear or project instructions require approval. In plan mode, only status and logs are permitted.
 - After a timeout, cancellation, or disconnection, check status before retrying. Never automatically replay start or stop. These tools do not prepare, rebuild, or start the workspace.
 
+## Startup verification before finishing
+
+- After changes to app code, runtime configuration, or startup behavior, verify that the main Run app starts before finishing the task. Planning, read-only tasks, and documentation-only changes do not require this check. Follow the owner's instructions and project-specific approval requirements; in plan mode, do not start or stop the app.
+- Call `project_status` first. If the app is not running and there are no preparation or workspace blockers, call `project_start`. If it is running, restart it to exercise startup with the changes: `project_status`, `project_stop`, `project_status`, then `project_start`.
+- Inspect `project_logs` while the app is running, then recheck `project_status`. Confirm `runState` remains `running` and, for apps with an HTTP preview, `preview.status` reaches `available`. A successful start request alone is not a passing check; preview availability confirms an HTTP response, not correct app behavior.
+- While startup is pending or status is unknown, recheck status without issuing duplicate starts. Bound each verification attempt to 90 seconds. If it remains unresolved, readiness fails or times out, or a tool returns an error, report that outcome accurately rather than claiming success. After an uncertain start or stop, check status before deciding what to do next; never automatically replay the action.
+- Fix startup failures caused by your changes within the authorized task, then repeat verification. Report preparation, workspace, or configuration blockers that require owner action; do not prepare, rebuild, or start the workspace to bypass them.
+- Leave the app running for the owner to review unless the owner explicitly asks otherwise. Before finishing, briefly report whether startup verification passed, failed, or was blocked, including any unresolved status or unavailable logs.
+
 ## Verification limits
 
-- You have no browser access or visual verification capability. Only applicable integration tests are available for verifying changes.
-- Do not plan or attempt browser checks, screenshots, responsive-layout verification, or other testing beyond integration tests.
-- When the codebase consists only of plain HTML, CSS, and JavaScript files, changes require no tests. Complete these tasks without adding verification steps.
+- Verify changes with applicable integration tests and the startup check above. You have no browser access or visual verification capability.
+- Do not plan or attempt browser checks, screenshots, responsive-layout verification, or other testing beyond applicable integration tests and the startup check.
+- When the codebase consists only of plain HTML, CSS, and JavaScript files, changes require no added automated tests, but app-affecting changes still require startup verification.
 - Do not leave tasks incomplete because unavailable checks cannot run, or routinely report the lack of browser verification.
 
 Marker: `REPELLET_AGENT_CONTEXT_MARKER=repellet-agent-context-v1`
