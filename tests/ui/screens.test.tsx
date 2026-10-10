@@ -324,6 +324,7 @@ it('resolves a pending confirmation when its provider unmounts', async () => {
 it('retains preview behavior and supports keyboard resizing without scrolling', async () => {
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1440);
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(800);
+  const terminals = deferred<any>();
   const original = vi.mocked(api).getMockImplementation()!;
   vi.mocked(api).mockImplementation((path) =>
     path === '/projects/project'
@@ -332,7 +333,9 @@ it('retains preview behavior and supports keyboard resizing without scrolling', 
           previewPort: 3001,
           appStatus: { status: 'available', generation: 1 },
         })
-      : original(path),
+      : path.endsWith('/terminals')
+        ? terminals.promise
+        : original(path),
   );
   const view = render(
     <UiProvider>
@@ -340,9 +343,15 @@ it('retains preview behavior and supports keyboard resizing without scrolling', 
     </UiProvider>,
   );
   const preview = await screen.findByTitle('Project preview');
-  fireEvent.click(screen.getByLabelText('Refresh preview'));
+  // The preview can render before terminal initialization makes the workspace accessible.
+  expect(screen.getByRole('main', { name: 'Opening project' })).toBeTruthy();
+  expect(screen.queryAllByRole('separator')).toHaveLength(0);
+  await act(async () =>
+    terminals.resolve([{ id: 'shell', name: 'Shell', alive: true, isRun: false }]),
+  );
+  const [separator] = await screen.findAllByRole('separator');
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh preview' }));
   expect(screen.getByTitle('Project preview')).not.toBe(preview);
-  const separator = screen.getAllByRole('separator')[0];
   const explorer = view.container.querySelector('aside.explorer') as HTMLElement;
   const initial = parseFloat(explorer.style.width);
   expect(fireEvent.keyDown(separator, { key: 'ArrowRight' })).toBe(false);
