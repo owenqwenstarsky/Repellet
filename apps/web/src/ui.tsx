@@ -232,7 +232,7 @@ export function Menu({
         ref={ref}
         role="menu"
         className={`dropdown ${className}`}
-        style={{ ...style, ...position, position: 'fixed', right: 'auto' }}
+        style={{ ...style, ...position, position: 'fixed', right: 'auto', bottom: 'auto' }}
       >
         {children}
       </div>
