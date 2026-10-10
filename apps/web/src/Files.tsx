@@ -90,63 +90,201 @@ export function FileTree({
     null,
   );
   const dragSource = useRef<WorkspaceDrag | null>(null);
+  const tree = useRef<HTMLDivElement>(null);
+  const destination = useRef<typeof dropTarget>(null);
+  const dragCancelled = useRef(false);
+  const dragDepth = useRef(0);
+  const pointer = useRef<{ x: number; y: number; mode: 'Move' | 'Upload' } | null>(null);
+  const scrollAnimation = useRef<number | null>(null);
+  const scrollTime = useRef<number | null>(null);
+  const scrollFrame = useRef<(time: number) => void>(() => {});
   const hover = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverPath = useRef<string | null>(null);
+  const dragStructure = useRef(structure);
   const operationProject = useRef(projectId);
   operationProject.current = projectId;
-  function clearDrag(clearSource = true) {
-    if (hover.current) clearTimeout(hover.current);
+  function stopDragWork() {
+    if (hover.current !== null) clearTimeout(hover.current);
     hover.current = null;
     hoverPath.current = null;
+    if (scrollAnimation.current !== null) cancelAnimationFrame(scrollAnimation.current);
+    scrollAnimation.current = null;
+    scrollTime.current = null;
+    pointer.current = null;
+  }
+  function showDestination(next: typeof dropTarget) {
+    if (destination.current?.path === next?.path && destination.current?.mode === next?.mode)
+      return;
+    destination.current = next;
+    setDropTarget(next);
+  }
+  function clearDrag(clearSource = true) {
+    stopDragWork();
+    dragDepth.current = 0;
     if (clearSource) dragSource.current = null;
-    setDropTarget(null);
+    showDestination(null);
+  }
+  function cancelDrag() {
+    dragCancelled.current = true;
+    clearDrag();
   }
   useEffect(() => {
     operationProject.current = projectId;
     clearDrag();
     const cancel = () => clearDrag();
+    const blur = () => cancelDrag();
     const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') clearDrag();
+      if (event.key === 'Escape') cancelDrag();
+    };
+    const outside = (event: DragEvent) => {
+      if (tree.current && !tree.current.contains(event.target as Node | null)) clearDrag(false);
+    };
+    const outsideDrop = (event: DragEvent) => {
+      if (tree.current && !tree.current.contains(event.target as Node | null)) clearDrag();
     };
     window.addEventListener('dragend', cancel);
     window.addEventListener('drop', cancel);
+    window.addEventListener('drop', outsideDrop, true);
+    window.addEventListener('blur', blur);
     window.addEventListener('keydown', key);
+    window.addEventListener('dragover', outside, true);
     return () => {
       operationProject.current = '';
-      if (hover.current) clearTimeout(hover.current);
+      dragCancelled.current = true;
+      stopDragWork();
       window.removeEventListener('dragend', cancel);
       window.removeEventListener('drop', cancel);
+      window.removeEventListener('drop', outsideDrop, true);
+      window.removeEventListener('blur', blur);
       window.removeEventListener('keydown', key);
+      window.removeEventListener('dragover', outside, true);
     };
   }, [projectId]);
-  function dragOver(event: React.DragEvent, target: string) {
-    const types = Array.from(event.dataTransfer.types);
-    const internal = types.includes(workspaceDragType);
-    if (!internal && !types.includes('Files')) return;
-    event.preventDefault();
-    event.stopPropagation();
+  useEffect(() => {
+    if ((!visible || !editable || busy) && (dragSource.current || pointer.current)) cancelDrag();
+  }, [visible, editable, busy]);
+  useEffect(() => {
+    const previous = dragStructure.current;
+    dragStructure.current = structure;
+    const source = dragSource.current;
+    if (!source) return;
+    const changes =
+      structure && structure !== previous
+        ? Array.isArray(structure)
+          ? structure.slice(Array.isArray(previous) ? previous.length : 0)
+          : [structure]
+        : [];
+    const siblings = children[parentPath(source.path)];
+    if (
+      changes.some((change) => remapPath(source.path, change) !== source.path) ||
+      (siblings && !siblings.some((entry) => entry.path === source.path))
+    )
+      cancelDrag();
+  }, [children, structure]);
+  function updateDestination(mode: 'Move' | 'Upload', target: string) {
     const source = dragSource.current;
     if (
+      dragCancelled.current ||
+      !visible ||
       !editable ||
       mutation.current ||
-      (internal && source && !canMove(source, projectId, target))
+      (mode === 'Move' && (!source || !canMove(source, projectId, target)))
     ) {
-      event.dataTransfer.dropEffect = 'none';
-      setDropTarget(null);
-      if (hover.current) clearTimeout(hover.current);
+      showDestination(null);
+      if (hover.current !== null) clearTimeout(hover.current);
+      hover.current = null;
       hoverPath.current = null;
-      return;
+      return false;
     }
-    event.dataTransfer.dropEffect = internal ? 'move' : 'copy';
-    setDropTarget({ path: target, mode: internal ? 'Move' : 'Upload' });
+    showDestination({ path: target, mode });
     if (hoverPath.current !== target) {
-      if (hover.current) clearTimeout(hover.current);
+      if (hover.current !== null) clearTimeout(hover.current);
+      hover.current = null;
       hoverPath.current = target;
       if (target && !expandedRef.current.has(target))
         hover.current = setTimeout(() => {
-          setExpanded((old) => new Set([...old, target]));
+          hover.current = null;
+          if (expandedRef.current.has(target)) return;
+          const next = new Set([...expandedRef.current, target]);
+          expandedRef.current = next;
+          setExpanded(next);
           void load(target);
-        }, 600);
+        }, 1500);
+    }
+    return true;
+  }
+  function targetAtPoint(x: number, y: number): string | null {
+    const element = document.elementFromPoint?.(x, y);
+    if (!element || !tree.current?.contains(element)) return null;
+    return element.closest<HTMLElement>('[data-drop-directory]')?.dataset.dropDirectory ?? '';
+  }
+  function scrollSpeed() {
+    const element = tree.current;
+    const point = pointer.current;
+    if (!element || !point || element.scrollHeight <= element.clientHeight) return 0;
+    const bounds = element.getBoundingClientRect();
+    if (
+      point.x < bounds.left ||
+      point.x >= bounds.right ||
+      point.y < bounds.top ||
+      point.y >= bounds.bottom
+    )
+      return 0;
+    const zone = Math.min(32, bounds.height / 2);
+    if (point.y < bounds.top + zone && element.scrollTop > 0)
+      return -480 * (1 - (point.y - bounds.top) / zone);
+    if (
+      point.y > bounds.bottom - zone &&
+      element.scrollTop < element.scrollHeight - element.clientHeight
+    )
+      return 480 * (1 - (bounds.bottom - point.y) / zone);
+    return 0;
+  }
+  scrollFrame.current = (time) => {
+    scrollAnimation.current = null;
+    const point = pointer.current;
+    const element = tree.current;
+    const speed = scrollSpeed();
+    if (!point || !element || !speed) {
+      scrollTime.current = null;
+      return;
+    }
+    const elapsed = scrollTime.current === null ? 0 : Math.min(32, time - scrollTime.current);
+    scrollTime.current = time;
+    element.scrollTop = Math.max(
+      0,
+      Math.min(
+        element.scrollHeight - element.clientHeight,
+        element.scrollTop + (speed * elapsed) / 1000,
+      ),
+    );
+    const target = targetAtPoint(point.x, point.y);
+    if (target === null) {
+      clearDrag(false);
+      return;
+    }
+    updateDestination(point.mode, target);
+    scrollAnimation.current = requestAnimationFrame((next) => scrollFrame.current(next));
+  };
+  function dragOver(event: React.DragEvent, target: string) {
+    const types = Array.from(event.dataTransfer.types);
+    if (!types.includes(workspaceDragType) && !types.includes('Files')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    // Local uploads have no dragstart in this tree. A new entry starts their session.
+    if (!types.includes(workspaceDragType) && !pointer.current && !dragCancelled.current)
+      dragDepth.current = Math.max(1, dragDepth.current);
+    const mode = types.includes(workspaceDragType) ? 'Move' : 'Upload';
+    const allowed = updateDestination(mode, target);
+    event.dataTransfer.dropEffect = allowed ? (mode === 'Move' ? 'move' : 'copy') : 'none';
+    if (dragCancelled.current || !visible || !editable || mutation.current) return;
+    pointer.current = { x: event.clientX, y: event.clientY, mode };
+    if (scrollSpeed() && scrollAnimation.current === null)
+      scrollAnimation.current = requestAnimationFrame((time) => scrollFrame.current(time));
+    else if (!scrollSpeed() && scrollAnimation.current !== null) {
+      cancelAnimationFrame(scrollAnimation.current);
+      scrollAnimation.current = null;
+      scrollTime.current = null;
     }
   }
   async function move(from: string, to: string) {
@@ -244,8 +382,11 @@ export function FileTree({
     event.preventDefault();
     event.stopPropagation();
     const source = readWorkspaceDrag(event.dataTransfer);
+    const cancelled = dragCancelled.current;
+    // Scrolling can change the row under a stationary pointer before the next native event.
+    if (scrollTime.current !== null) target = targetAtPoint(event.clientX, event.clientY) ?? target;
     clearDrag();
-    if (!editable || mutation.current) return;
+    if (cancelled || !visible || !editable || mutation.current) return;
     if (types.includes(workspaceDragType)) {
       if (source && canMove(source, projectId, target))
         void move(source.path, joinPath(target, source.path.split('/').pop()!));
@@ -358,12 +499,15 @@ export function FileTree({
           className={`file-row ${active === entry.path ? 'active' : ''} ${selected === entry.path ? 'selected' : ''} ${dropTarget?.path === entry.path ? 'drop-target' : ''}`}
           style={{ paddingLeft: `min(${12 + depth * 14}px, max(12px, calc(100% - 120px)))` }}
           title={entry.path}
+          data-drop-directory={entry.kind === 'directory' ? entry.path : parentPath(entry.path)}
           draggable={editable && !busy}
           onDragStart={(event) => {
             if (!editable || mutation.current) {
               event.preventDefault();
               return;
             }
+            clearDrag();
+            dragCancelled.current = false;
             const source = { projectId, path: entry.path, kind: entry.kind };
             dragSource.current = source;
             event.dataTransfer.setData(workspaceDragType, JSON.stringify(source));
@@ -480,12 +624,24 @@ export function FileTree({
         }
       />
       <div
+        ref={tree}
         className="file-tree"
         aria-busy={busy}
         onDragOver={(event) => dragOver(event, '')}
         onDrop={(event) => drop(event, '')}
-        onDragLeave={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) clearDrag(false);
+        onDragEnterCapture={(event) => {
+          const types = Array.from(event.dataTransfer.types);
+          if (!types.includes(workspaceDragType) && !types.includes('Files')) return;
+          if (dragDepth.current === 0 && !types.includes(workspaceDragType))
+            dragCancelled.current = false;
+          dragDepth.current++;
+        }}
+        onDragLeaveCapture={(event) => {
+          dragDepth.current = Math.max(0, dragDepth.current - 1);
+          const related = event.relatedTarget as Node | null;
+          if (related && event.currentTarget.contains(related)) return;
+          if (!related && targetAtPoint(event.clientX, event.clientY) !== null) return;
+          if (related || dragDepth.current === 0) clearDrag(false);
         }}
         onContextMenu={(e) => {
           if (e.target === e.currentTarget) {
@@ -496,6 +652,7 @@ export function FileTree({
       >
         <button
           className={`file-row workspace-root ${dropTarget?.path === '' ? 'drop-target' : ''}`}
+          data-drop-directory=""
           onClick={() => setSelected('')}
           onDragOver={(event) => dragOver(event, '')}
           onDrop={(event) => drop(event, '')}
@@ -503,11 +660,6 @@ export function FileTree({
           <Folder size={15} />
           <span>Workspace root</span>
         </button>
-        {(dropTarget || progress) && (
-          <div className="file-drop-status" role="status">
-            {progress || `${dropTarget!.mode} to ${dropTarget!.path || 'Workspace root'}`}
-          </div>
-        )}
         {errors[''] ? (
           <LoadError message={errors['']!} onRetry={() => load()} />
         ) : loading ? (
@@ -524,6 +676,19 @@ export function FileTree({
             )}
           </div>
         )}
+      </div>
+      <div
+        className="file-drop-status"
+        role={dropTarget || progress ? 'status' : undefined}
+        aria-live="polite"
+        aria-atomic="true"
+        title={
+          progress ||
+          (dropTarget ? `${dropTarget.mode} to ${dropTarget.path || 'Workspace root'}` : '')
+        }
+      >
+        {progress ||
+          (dropTarget ? `${dropTarget.mode} to ${dropTarget.path || 'Workspace root'}` : '')}
       </div>
       <input
         ref={upload}
