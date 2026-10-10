@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, it, expect, vi } from 'vitest';
+import { useEffect } from 'react';
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Workspace } from '../../apps/web/src/Workspace';
@@ -20,9 +21,10 @@ vi.mock('../../apps/web/src/api', () => ({
   formatBytes: () => '0 B',
 }));
 vi.mock('../../apps/web/src/CodeEditor', () => ({
-  CodeEditor: ({ path, active }: any) => (
-    <textarea aria-label={`Editor ${path}`} data-active={active} />
-  ),
+  CodeEditor: ({ path, active, onInitialLoad }: any) => {
+    useEffect(() => onInitialLoad?.(), []);
+    return <textarea aria-label={`Editor ${path}`} data-active={active} />;
+  },
 }));
 vi.mock('../../apps/web/src/Terminal', () => ({ Terminal: () => <div>Terminal rendering</div> }));
 vi.mock('../../apps/web/src/documentSaves', () => ({ flushOpenDocuments: vi.fn() }));

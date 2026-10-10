@@ -213,8 +213,8 @@ it('cleans up resizing on pointer cancellation and unmount', async () => {
       <Workspace id="project" user={user} onBack={vi.fn()} onOpen={vi.fn()} />
     </UiProvider>,
   );
-  await screen.findByLabelText('Project settings');
-  fireEvent.pointerDown(screen.getAllByRole('separator')[0], { clientX: 100 });
+  const separators = await screen.findAllByRole('separator');
+  fireEvent.pointerDown(separators[0], { clientX: 100 });
   expect(document.body.classList.contains('resizing')).toBe(true);
   fireEvent.pointerCancel(window);
   expect(document.body.classList.contains('resizing')).toBe(false);

@@ -6,7 +6,8 @@ import * as Y from 'yjs';
 import { CodeEditor } from '../../apps/web/src/CodeEditor';
 import { UiProvider } from '../../apps/web/src/ui';
 import { user } from './helpers';
-const { editor } = vi.hoisted(() => ({
+const { editor, bind } = vi.hoisted(() => ({
+  bind: vi.fn(),
   editor: {
     getModel: () => ({}),
     saveViewState: () => null,
@@ -27,6 +28,9 @@ vi.mock('@monaco-editor/react', () => ({
 vi.mock('monaco-editor', () => ({ editor: { defineTheme: vi.fn() } }));
 vi.mock('y-monaco', () => ({
   MonacoBinding: class {
+    constructor(...args: unknown[]) {
+      bind(...args);
+    }
     destroy() {}
   },
 }));
@@ -53,6 +57,7 @@ it('clears document connection errors on sync and ignores socket callbacks after
     },
   );
   const onStatus = vi.fn();
+  const onInitialLoad = vi.fn();
   const view = render(
     <UiProvider>
       <CodeEditor
@@ -61,6 +66,7 @@ it('clears document connection errors on sync and ignores socket callbacks after
         user={user}
         editable
         onStatus={onStatus}
+        onInitialLoad={onInitialLoad}
         onLanguageStatus={vi.fn()}
         viewStates={new Map()}
         onDefinition={vi.fn()}
@@ -68,16 +74,27 @@ it('clears document connection errors on sync and ignores socket callbacks after
     </UiProvider>,
   );
   await act(async () => {});
+  expect(onInitialLoad).not.toHaveBeenCalled();
   act(() =>
     socket.onmessage({ data: JSON.stringify({ type: 'error', message: 'Connection failed' }) }),
   );
   expect(screen.getByText('Connection failed')).toBeTruthy();
+  expect(onInitialLoad).toHaveBeenLastCalledWith('Connection failed');
   const doc = new Y.Doc();
+  doc.getText('content').insert(0, 'const loaded = true;');
   const update = btoa(String.fromCharCode(...Y.encodeStateAsUpdate(doc)));
   doc.destroy();
   act(() => socket.onmessage({ data: JSON.stringify({ type: 'sync', update, conflict: false }) }));
   expect(screen.queryByText('Connection failed')).toBeNull();
+  expect(onInitialLoad).toHaveBeenLastCalledWith();
+  expect(bind.mock.calls.at(-1)?.[0].toString()).toBe('const loaded = true;');
+  expect(bind.mock.invocationCallOrder.at(-1)).toBeLessThan(
+    onInitialLoad.mock.invocationCallOrder.at(-1)!,
+  );
   const count = onStatus.mock.calls.length;
+  const initializationCount = onInitialLoad.mock.calls.length;
   view.unmount();
+  act(() => socket.onmessage({ data: JSON.stringify({ type: 'error', message: 'Stale error' }) }));
   expect(onStatus).toHaveBeenCalledTimes(count);
+  expect(onInitialLoad).toHaveBeenCalledTimes(initializationCount);
 });

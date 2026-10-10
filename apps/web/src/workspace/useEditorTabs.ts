@@ -18,6 +18,7 @@ export function useEditorTabs(
   saved: WorkspacePreferences,
   project: Project | null,
   mounted: RefObject<boolean>,
+  attempt = 0,
 ) {
   const ui = useUi();
   const base = `/projects/${id}`;
@@ -26,6 +27,12 @@ export function useEditorTabs(
   const [selection, setSelection] = useState<{ line: number; column: number }>();
   const [structure, setStructure] = useState<StructureChange[]>([]);
   const restored = useRef(false);
+  const [selectionReady, setSelectionReady] = useState(false);
+  const [restoreComplete, setRestoreComplete] = useState(false);
+  const [restoreError, setRestoreError] = useState('');
+  const [backgroundAttempt, setBackgroundAttempt] = useState(0);
+  const selectionResolved = useRef(false);
+  const excludedRestores = useRef(new Set<string>());
   const positions = useRef(saved.positions);
   const viewStates = useRef(new Map<string, MonacoEditor.ICodeEditorViewState>());
   const fileIntent = useRef(0);
@@ -39,18 +46,47 @@ export function useEditorTabs(
   useEffect(() => {
     if (project?.state !== 'running' || restored.current) return;
     let disposed = false;
+    const controller = new AbortController();
     const version = fileIntent.current;
+    let selected = selectionResolved.current;
+    const current = () =>
+      !disposed && !restored.current && (selected || version === fileIntent.current);
+    setRestoreError('');
     void (async () => {
       const initialFile = starterCatalog.find((s) => s.id === project.starterId)?.initialFile;
       const candidates = saved.tabs.length ? saved.tabs : initialFile ? [initialFile] : [];
+      const ordered = candidates.includes(saved.active)
+        ? [saved.active, ...candidates.filter((path) => path !== saved.active)]
+        : candidates;
       const existing: string[] = [];
-      for (const path of candidates) {
+      for (const path of ordered) {
+        if (!current()) return;
+        if (excludedRestores.current.has(path)) continue;
         try {
-          const file = await api<FileContent>(base + '/file?path=' + encodeURIComponent(path));
-          if (!file.binary && file.hash) existing.push(path);
-        } catch {}
+          const file = await api<FileContent>(base + '/file?path=' + encodeURIComponent(path), {
+            signal: controller.signal,
+          });
+          if (!current()) return;
+          if (!file.binary && file.hash && !excludedRestores.current.has(path)) {
+            existing.push(path);
+            const combined = new Set([...tabsRef.current, path]);
+            commit([
+              ...candidates.filter((candidate) => combined.has(candidate)),
+              ...tabsRef.current.filter((candidate) => !candidates.includes(candidate)),
+            ]);
+            if (!selected) {
+              setActive(path);
+              setSelectionReady(true);
+              selectionResolved.current = true;
+              selected = true;
+            }
+          }
+        } catch (e) {
+          if (!current()) return;
+          if (!(typeof e === 'object' && e !== null && 'status' in e && e.status === 404)) throw e;
+        }
       }
-      if (disposed || restored.current || version !== fileIntent.current) return;
+      if (!current()) return;
       // Starter files may not have been scaffolded yet; try again after preparation changes.
       if (
         !existing.length &&
@@ -58,14 +94,27 @@ export function useEditorTabs(
         ['pending', 'files'].includes(project.preparation.status)
       )
         return;
-      commit(existing);
-      setActive(existing.includes(saved.active) ? saved.active : existing[0] || '');
+      if (!selected) setActive('');
+      setSelectionReady(true);
+      selectionResolved.current = true;
+      setRestoreComplete(true);
       restored.current = true;
-    })().catch((e) => ui.notify(errorMessage(e)));
+    })().catch((e) => {
+      if (!current()) return;
+      setRestoreError(errorMessage(e));
+      // Background restoration must not cover an already usable selected file.
+      if (selected) ui.notify(errorMessage(e));
+    });
     return () => {
       disposed = true;
+      controller.abort();
     };
-  }, [project?.state, project?.preparation.status]);
+  }, [project?.state, project?.preparation.status, attempt, backgroundAttempt]);
+  useEffect(() => {
+    if (!selectionReady || !restoreError || restoreComplete) return;
+    const timer = setTimeout(() => setBackgroundAttempt((value) => value + 1), 2000);
+    return () => clearTimeout(timer);
+  }, [selectionReady, restoreError, restoreComplete, backgroundAttempt]);
   useEffect(() => {
     if (restored.current && !tabs.includes(active)) setActive(tabs.at(-1) || '');
   }, [tabs, active]);
@@ -78,7 +127,13 @@ export function useEditorTabs(
         ui.notify('This file is binary or larger than 2 MiB. Use Download from its file menu.');
         return;
       }
-      restored.current = true;
+      // Once the initial file is chosen, a user selection need not cancel other saved tabs.
+      if (!selectionResolved.current) {
+        restored.current = true;
+        setRestoreComplete(true);
+      }
+      setSelectionReady(true);
+      selectionResolved.current = true;
       if (!tabsRef.current.includes(path)) commit([...tabsRef.current, path]);
       setActive(path);
       setSelection(line === undefined ? undefined : { line, column });
@@ -95,6 +150,7 @@ export function useEditorTabs(
       return;
     }
     if (!mounted.current) return;
+    excludedRestores.current.add(path);
     delete positions.current[path];
     const remaining = tabsRef.current.filter((t) => t !== path);
     commit(remaining);
@@ -111,6 +167,9 @@ export function useEditorTabs(
   }
   function applyStructure(change: StructureChange) {
     fileIntent.current++;
+    for (const path of saved.tabs) {
+      if (remapPath(path, change) !== path) excludedRestores.current.add(path);
+    }
     setStructure((changes) => [...changes, change]);
     const remaining = tabsRef.current
       .map((path) => remapPath(path, change))
@@ -153,6 +212,9 @@ export function useEditorTabs(
     selection,
     structure,
     restored,
+    selectionReady,
+    restoreComplete,
+    restoreError,
     positions,
     viewStates,
     openFile,

@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import type { User, TerminalInfo, WorkspacePreferences } from '@repellet/shared';
-import { AlertTriangle, ArrowLeft } from 'lucide-react';
 import { api, post, errorMessage, previewUrl } from './api';
-import { Spinner, useUi, hasOpenDialog, Button, EmptyState } from './ui';
+import { Spinner, useUi, hasOpenDialog } from './ui';
 import { FileTree, SearchPane } from './Files';
 import { GitPane } from './GitPane';
 import { preferenceKey, readPreferences, savePreferences } from './preferences';
@@ -20,6 +19,7 @@ import { useEditorTabs } from './workspace/useEditorTabs';
 import { WorkspaceHeader } from './workspace/WorkspaceHeader';
 import { WorkspaceBanners } from './workspace/WorkspaceBanners';
 import { WorkspaceStartScreen } from './workspace/WorkspaceStartScreen';
+import { WorkspaceLoadingScreen } from './workspace/WorkspaceLoadingScreen';
 import { ActivityBar } from './workspace/ActivityBar';
 import { EditorArea } from './workspace/EditorArea';
 import { PreviewPanel } from './workspace/PreviewPanel';
@@ -45,12 +45,69 @@ export function Workspace({
   const preferencesKey = preferenceKey(user.id, id);
   const [saved] = useState(() => readPreferences(preferencesKey));
   const snapshot = useRef<WorkspacePreferences>(saved);
-  const { project, setProject, load, loadError, buildLog, logError, preparationLog, mounted } =
-    useProjectPolling(id);
+  const [opened, setOpened] = useState(false);
+  const [slow, setSlow] = useState(false);
+  const [retryAttempt, setRetryAttempt] = useState(0);
+  const [fileAttempt, setFileAttempt] = useState(0);
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
+  const [documentAttempts, setDocumentAttempts] = useState<Record<string, number>>({});
+  const [filesReady, setFilesReady] = useState(false);
+  const [filesError, setFilesError] = useState('');
+  const [documents, setDocuments] = useState<Record<string, { ready: boolean; error?: string }>>(
+    {},
+  );
+  const {
+    project,
+    setProject,
+    load,
+    loadError,
+    buildLog,
+    logError,
+    preparationLog,
+    mounted,
+    open,
+    openPending,
+    openError,
+  } = useProjectPolling(id);
   const editable = !!project && project.role !== 'viewer';
   const ready = project?.state === 'running';
   const terminals = useTerminals(base, saved.terminal, editable, mounted);
-  const editor = useEditorTabs(id, saved, project, mounted);
+  const editor = useEditorTabs(id, saved, project, mounted, restoreAttempt);
+  const selectedDocumentReady = !editor.active || documents[editor.active]?.ready;
+  useEffect(() => {
+    if (
+      ready &&
+      filesReady &&
+      terminals.initialReady &&
+      editor.selectionReady &&
+      selectedDocumentReady
+    )
+      setOpened(true);
+  }, [ready, filesReady, terminals.initialReady, editor.selectionReady, selectedDocumentReady]);
+  useEffect(() => {
+    if (opened) return;
+    setSlow(false);
+    const timer = setTimeout(() => setSlow(true), 30000);
+    return () => clearTimeout(timer);
+  }, [opened, retryAttempt]);
+  function retryOpening() {
+    setRetryAttempt((value) => value + 1);
+    if (!project || !ready || loadError) void load(true);
+    if (!ready) void open(true);
+    if (!filesReady) {
+      setFilesError('');
+      setFileAttempt((value) => value + 1);
+    }
+    if (!terminals.initialReady && ready) void terminals.reload(true);
+    if (!editor.selectionReady) setRestoreAttempt((value) => value + 1);
+    if (editor.active && !selectedDocumentReady) {
+      setDocuments((previous) => ({ ...previous, [editor.active]: { ready: false } }));
+      setDocumentAttempts((previous) => ({
+        ...previous,
+        [editor.active]: (previous[editor.active] || 0) + 1,
+      }));
+    }
+  }
   const layout = useWorkspaceLayout(saved, project?.state);
   const [bottomPanelTab, setBottomPanelTab] = useState<'terminal' | 'preparation'>(
     saved.bottomPanelTab || 'terminal',
@@ -93,6 +150,7 @@ export function Workspace({
   const latestProject = useRef(project);
   latestProject.current = project;
   const canRun =
+    opened &&
     editable &&
     ready &&
     !project.storageExceeded &&
@@ -160,10 +218,11 @@ export function Workspace({
       terminalHeight: layout.terminalHeight,
       terminal: terminals.terminal,
     };
-    if (editor.restored.current) savePreferences(preferencesKey, snapshot.current);
+    if (editor.restoreComplete) savePreferences(preferencesKey, snapshot.current);
   }, [
     editor.tabs,
     editor.active,
+    editor.restoreComplete,
     layout.pane,
     layout.showSidebar,
     layout.showPreview,
@@ -213,7 +272,7 @@ export function Workspace({
   }
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || hasOpenDialog()) return;
+      if (!opened || e.defaultPrevented || hasOpenDialog()) return;
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === 'p') {
         e.preventDefault();
@@ -231,7 +290,7 @@ export function Workspace({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [project, editable, busy]);
+  }, [project, editable, busy, opened]);
   async function createTerminal() {
     try {
       const name = await ui.ask({
@@ -259,303 +318,347 @@ export function Workspace({
       ui.notify(errorMessage(e));
     }
   }
-  if (loadError && !project)
-    return (
-      <div className="workspace-load-error">
-        <EmptyState
-          icon={<AlertTriangle size={28} />}
-          title="Workspace unavailable"
-          description={loadError}
-          action={
-            <div className="page-actions">
-              <Button icon={<ArrowLeft size={15} />} onClick={onBack}>
-                Back to projects
-              </Button>
-              <Button variant="primary" onClick={load}>
-                Retry
-              </Button>
-            </div>
-          }
-        />
-      </div>
-    );
-  if (!project) return <Spinner label="Opening workspace…" />;
+  const openingError =
+    loadError ||
+    (!ready && openError) ||
+    (project?.state === 'failed' ? project.error || 'The workspace needs attention.' : '') ||
+    (!filesReady && filesError) ||
+    (!terminals.initialReady && terminals.error) ||
+    (!editor.selectionReady && editor.restoreError) ||
+    (!selectedDocumentReady && documents[editor.active]?.error) ||
+    '';
+  const openingStatus = !project
+    ? 'Loading project details…'
+    : !ready
+      ? project.state === 'building'
+        ? 'Installing and checking your tools…'
+        : 'Starting workspace…'
+      : !filesReady
+        ? 'Loading project files…'
+        : !terminals.initialReady
+          ? 'Loading terminal sessions…'
+          : !editor.selectionReady
+            ? 'Restoring your selected file…'
+            : 'Loading file content…';
+  const loadingScreen = !opened && (
+    <WorkspaceLoadingScreen
+      name={project?.name}
+      status={openingStatus}
+      error={openingError}
+      slow={slow}
+      buildLog={buildLog}
+      logError={logError}
+      onBack={onBack}
+      onRetry={retryOpening}
+    />
+  );
+  if (!project) return loadingScreen;
   const running = terminals.terminals.some(
     (t) => (t.isMainRun ?? t.id === 'run') && t.isRun && t.alive,
   );
   const url = project.previewPort ? previewUrl(project.previewPort) : '';
   const { dimensions } = layout;
   return (
-    <div className="workspace">
-      {quickOpen && (
-        <QuickOpen
-          projectId={id}
-          revision={indexRevision}
-          onOpen={editor.openFile}
-          onClose={() => setQuickOpen(false)}
-        />
-      )}
-      <WorkspaceHeader
-        project={project}
-        peers={peers}
-        editable={editable}
-        canRun={canRun}
-        busy={busy}
-        running={running}
-        onBack={onBack}
-        onRun={run}
-        onSettings={() => setSettings(true)}
-        onStopApp={async () => {
-          try {
-            await post(base + '/run/stop');
-            await terminals.reload();
-          } catch (e) {
-            ui.notify(errorMessage(e));
-          }
-        }}
-      />
-      <WorkspaceBanners project={project} loadError={loadError} onRetryLoad={load} />
-      {!ready ? (
-        <WorkspaceStartScreen
+    <>
+      {loadingScreen}
+      <div
+        className="workspace"
+        inert={!opened}
+        aria-hidden={!opened}
+        style={{ visibility: opened ? 'visible' : 'hidden' }}
+      >
+        {quickOpen && (
+          <QuickOpen
+            projectId={id}
+            revision={indexRevision}
+            onOpen={editor.openFile}
+            onClose={() => setQuickOpen(false)}
+          />
+        )}
+        <WorkspaceHeader
           project={project}
-          buildLog={buildLog}
-          logError={logError}
-          onRetryLog={load}
-          onStart={() =>
-            post(base + '/open')
-              .then(() => load())
-              .catch((e) => ui.notify(errorMessage(e)))
-          }
+          peers={peers}
+          editable={editable}
+          canRun={canRun}
+          busy={busy}
+          running={running}
+          onBack={onBack}
+          onRun={run}
+          onSettings={() => setSettings(true)}
+          onStopApp={async () => {
+            try {
+              await post(base + '/run/stop');
+              await terminals.reload();
+            } catch (e) {
+              ui.notify(errorMessage(e));
+            }
+          }}
         />
-      ) : (
-        <>
-          <div className="workspace-body" ref={layout.bodyRef}>
-            <ActivityBar
-              pane={layout.pane}
-              showSidebar={layout.showSidebar}
-              showTerminal={layout.showTerminal}
-              showPreview={layout.showPreview}
-              onPane={layout.selectPane}
-              onToggleTerminal={() => layout.setShowTerminal(!layout.showTerminal)}
-              onTogglePreview={() => {
-                setRightPanel('preview');
-                layout.setShowPreview(
-                  selectedRightPanel === 'preview' ? !layout.showPreview : true,
-                );
-              }}
-              agentOwner={agentOwner}
-              agentActive={layout.showPreview && selectedRightPanel === 'agent'}
-              onAgent={() => {
-                setRightPanel('agent');
-                layout.setShowPreview(selectedRightPanel === 'agent' ? !layout.showPreview : true);
-              }}
-            />
-            <aside
-              className="explorer"
-              hidden={!layout.showSidebar}
-              style={{ width: layout.showSidebar ? dimensions.explorer : 0 }}
-            >
-              <div className="tool-pane" hidden={layout.pane !== 'files'}>
-                <FileTree
-                  projectId={id}
-                  active={editor.active}
-                  onOpen={editor.openFile}
-                  editable={editable}
-                  revision={revision}
-                  visible={layout.pane === 'files'}
-                  structure={editor.structure}
-                />
-              </div>
-              {layout.visited.has('search') && (
-                <div className="tool-pane" hidden={layout.pane !== 'search'}>
-                  <SearchPane
+        <WorkspaceBanners project={project} loadError={loadError} onRetryLoad={load} />
+        {!ready ? (
+          <WorkspaceStartScreen
+            project={project}
+            buildLog={buildLog}
+            logError={logError}
+            onRetryLog={load}
+            opening={openPending}
+            onStart={() => void open().then(() => load())}
+          />
+        ) : (
+          <>
+            <div className="workspace-body" ref={layout.bodyRef}>
+              <ActivityBar
+                pane={layout.pane}
+                showSidebar={layout.showSidebar}
+                showTerminal={layout.showTerminal}
+                showPreview={layout.showPreview}
+                onPane={layout.selectPane}
+                onToggleTerminal={() => layout.setShowTerminal(!layout.showTerminal)}
+                onTogglePreview={() => {
+                  setRightPanel('preview');
+                  layout.setShowPreview(
+                    selectedRightPanel === 'preview' ? !layout.showPreview : true,
+                  );
+                }}
+                agentOwner={agentOwner}
+                agentActive={layout.showPreview && selectedRightPanel === 'agent'}
+                onAgent={() => {
+                  setRightPanel('agent');
+                  layout.setShowPreview(
+                    selectedRightPanel === 'agent' ? !layout.showPreview : true,
+                  );
+                }}
+              />
+              <aside
+                className="explorer"
+                hidden={!layout.showSidebar}
+                style={{ width: layout.showSidebar ? dimensions.explorer : 0 }}
+              >
+                <div className="tool-pane" hidden={layout.pane !== 'files'}>
+                  <FileTree
                     projectId={id}
-                    editable={editable}
+                    active={editor.active}
                     onOpen={editor.openFile}
-                    visible={layout.pane === 'search'}
-                  />
-                </div>
-              )}
-              {layout.visited.has('problems') && (
-                <div className="tool-pane" hidden={layout.pane !== 'problems'}>
-                  <Suspense fallback={<Spinner />}>
-                    <Problems projectId={id} tabs={editor.tabs} onOpen={editor.openFile} />
-                  </Suspense>
-                </div>
-              )}
-              {layout.visited.has('git') && (
-                <div className="tool-pane" hidden={layout.pane !== 'git'}>
-                  <GitPane
-                    projectId={id}
                     editable={editable}
                     revision={revision}
-                    visible={layout.pane === 'git'}
+                    visible={layout.pane === 'files'}
+                    structure={editor.structure}
+                    initialLoadAttempt={fileAttempt}
+                    onInitialLoad={(error) => {
+                      if (error) setFilesError(error);
+                      else {
+                        setFilesReady(true);
+                        setFilesError('');
+                      }
+                    }}
                   />
                 </div>
-              )}
-            </aside>
-            {layout.showSidebar && (
-              <ResizeHandle
-                onStart={() => layout.setLeftWidth(dimensions.explorer)}
-                onDelta={(delta) =>
-                  layout.setLeftWidth((v) => Math.max(170, Math.min(480, v + delta)))
-                }
-              />
-            )}
-            <section className="workspace-center">
-              <div className="workspace-upper">
-                <EditorArea
-                  projectId={id}
-                  projectName={project.name}
-                  user={user}
-                  editable={editable}
-                  tabs={editor.tabs}
-                  active={editor.active}
-                  selection={editor.selection}
-                  positions={editor.positions}
-                  viewStates={editor.viewStates}
-                  onSelect={editor.selectTab}
-                  onClose={editor.closeTab}
-                  onOpen={editor.openFile}
-                  onStatus={setStatus}
-                  onLanguageStatus={setLanguageStatus}
-                  onPosition={(path, pos) => {
-                    editor.positions.current[path] = pos;
-                    snapshot.current.positions = editor.positions.current;
-                    if (editor.restored.current) savePreferences(preferencesKey, snapshot.current);
-                  }}
-                />
-                {layout.showPreview && (
-                  <>
-                    <ResizeHandle
-                      onStart={() => layout.setPreviewWidth(dimensions.preview)}
-                      onDelta={(delta) =>
-                        layout.setPreviewWidth((v) => Math.max(260, Math.min(720, v - delta)))
-                      }
+                {layout.visited.has('search') && (
+                  <div className="tool-pane" hidden={layout.pane !== 'search'}>
+                    <SearchPane
+                      projectId={id}
+                      editable={editable}
+                      onOpen={editor.openFile}
+                      visible={layout.pane === 'search'}
                     />
-                    <aside className="workspace-right-panel" style={{ width: dimensions.preview }}>
-                      {agentOwner && (
-                        <Tabs
-                          label="Workspace right panel"
-                          value={selectedRightPanel}
-                          onChange={setRightPanel}
-                          items={[
-                            { id: 'preview', label: 'Preview' },
-                            { id: 'agent', label: 'Agent' },
-                          ]}
-                        />
-                      )}
-                      <div
-                        className="workspace-right-content"
-                        hidden={selectedRightPanel !== 'preview'}
-                      >
-                        <PreviewPanel
-                          project={project}
-                          url={url}
-                          width={dimensions.preview}
-                          revision={previewRevision}
-                          editable={editable}
-                          onRefresh={() => setPreviewRevision((v) => v + 1)}
-                          onClose={() => layout.setShowPreview(false)}
-                          onRetryReadiness={() =>
-                            post(base + '/readiness').catch((e) => ui.notify(errorMessage(e)))
-                          }
-                        />
-                      </div>
-                      {agentOwner && agentVisited && (
-                        <div
-                          className="workspace-right-content"
-                          hidden={selectedRightPanel !== 'agent'}
-                        >
-                          <AgentPanel
-                            projectId={id}
-                            selectedThread={agentThread}
-                            onSelectThread={setAgentThread}
-                            onOpenFile={editor.openFile}
-                          />
-                        </div>
-                      )}
-                    </aside>
-                  </>
+                  </div>
                 )}
-              </div>
-              {layout.showTerminal && (
+                {layout.visited.has('problems') && (
+                  <div className="tool-pane" hidden={layout.pane !== 'problems'}>
+                    <Suspense fallback={<Spinner />}>
+                      <Problems projectId={id} tabs={editor.tabs} onOpen={editor.openFile} />
+                    </Suspense>
+                  </div>
+                )}
+                {layout.visited.has('git') && (
+                  <div className="tool-pane" hidden={layout.pane !== 'git'}>
+                    <GitPane
+                      projectId={id}
+                      editable={editable}
+                      revision={revision}
+                      visible={layout.pane === 'git'}
+                    />
+                  </div>
+                )}
+              </aside>
+              {layout.showSidebar && (
                 <ResizeHandle
-                  horizontal
-                  onStart={() => layout.setTerminalHeight(dimensions.terminal)}
+                  onStart={() => layout.setLeftWidth(dimensions.explorer)}
                   onDelta={(delta) =>
-                    layout.setTerminalHeight((v) => Math.max(100, Math.min(550, v - delta)))
+                    layout.setLeftWidth((v) => Math.max(170, Math.min(480, v + delta)))
                   }
                 />
               )}
-              <WorkspaceBottomPanel
-                active={bottomPanelTab}
-                visible={layout.showTerminal}
-                height={dimensions.terminal}
-                onSelect={(tab) => setBottomPanelTab(tab as 'terminal' | 'preparation')}
-                onHide={() => layout.setShowTerminal(false)}
-                tabs={[
-                  {
-                    id: 'terminal',
-                    label: 'Terminal',
-                    content: (
-                      <TerminalPanel
-                        projectId={id}
-                        visible={layout.showTerminal && bottomPanelTab === 'terminal'}
-                        terminals={terminals.terminals}
-                        terminal={terminals.terminal}
-                        error={terminals.error}
-                        editable={editable}
-                        onSelect={terminals.setTerminal}
-                        onStop={stopTerminal}
-                        onCreate={createTerminal}
-                        onRetry={terminals.reload}
+              <section className="workspace-center">
+                <div className="workspace-upper">
+                  <EditorArea
+                    projectId={id}
+                    projectName={project.name}
+                    user={user}
+                    editable={editable}
+                    tabs={editor.tabs}
+                    active={editor.active}
+                    selection={editor.selection}
+                    positions={editor.positions}
+                    viewStates={editor.viewStates}
+                    onSelect={editor.selectTab}
+                    onClose={editor.closeTab}
+                    onOpen={editor.openFile}
+                    onStatus={setStatus}
+                    onLanguageStatus={setLanguageStatus}
+                    initialLoadAttempts={documentAttempts}
+                    onInitialLoad={(path, error) =>
+                      setDocuments((previous) =>
+                        previous[path]?.ready
+                          ? previous
+                          : {
+                              ...previous,
+                              [path]: { ready: !error, error },
+                            },
+                      )
+                    }
+                    onPosition={(path, pos) => {
+                      editor.positions.current[path] = pos;
+                      snapshot.current.positions = editor.positions.current;
+                      if (editor.restored.current)
+                        savePreferences(preferencesKey, snapshot.current);
+                    }}
+                  />
+                  {layout.showPreview && (
+                    <>
+                      <ResizeHandle
+                        onStart={() => layout.setPreviewWidth(dimensions.preview)}
+                        onDelta={(delta) =>
+                          layout.setPreviewWidth((v) => Math.max(260, Math.min(720, v - delta)))
+                        }
                       />
-                    ),
-                  },
-                  {
-                    id: 'preparation',
-                    label: 'Preparation Logs',
-                    content: (
-                      <PreparationLogsPanel
-                        preparation={project.preparation}
-                        log={preparationLog}
-                        visible={layout.showTerminal && bottomPanelTab === 'preparation'}
-                        editable={editable}
-                        onRetry={async () => {
-                          await post(base + '/prepare');
-                          await load();
-                        }}
-                      />
-                    ),
-                  },
-                ]}
-              />
-            </section>
-          </div>
-          <StatusBar
+                      <aside
+                        className="workspace-right-panel"
+                        style={{ width: dimensions.preview }}
+                      >
+                        {agentOwner && (
+                          <Tabs
+                            label="Workspace right panel"
+                            value={selectedRightPanel}
+                            onChange={setRightPanel}
+                            items={[
+                              { id: 'preview', label: 'Preview' },
+                              { id: 'agent', label: 'Agent' },
+                            ]}
+                          />
+                        )}
+                        <div
+                          className="workspace-right-content"
+                          hidden={selectedRightPanel !== 'preview'}
+                        >
+                          <PreviewPanel
+                            project={project}
+                            url={url}
+                            width={dimensions.preview}
+                            revision={previewRevision}
+                            editable={editable}
+                            onRefresh={() => setPreviewRevision((v) => v + 1)}
+                            onClose={() => layout.setShowPreview(false)}
+                            onRetryReadiness={() =>
+                              post(base + '/readiness').catch((e) => ui.notify(errorMessage(e)))
+                            }
+                          />
+                        </div>
+                        {agentOwner && agentVisited && (
+                          <div
+                            className="workspace-right-content"
+                            hidden={selectedRightPanel !== 'agent'}
+                          >
+                            <AgentPanel
+                              projectId={id}
+                              selectedThread={agentThread}
+                              onSelectThread={setAgentThread}
+                              onOpenFile={editor.openFile}
+                            />
+                          </div>
+                        )}
+                      </aside>
+                    </>
+                  )}
+                </div>
+                {layout.showTerminal && (
+                  <ResizeHandle
+                    horizontal
+                    onStart={() => layout.setTerminalHeight(dimensions.terminal)}
+                    onDelta={(delta) =>
+                      layout.setTerminalHeight((v) => Math.max(100, Math.min(550, v - delta)))
+                    }
+                  />
+                )}
+                <WorkspaceBottomPanel
+                  active={bottomPanelTab}
+                  visible={layout.showTerminal}
+                  height={dimensions.terminal}
+                  onSelect={(tab) => setBottomPanelTab(tab as 'terminal' | 'preparation')}
+                  onHide={() => layout.setShowTerminal(false)}
+                  tabs={[
+                    {
+                      id: 'terminal',
+                      label: 'Terminal',
+                      content: (
+                        <TerminalPanel
+                          projectId={id}
+                          visible={layout.showTerminal && bottomPanelTab === 'terminal'}
+                          terminals={terminals.terminals}
+                          terminal={terminals.terminal}
+                          error={terminals.error}
+                          editable={editable}
+                          onSelect={terminals.setTerminal}
+                          onStop={stopTerminal}
+                          onCreate={createTerminal}
+                          onRetry={terminals.reload}
+                        />
+                      ),
+                    },
+                    {
+                      id: 'preparation',
+                      label: 'Preparation Logs',
+                      content: (
+                        <PreparationLogsPanel
+                          preparation={project.preparation}
+                          log={preparationLog}
+                          visible={layout.showTerminal && bottomPanelTab === 'preparation'}
+                          editable={editable}
+                          onRetry={async () => {
+                            await post(base + '/prepare');
+                            await load();
+                          }}
+                        />
+                      ),
+                    },
+                  ]}
+                />
+              </section>
+            </div>
+            <StatusBar
+              project={project}
+              connected={connected}
+              status={editor.active ? status : ''}
+              languageStatus={editor.active ? languageStatus : ''}
+            />
+          </>
+        )}
+        {settings && (
+          <ProjectSettings
             project={project}
-            connected={connected}
-            status={editor.active ? status : ''}
-            languageStatus={editor.active ? languageStatus : ''}
+            onClose={() => setSettings(false)}
+            onChanged={load}
+            onViewPreparationLogs={() => {
+              layout.setShowTerminal(true);
+              setBottomPanelTab('preparation');
+            }}
+            onDuplicate={(id) => {
+              setSettings(false);
+              onOpen(id);
+            }}
           />
-        </>
-      )}
-      {settings && (
-        <ProjectSettings
-          project={project}
-          onClose={() => setSettings(false)}
-          onChanged={load}
-          onViewPreparationLogs={() => {
-            layout.setShowTerminal(true);
-            setBottomPanelTab('preparation');
-          }}
-          onDuplicate={(id) => {
-            setSettings(false);
-            onOpen(id);
-          }}
-        />
-      )}
-    </div>
+        )}
+      </div>
+    </>
   );
 }
