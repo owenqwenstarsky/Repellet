@@ -1,6 +1,7 @@
 import { docker, ensureImage, BASE_IMAGE } from './images.js';
 import { config, bridgeToken, projectId } from './config.js';
 import { installManagedAgentContext } from './agent-context.js';
+import { prepareWorkspacePermissions } from './workspace-permissions.js';
 import type { Limits, Runtime } from '@repellet/shared';
 export const containerName = (id: string) => `repellet-project-${projectId(id)}`;
 export const volumeName = (id: string, kind = 'files') => `repellet-${projectId(id)}-${kind}`;
@@ -188,9 +189,12 @@ export async function ensureWorkspace(id: string, options: EnsureOptions) {
               }),
         },
       });
+      await prepareWorkspacePermissions(volumeName(id), volumeName(id, 'agent'));
       await created.start();
-    } else if (!current.State.Running) await docker.getContainer(current.Id).start();
-    else
+    } else if (!current.State.Running) {
+      await prepareWorkspacePermissions(volumeName(id), volumeName(id, 'agent'));
+      await docker.getContainer(current.Id).start();
+    } else
       await docker.getContainer(current.Id).update({
         Memory: options.limits.memoryMb * 1024 * 1024,
         MemorySwap: options.limits.memoryMb * 1024 * 1024,
