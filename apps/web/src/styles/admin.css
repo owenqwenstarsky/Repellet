@@ -29,3 +29,30 @@
     width: auto;
   }
 }
+
+.agent-api-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.agent-api-models {
+  display: grid;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 16px;
+  margin: 16px 0;
+}
+.agent-api-models label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow-wrap: anywhere;
+}
+.agent-api-models small {
+  margin-left: auto;
+  color: var(--color-text-muted);
+}

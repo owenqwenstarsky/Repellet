@@ -55,10 +55,12 @@ function host(models = [...catalog], configuredModel = '') {
     subscribe: vi.fn(),
     bindExtensions: vi.fn(),
     prompt: vi.fn(async () => {}),
+    compact: vi.fn(async () => {}),
   };
   const runtime = {
-    getAvailable: async () => models,
-    getModel: (_provider: string, id: string) => models.find((model) => model.id === id),
+    getAvailable: async (provider: string) => models.filter((model) => model.provider === provider),
+    getModel: (provider: string, id: string) =>
+      models.find((model) => model.id === id && model.provider === provider),
   };
   const api = {
     SessionManager: { create: () => manager, open: () => manager },
@@ -181,7 +183,7 @@ it('uses the newest Sol for new threads and default turns, including after a cat
   const f = host();
   const result = await f.handle({ method: 'thread/start' });
   expect(result.thread.model).toBe('gpt-6.1-sol');
-  const turn = { threadId: 'thread', input: [{ type: 'text', text: 'Hello' }] };
+  const turn = { threadId: 'thread', model: '', input: [{ type: 'text', text: 'Hello' }] };
   await f.handle({ method: 'turn/start', params: turn });
   expect(f.api.createAgentSession.mock.calls[0][0].model.id).toBe('gpt-6.1-sol');
   await vi.waitFor(() => expect(f.isActive()).toBe(false));
@@ -195,7 +197,7 @@ it('uses the newest Sol for new threads and default turns, including after a cat
 it('honors an explicit model and returns to latest Sol when Default model is selected', async () => {
   const f = host();
   await f.handle({ method: 'thread/start', params: { model: 'openai-codex/gpt-6-astra' } });
-  const turn = { threadId: 'thread', input: [{ type: 'text', text: 'Hello' }] };
+  const turn = { threadId: 'thread', model: '', input: [{ type: 'text', text: 'Hello' }] };
   await f.handle({ method: 'turn/start', params: { ...turn, model: 'gpt-6-sol' } });
   expect(f.session.model.id).toBe('gpt-6-sol');
   await vi.waitFor(() => expect(f.isActive()).toBe(false));
@@ -235,4 +237,67 @@ it('falls back to latest Sol when the saved model is no longer available', async
     params: { threadId: 'thread', input: [{ type: 'text', text: 'Hello' }] },
   });
   expect(f.api.createAgentSession.mock.calls[0][0].model.id).toBe('gpt-6.1-sol');
+});
+
+it('switches providers for overlapping model IDs without replacing the session and restores thread preferences', async () => {
+  const proxy = { ...catalog[4], provider: 'repellet' } as (typeof catalog)[number];
+  const f = host([...catalog, proxy]);
+  await f.handle({ method: 'thread/start', params: { api: 'chatgpt', model: proxy.id } });
+  await f.handle({
+    method: 'turn/start',
+    params: {
+      threadId: 'thread',
+      api: 'cliproxyapi',
+      model: proxy.id,
+      effort: 'high',
+      input: [{ type: 'text', text: 'Use the proxy' }],
+    },
+  });
+  await vi.waitFor(() => expect(f.isActive()).toBe(false));
+  expect(f.session.model.provider).toBe('repellet');
+  expect(f.api.createAgentSession).toHaveBeenCalledOnce();
+  expect(
+    (await f.handle({ method: 'thread/read', params: { threadId: 'thread' } })).thread,
+  ).toMatchObject({ api: 'cliproxyapi', model: proxy.id, reasoningEffort: 'high' });
+  await f.handle({
+    method: 'thread/compact/start',
+    params: { threadId: 'thread', api: 'chatgpt', model: proxy.id, effort: 'medium' },
+  });
+  expect(f.session.model.provider).toBe('openai-codex');
+  expect(f.session.compact).toHaveBeenCalledOnce();
+  expect(f.api.createAgentSession).toHaveBeenCalledOnce();
+});
+it('retains the last used model on omitted selection and rejects explicit unavailable models', async () => {
+  const f = host();
+  await f.handle({ method: 'thread/start', params: { model: 'gpt-6-sol' } });
+  const params = { threadId: 'thread', input: [{ type: 'text', text: 'Continue' }] };
+  await f.handle({ method: 'turn/start', params });
+  await vi.waitFor(() => expect(f.isActive()).toBe(false));
+  expect(f.session.model.id).toBe('gpt-6-sol');
+  await expect(
+    f.handle({ method: 'turn/start', params: { ...params, model: 'missing' } }),
+  ).rejects.toThrow('unavailable');
+  expect(f.session.prompt).toHaveBeenCalledOnce();
+});
+
+it('can switch a reopened thread away from a provider whose model was revoked', async () => {
+  const f = host();
+  await f.handle({
+    method: 'thread/start',
+    params: { api: 'cliproxyapi', model: 'removed-proxy-model' },
+  });
+  await f.handle({
+    method: 'turn/start',
+    params: {
+      threadId: 'thread',
+      api: 'chatgpt',
+      model: 'gpt-6.1-sol',
+      effort: null,
+      input: [{ type: 'text', text: 'Continue with ChatGPT' }],
+    },
+  });
+  await vi.waitFor(() => expect(f.isActive()).toBe(false));
+  expect(f.session.model.provider).toBe('openai-codex');
+  expect(f.api.createAgentSession).toHaveBeenCalledOnce();
+  expect(f.session.prompt).toHaveBeenCalledOnce();
 });

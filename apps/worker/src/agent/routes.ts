@@ -5,8 +5,6 @@ import { docker } from '../images.js';
 import {
   withAccount,
   userId,
-  publicSettings,
-  privateSettings,
   saveSettings,
   readAccount,
   startLogin,
@@ -25,12 +23,37 @@ import {
   agentActivity,
   agentUsage,
   closeAllAgents,
+  invalidateAgentProviders,
 } from './projects.js';
 import { killProjectAgent } from './process.js';
-import { MAX_AGENT_IMAGE_BYTES, agentAttachmentUploadSchema } from '@repellet/shared';
+import {
+  MAX_AGENT_IMAGE_BYTES,
+  agentAttachmentUploadSchema,
+  agentApiSchema,
+} from '@repellet/shared';
+import {
+  withProviderPolicy,
+  userSettings,
+  modelCatalog,
+  publicGlobalSettings,
+  saveGlobalSettings,
+  previewGlobalModels,
+  previewPersonalModels,
+} from './providers.js';
 import { storeAttachment, readAttachment } from './attachments.js';
 import { locked, inspect } from '../workspaces.js';
 export async function agentRoutes(app: FastifyInstance) {
+  app.get('/agent/global', () => withProviderPolicy(publicGlobalSettings));
+  app.put('/agent/global', (req) =>
+    withProviderPolicy(async () => {
+      const result = await saveGlobalSettings(req.body);
+      await invalidateAgentProviders();
+      return result;
+    }),
+  );
+  app.post('/agent/global/models', (req) =>
+    withProviderPolicy(() => previewGlobalModels(req.body)),
+  );
   await app.register(async (uploads) => {
     uploads.addContentTypeParser(
       'application/octet-stream',
@@ -82,14 +105,31 @@ export async function agentRoutes(app: FastifyInstance) {
   });
   const userFrom = (req: { params: unknown }) => userId((req.params as { userId: string }).userId);
   app.get('/agent/users/:userId/settings', async (req) =>
-    publicSettings(await privateSettings(userFrom(req))),
+    withProviderPolicy(() => withAccount(userFrom(req), () => userSettings(userFrom(req)))),
+  );
+  app.get('/agent/users/:userId/models', (req) =>
+    withProviderPolicy(async () => {
+      const query = z
+        .object({ api: agentApiSchema, refresh: z.enum(['true', 'false']).optional() })
+        .strict()
+        .parse(req.query);
+      const result = await modelCatalog(userFrom(req), query.api, query.refresh === 'true');
+      if (query.refresh === 'true') await invalidateAgentProviders(userFrom(req));
+      return result;
+    }),
+  );
+  app.post('/agent/users/:userId/models', (req) =>
+    withProviderPolicy(() => previewPersonalModels(userFrom(req), req.body)),
   );
   app.put('/agent/users/:userId/settings', async (req) =>
-    withAccount(userFrom(req), async () => {
-      const settings = await saveSettings(userFrom(req), req.body);
-      await closeUserAgents(userFrom(req));
-      return settings;
-    }),
+    withProviderPolicy(() =>
+      withAccount(userFrom(req), async () => {
+        assertAccountIdle(userFrom(req));
+        const settings = await saveSettings(userFrom(req), req.body);
+        await closeUserAgents(userFrom(req));
+        return settings;
+      }),
+    ),
   );
   app.get('/agent/users/:userId/account', async (req) =>
     withAccount(userFrom(req), () => readAccount(userFrom(req))),

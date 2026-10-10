@@ -25,6 +25,8 @@ export type Thread = {
   cwd: string;
   modelProvider: string;
   model?: string | null;
+  api?: 'chatgpt' | 'cliproxyapi';
+  reasoningEffort?: string | null;
   planMode?: boolean;
   path: string | null;
   [metadata: string]: unknown;

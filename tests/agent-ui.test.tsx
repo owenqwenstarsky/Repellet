@@ -33,7 +33,31 @@ const thread = {
   parentThreadId: null,
   turns: [],
 };
-const settings = { mode: 'chatgpt', model: '', baseUrl: '', effort: null, hasApiKey: false };
+const settings = {
+  version: 2,
+  defaultApi: 'chatgpt',
+  defaults: { chatgpt: { model: '', effort: null }, cliproxyapi: { model: '', effort: null } },
+  proxySource: 'none',
+  personalProxy: { baseUrl: '', hasApiKey: false },
+  availability: {
+    chatgpt: { available: true, reason: null },
+    cliproxyapi: { available: false, reason: 'Configure your custom API in Agent settings.' },
+  },
+};
+const modelCatalog = {
+  data: [
+    {
+      id: 'chatgpt/model',
+      model: 'model',
+      displayName: 'Codex model',
+      defaultReasoningEffort: 'medium',
+      supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
+      isDefault: true,
+    },
+  ],
+  error: null,
+  nextCursor: null,
+};
 const rpcCalls: any[] = [];
 let planMode = false;
 beforeEach(() => {
@@ -58,7 +82,9 @@ beforeEach(() => {
         ? snapshot
         : path === '/agent/settings'
           ? settings
-          : { account: null, login: null },
+          : path.startsWith('/agent/models')
+            ? modelCatalog
+            : { account: null, login: null },
     );
   vi.mocked(post)
     .mockReset()
@@ -136,33 +162,34 @@ async function mountPanel() {
   );
   await screen.findByRole('heading', { name: 'My conversation' });
 }
-it('selects the provider default even when latest Sol is last in the model list', async () => {
-  const original = vi.mocked(post).getMockImplementation()!;
-  vi.mocked(post).mockImplementation(async (path, body: any) => {
-    if (body?.method === 'model/list')
-      return {
-        data: ['gpt-5.6-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol'].map((model) => ({
-          id: model,
-          model,
-          displayName: model,
-          isDefault: model === 'gpt-6.1-sol',
-          defaultReasoningEffort: 'medium',
-          supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
-        })),
-      };
-    return original(path, body);
-  });
+it('keeps Provider default explicit even when latest Sol is last in the model list', async () => {
+  const original = vi.mocked(api).getMockImplementation()!;
+  vi.mocked(api).mockImplementation(async (path) =>
+    path.startsWith('/agent/models')
+      ? {
+          data: ['gpt-5.6-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol'].map((model) => ({
+            id: model,
+            model,
+            displayName: model,
+            isDefault: model === 'gpt-6.1-sol',
+            defaultReasoningEffort: 'medium',
+            supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
+          })),
+          error: null,
+        }
+      : original(path),
+  );
   await mountPanel();
   fireEvent.click(screen.getByRole('button', { name: 'Run settings' }));
-  await waitFor(() =>
-    expect((screen.getByLabelText('Agent model') as HTMLSelectElement).value).toBe('gpt-6.1-sol'),
-  );
+  await screen.findByRole('option', { name: 'gpt-6.1-sol' });
+  expect((screen.getByLabelText('Agent model') as HTMLSelectElement).value).toBe('');
   fireEvent.click(screen.getByRole('button', { name: '← Threads' }));
   fireEvent.click(screen.getByRole('button', { name: 'New thread' }));
   await waitFor(() =>
-    expect(rpcCalls.find((call) => call.method === 'thread/start')?.params.model).toBe(
-      'gpt-6.1-sol',
-    ),
+    expect(rpcCalls.find((call) => call.method === 'thread/start')?.params).toMatchObject({
+      api: 'chatgpt',
+      model: '',
+    }),
   );
 });
 it('uploads picker attachments, shows progress and sends an image-only turn after upload completes', async () => {
@@ -884,12 +911,13 @@ it('retains stored provider keys without disclosing them in the settings form', 
     path === '/agent/settings'
       ? {
           ...settings,
-          mode: 'custom',
-          hasApiKey: true,
-          model: 'custom-model',
-          baseUrl: 'http://localhost:1234/v1',
+          defaultApi: 'cliproxyapi',
+          proxySource: 'personal',
+          personalProxy: { baseUrl: 'http://localhost:1234/v1', hasApiKey: true },
         }
-      : { account: null, login: null },
+      : path.startsWith('/agent/models')
+        ? modelCatalog
+        : { account: null, login: null },
   );
   render(
     <UiProvider>
@@ -900,7 +928,7 @@ it('retains stored provider keys without disclosing them in the settings form', 
   expect((input as HTMLInputElement).value).toBe('');
   fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }));
   await waitFor(() => expect(put).toHaveBeenCalled());
-  expect(vi.mocked(put).mock.calls[0]![1]).not.toHaveProperty('apiKey');
+  expect((vi.mocked(put).mock.calls[0]![1] as any).personalProxy).not.toHaveProperty('apiKey');
 });
 it('copies the device code over HTTP and confirms success without an account error', async () => {
   vi.stubGlobal('navigator', { clipboard: undefined });
@@ -913,19 +941,21 @@ it('copies the device code over HTTP and confirms success without an account err
   vi.mocked(api).mockImplementation(async (path) =>
     path === '/agent/settings'
       ? settings
-      : {
-          account: null,
-          login: {
-            state: 'pending',
-            error: null,
+      : path.startsWith('/agent/models')
+        ? modelCatalog
+        : {
+            account: null,
             login: {
-              type: 'chatgptDeviceCode',
-              loginId: 'login',
-              userCode: 'TEST-CODE',
-              verificationUrl: 'https://auth.openai.com/codex/device',
+              state: 'pending',
+              error: null,
+              login: {
+                type: 'chatgptDeviceCode',
+                loginId: 'login',
+                userCode: 'TEST-CODE',
+                verificationUrl: 'https://auth.openai.com/codex/device',
+              },
             },
           },
-        },
   );
   try {
     render(
@@ -1155,4 +1185,146 @@ it('keeps one current plan across revisions, reads, progress, and reconnect hist
   ]);
   expect(merged.at(-1)!.item).toBe(failure);
   expect(saved.turns[0]!.items[0]).toMatchObject({ text: 'Original' });
+});
+
+it('hides managed connection controls while keeping ChatGPT login and independent API defaults', async () => {
+  const managed = {
+    ...settings,
+    defaultApi: 'cliproxyapi',
+    proxySource: 'global',
+    personalProxy: undefined,
+    defaults: { ...settings.defaults, cliproxyapi: { model: 'allowed', effort: 'medium' } },
+    availability: { ...settings.availability, cliproxyapi: { available: true, reason: null } },
+  };
+  vi.mocked(api).mockImplementation(async (path) =>
+    path === '/agent/settings'
+      ? managed
+      : path.startsWith('/agent/models')
+        ? {
+            ...modelCatalog,
+            data: [
+              {
+                ...modelCatalog.data[0],
+                id: 'cliproxyapi/allowed',
+                model: 'allowed',
+                displayName: 'allowed',
+              },
+            ],
+          }
+        : { account: null, login: null },
+  );
+  vi.mocked(put).mockResolvedValue(managed);
+  render(
+    <UiProvider>
+      <AgentSettings onClose={vi.fn()} />
+    </UiProvider>,
+  );
+  await screen.findByText('CLIProxyAPI is managed by your administrator.');
+  expect(screen.queryByLabelText('Base URL')).toBeNull();
+  expect(screen.queryByLabelText('API key')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeTruthy();
+  expect((screen.getByLabelText('Default API') as HTMLSelectElement).value).toBe('cliproxyapi');
+  await screen.findByRole('option', { name: 'allowed' });
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in with ChatGPT' }));
+  await waitFor(() => expect(post).toHaveBeenCalledWith('/agent/login'));
+  expect((screen.getByLabelText('Default API') as HTMLSelectElement).value).toBe('cliproxyapi');
+  await waitFor(() =>
+    expect(
+      (screen.getByRole('button', { name: 'Save agent settings' }) as HTMLButtonElement).disabled,
+    ).toBe(false),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }));
+  await waitFor(() => expect(put).toHaveBeenCalled());
+  expect((vi.mocked(put).mock.calls[0]![1] as any).defaultApi).toBe('cliproxyapi');
+  expect(vi.mocked(put).mock.calls[0]![1]).not.toHaveProperty('personalProxy');
+});
+it('switches API-specific run models and preserves drafts without modifying account defaults', async () => {
+  const original = vi.mocked(api).getMockImplementation()!;
+  vi.mocked(api).mockImplementation(async (path) =>
+    path === '/agent/settings'
+      ? {
+          ...settings,
+          proxySource: 'global',
+          availability: {
+            ...settings.availability,
+            cliproxyapi: { available: true, reason: null },
+          },
+          defaults: { ...settings.defaults, cliproxyapi: { model: 'allowed', effort: 'medium' } },
+        }
+      : path.includes('/agent/models?api=cliproxyapi')
+        ? {
+            ...modelCatalog,
+            data: [
+              {
+                ...modelCatalog.data[0],
+                id: 'cliproxyapi/allowed',
+                model: 'allowed',
+                displayName: 'allowed',
+              },
+            ],
+          }
+        : original(path),
+  );
+  await mountPanel();
+  fireEvent.change(screen.getByLabelText('Message agent'), {
+    target: { value: 'Keep this draft' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Run settings' }));
+  fireEvent.change(screen.getByLabelText('Agent API'), { target: { value: 'cliproxyapi' } });
+  await screen.findByRole('option', { name: 'allowed' });
+  expect((screen.getByLabelText('Agent model') as HTMLSelectElement).value).toBe('allowed');
+  expect((screen.getByLabelText('Message agent') as HTMLTextAreaElement).value).toBe(
+    'Keep this draft',
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
+  await waitFor(() =>
+    expect(rpcCalls.find((call) => call.method === 'turn/start')?.params).toMatchObject({
+      api: 'cliproxyapi',
+      model: 'allowed',
+      effort: 'medium',
+    }),
+  );
+  expect(put).not.toHaveBeenCalled();
+});
+it('restores historical API/model/effort and disables API selection during compaction', async () => {
+  const originalApi = vi.mocked(api).getMockImplementation()!;
+  vi.mocked(api).mockImplementation(async (path) =>
+    path === '/agent/settings'
+      ? {
+          ...settings,
+          proxySource: 'global',
+          availability: {
+            ...settings.availability,
+            cliproxyapi: { available: true, reason: null },
+          },
+        }
+      : path.includes('/agent/models?api=cliproxyapi')
+        ? modelCatalog
+        : originalApi(path),
+  );
+  const originalPost = vi.mocked(post).getMockImplementation()!;
+  vi.mocked(post).mockImplementation(async (path, body: any) =>
+    body?.method === 'thread/read'
+      ? {
+          thread: {
+            ...thread,
+            modelProvider: 'repellet',
+            model: 'model',
+            reasoningEffort: 'medium',
+          },
+        }
+      : originalPost(path, body),
+  );
+  await mountPanel();
+  fireEvent.click(screen.getByRole('button', { name: 'Run settings' }));
+  await waitFor(() =>
+    expect((screen.getByLabelText('Agent API') as HTMLSelectElement).value).toBe('cliproxyapi'),
+  );
+  expect((screen.getByLabelText('Agent model') as HTMLSelectElement).value).toBe('model');
+  expect((screen.getByLabelText('Agent effort') as HTMLSelectElement).value).toBe('medium');
+  await act(async () =>
+    FakeSocket.instances[0]!.message({ type: 'compaction', generation, sequence: 1, active: true }),
+  );
+  for (const label of ['Agent API', 'Agent model', 'Agent effort'])
+    expect((screen.getByLabelText(label) as HTMLSelectElement).disabled).toBe(true);
 });

@@ -3,6 +3,8 @@ import { Plus, Settings2, Square, MoreHorizontal, ListChecks, Paperclip } from '
 import {
   projectAgentEvent,
   type AgentSettings as Settings,
+  type AgentApi,
+  type AgentModelCatalog,
   type AgentSnapshot,
   type AgentEvent,
   type AgentMethod,
@@ -41,7 +43,12 @@ export function AgentPanel({
   const [runSettingsOpen, setRunSettingsOpen] = useState(false);
   const [archived, setArchived] = useState(false);
   const [search, setSearch] = useState('');
+  const [agentApi, setAgentApi] = useState<AgentApi>('chatgpt');
   const [model, setModel] = useState('');
+  const [catalogError, setCatalogError] = useState('');
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const runSelections = useRef(new Map<string, { api: AgentApi; model: string; effort: string }>());
+  const selectionThread = useRef<string | null>(null);
   const [effort, setEffort] = useState('');
   const [text, setText] = useState('');
   const attachments = useAgentAttachments(projectId, selectedThread);
@@ -195,27 +202,59 @@ export function AgentPanel({
       });
   }, [selectedThread, archived, search, connectionRevision]);
   useEffect(() => {
-    if (!snapshot?.connected || !settings) return;
-    if (settings.mode === 'custom') {
-      setModel(settings.model);
-      setEffort(settings.effort || '');
-      setModels([]);
-      return;
-    }
-    void rpc<{ data: Model[] }>('model/list', { limit: 100 })
+    if (!settings || (selectedThread && history?.id !== selectedThread)) return;
+    if (selectionThread.current === selectedThread) return;
+    selectionThread.current = selectedThread;
+    const cached = runSelections.current.get(selectedThread);
+    const api =
+      cached?.api ||
+      (selectedThread && history?.modelProvider
+        ? history.modelProvider === 'repellet'
+          ? 'cliproxyapi'
+          : 'chatgpt'
+        : settings.defaultApi);
+    setAgentApi(api);
+    setModel(
+      cached?.model ??
+        (selectedThread ? history?.model : undefined) ??
+        settings.defaults[api].model,
+    );
+    setEffort(
+      cached?.effort ??
+        (selectedThread ? (history?.reasoningEffort as string) : undefined) ??
+        settings.defaults[api].effort ??
+        '',
+    );
+  }, [selectedThread, history?.id, settings]);
+  useEffect(() => {
+    if (!settings) return;
+    let disposed = false;
+    setModels([]);
+    setCatalogError('');
+    setCatalogLoading(true);
+    void api<AgentModelCatalog>('/agent/models?api=' + agentApi)
       .then((result) => {
-        if (!alive.current) return;
-        setModels(result.data);
-        const fallback = result.data.find((model) => model.isDefault) || result.data[0];
-        if (fallback) {
-          setModel((old) => old || fallback.model);
-          setEffort((old) => old || fallback.defaultReasoningEffort || '');
+        if (!disposed) {
+          setModels(result.data);
+          setCatalogError(result.error || '');
         }
       })
       .catch((e) => {
-        if (alive.current) setError(errorMessage(e));
+        if (!disposed) setCatalogError(errorMessage(e));
+      })
+      .finally(() => {
+        if (!disposed) setCatalogLoading(false);
       });
-  }, [settings, snapshot?.generation]);
+    return () => {
+      disposed = true;
+    };
+  }, [agentApi, settings, snapshot?.generation]);
+  function changeRunSettings(next: { api: AgentApi; model: string; effort: string }) {
+    runSelections.current.set(selectedThread, next);
+    setAgentApi(next.api);
+    setModel(next.model);
+    setEffort(next.effort);
+  }
   useEffect(() => {
     const element = transcript.current;
     if (!element) return;
@@ -246,7 +285,11 @@ export function AgentPanel({
     }
   }
   async function newThread() {
-    const result = await rpc<{ thread: Thread }>('thread/start', { ...(model ? { model } : {}) });
+    const result = await rpc<{ thread: Thread }>('thread/start', {
+      api: agentApi,
+      model,
+      effort: effort || null,
+    });
     if (alive.current) {
       onSelectThread(result.thread.id);
       setHistory(result.thread);
@@ -308,7 +351,11 @@ export function AgentPanel({
     });
   }
   const activeHere = active?.threadId === selectedThread;
-  const unavailable = busy || !connected || !snapshot?.connected;
+  const unavailable = busy || !connected || !snapshot?.connected || !!snapshot?.compacting;
+  const modelReady =
+    !!settings?.availability[agentApi].available &&
+    !!models.length &&
+    (!model || models.some((item) => item.model === model));
   const items = agentTranscript(selectedThread, history, snapshot?.items || []);
   function insertPaste(value: { text: string; start: number; end: number }, attach: boolean) {
     if (
@@ -620,8 +667,9 @@ export function AgentPanel({
                   await rpc('turn/start', {
                     threadId,
                     input,
-                    ...(model ? { model } : {}),
-                    ...(effort ? { effort } : {}),
+                    api: agentApi,
+                    model,
+                    effort: effort || null,
                   });
                 if (alive.current) {
                   drafts.current.delete(threadId);
@@ -728,7 +776,7 @@ export function AgentPanel({
                     className="agent-run-settings-popover"
                     id="agent-run-settings"
                     role="group"
-                    aria-label="Model and reasoning"
+                    aria-label="API, model and reasoning"
                     onKeyDown={(event) => {
                       if (event.key === 'Escape') {
                         event.stopPropagation();
@@ -737,46 +785,94 @@ export function AgentPanel({
                     }}
                   >
                     <select
-                      aria-label="Agent model"
-                      value={model}
-                      disabled={unavailable || settings?.mode === 'custom' || !!active}
+                      aria-label="Agent API"
+                      value={agentApi}
+                      disabled={unavailable || !!active}
                       onChange={(e) => {
-                        setModel(e.target.value);
-                        setEffort(
-                          models.find((model) => model.model === e.target.value)
-                            ?.defaultReasoningEffort || '',
-                        );
+                        const api = e.target.value as AgentApi;
+                        changeRunSettings({
+                          api,
+                          model: settings?.defaults[api].model || '',
+                          effort: settings?.defaults[api].effort || '',
+                        });
                       }}
                     >
-                      <option value="">Default model</option>
-                      {settings?.mode === 'custom' ? (
-                        <option value={settings.model}>{settings.model}</option>
-                      ) : (
-                        models.map((model) => (
-                          <option key={model.id} value={model.model}>
-                            {model.displayName}
-                          </option>
-                        ))
+                      <option value="chatgpt" disabled={!settings?.availability.chatgpt.available}>
+                        ChatGPT Auth
+                        {!settings?.availability.chatgpt.available ? ' (sign-in required)' : ''}
+                      </option>
+                      <option
+                        value="cliproxyapi"
+                        disabled={!settings?.availability.cliproxyapi.available}
+                      >
+                        {settings?.proxySource === 'global' ? 'CLIProxyAPI' : 'Custom API'}
+                        {!settings?.availability.cliproxyapi.available ? ' (unavailable)' : ''}
+                      </option>
+                    </select>
+                    {settings && !settings.availability[agentApi].available && (
+                      <p role="status">{settings.availability[agentApi].reason}</p>
+                    )}
+                    {catalogError && <p role="alert">{catalogError}</p>}
+                    <select
+                      aria-label="Agent model"
+                      value={model}
+                      disabled={unavailable || catalogLoading || !!active}
+                      onChange={(e) =>
+                        changeRunSettings({
+                          api: agentApi,
+                          model: e.target.value,
+                          effort:
+                            models.find((model) => model.model === e.target.value)
+                              ?.defaultReasoningEffort || '',
+                        })
+                      }
+                    >
+                      <option value="">Provider default</option>
+                      {model && !models.some((item) => item.model === model) && (
+                        <option value={model} disabled>
+                          {model} (unavailable)
+                        </option>
                       )}
+                      {models.map((model) => (
+                        <option key={model.id} value={model.model}>
+                          {model.displayName}
+                        </option>
+                      ))}
                     </select>
                     <select
                       aria-label="Agent effort"
                       value={effort}
-                      disabled={unavailable || settings?.mode === 'custom' || !!active}
-                      onChange={(e) => setEffort(e.target.value)}
+                      disabled={unavailable || catalogLoading || !!active}
+                      onChange={(e) =>
+                        changeRunSettings({ api: agentApi, model, effort: e.target.value })
+                      }
                     >
-                      <option value="">Default effort</option>
-                      {settings?.mode === 'custom' && settings.effort ? (
-                        <option value={settings.effort}>{settings.effort}</option>
-                      ) : (
-                        models
-                          .find((item) => item.model === model)
-                          ?.supportedReasoningEfforts.map((option) => (
-                            <option key={option.reasoningEffort} value={option.reasoningEffort}>
-                              {option.reasoningEffort}
-                            </option>
-                          ))
-                      )}
+                      <option value="">Provider default</option>
+                      {effort &&
+                        !models
+                          .find(
+                            (item) =>
+                              item.model ===
+                              (model || models.find((entry) => entry.isDefault)?.model),
+                          )
+                          ?.supportedReasoningEfforts.some(
+                            (option) => option.reasoningEffort === effort,
+                          ) && (
+                          <option value={effort} disabled>
+                            {effort} (unavailable)
+                          </option>
+                        )}
+                      {models
+                        .find(
+                          (item) =>
+                            item.model ===
+                            (model || models.find((entry) => entry.isDefault)?.model),
+                        )
+                        ?.supportedReasoningEfforts.map((option) => (
+                          <option key={option.reasoningEffort} value={option.reasoningEffort}>
+                            {option.reasoningEffort}
+                          </option>
+                        ))}
                     </select>
                   </div>
                 )}
@@ -811,6 +907,7 @@ export function AgentPanel({
                 variant="primary"
                 disabled={
                   unavailable ||
+                  (!activeHere && (catalogLoading || !modelReady)) ||
                   (!text.trim() && !attachments.input.length) ||
                   attachments.blocked ||
                   !!pasteChoice ||
@@ -828,6 +925,10 @@ export function AgentPanel({
         <AgentSettings
           onClose={() => setSettingsOpen(false)}
           onSaved={() => {
+            if (!selectedThread) {
+              selectionThread.current = null;
+              runSelections.current.delete('');
+            }
             void api<Settings>('/agent/settings').then(setSettings);
             setReconnectRevision((value) => value + 1);
           }}

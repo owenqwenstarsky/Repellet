@@ -350,8 +350,8 @@ describe.skipIf(!enabled)('real Pi 1.1.0 in the unprivileged workspace container
       (await exec('1001:1000', ['test', '!', '-e', '/home/agent/.pi/agent/auth.json'])).code,
     ).toBe(0);
     expect(
-      (await exec('1001:1000', ['cat', '/home/agent/.pi/agent/models.json'])).text,
-    ).not.toContain('private-provider-key');
+      (await exec('1001:1000', ['test', '!', '-e', '/home/agent/.pi/agent/models.json'])).code,
+    ).toBe(0);
   }, 60000);
   it('waits for an owner question through the Pi SDK and resumes the same turn', async () => {
     const thread = (await rpc('thread/start')).thread.id;

@@ -79,7 +79,12 @@ rl.on('line', async (line) => {
     if (method === 'initialize') {
       if (initialized) throw new Error('Already initialized');
       initialized = true;
-      result(id, { userAgent: 'fake', platformFamily: 'unix', platformOs: 'linux' });
+      result(id, {
+        userAgent: 'fake',
+        platformFamily: 'unix',
+        platformOs: 'linux',
+        apiSelection: true,
+      });
       return;
     }
     if (!initialized) throw new Error('Not initialized');
@@ -149,7 +154,9 @@ rl.on('line', async (line) => {
         id: randomUUID(),
         name: null,
         cwd: '/workspace',
-        modelProvider: params.modelProvider,
+        modelProvider: params.api === 'cliproxyapi' ? 'repellet' : 'openai-codex',
+        model: params.model,
+        reasoningEffort: params.effort || null,
         parentThreadId: null,
         turns: [],
         preview: '',

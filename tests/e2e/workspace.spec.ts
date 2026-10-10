@@ -753,14 +753,15 @@ test('owner Pi settings, streamed tools, threads, steering, interruption, and re
   const { providerUrl } = JSON.parse(await readFile('.cache/e2e.json', 'utf8'));
   await page.getByRole('button', { name: 'Account for Workspace Owner' }).click();
   await page.getByRole('menuitem', { name: 'Agent settings' }).click();
-  await page.getByRole('tab', { name: 'Custom API' }).click();
   await page.getByLabel('Base URL', { exact: true }).fill(providerUrl);
   await page.getByLabel('API key', { exact: true }).fill('browser-provider-key');
-  await page.getByLabel('Model ID', { exact: true }).fill('repellet-test-model');
+  await page.getByRole('button', { name: 'Load models', exact: true }).click();
+  await page.getByLabel('Default API', { exact: true }).selectOption('cliproxyapi');
+  await page.getByLabel('Default model', { exact: true }).selectOption('repellet-test-model');
   await page.getByRole('button', { name: 'Save agent settings' }).click();
   await expect(page.getByLabel('API key', { exact: true })).toHaveValue('');
   const publicSettings = await (await page.request.get('/api/agent/settings')).json();
-  expect(publicSettings.hasApiKey).toBe(true);
+  expect(publicSettings.personalProxy.hasApiKey).toBe(true);
   expect(publicSettings).not.toHaveProperty('apiKey');
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await page.getByRole('button', { name: 'Create project', exact: true }).click();

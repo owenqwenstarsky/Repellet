@@ -15,11 +15,13 @@ export function projectAgentEvent(previous: AgentSnapshot, message: AgentEvent):
       error: message.message,
       connected: false,
       active: null,
+      compacting: false,
       pending: [],
       waiting: false,
     };
   }
   if (message.type === 'question') state.pending.push(message.question);
+  if (message.type === 'compaction') state.compacting = message.active;
   if (message.type === 'question/resolved')
     state.pending = state.pending.filter((question) => question.id !== message.requestId);
   if (message.type === 'event') {

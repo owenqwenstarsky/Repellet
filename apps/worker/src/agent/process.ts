@@ -94,9 +94,11 @@ export async function startProjectProcess(
     PI_CODING_AGENT_DIR: '/home/agent/.pi/agent',
     PI_CODING_AGENT_SESSION_DIR: '/home/agent/.pi/sessions',
     REPELLET_PI_PROVIDER: settings.mode === 'custom' ? 'repellet' : 'openai-codex',
-    ...(settings.mode === 'custom'
+    ...(settings.baseUrl && settings.apiKey
       ? { REPELLET_PI_BASE_URL: settings.baseUrl, REPELLET_PI_MODEL: settings.model }
       : {}),
+    ...(settings.proxyModels ? { REPELLET_PI_MODELS: JSON.stringify(settings.proxyModels) } : {}),
+    ...(settings.defaults ? { REPELLET_PI_DEFAULTS: JSON.stringify(settings.defaults) } : {}),
     ...(settings.effort ? { REPELLET_PI_EFFORT: settings.effort } : {}),
     ...(tokens
       ? {
@@ -108,7 +110,7 @@ export async function startProjectProcess(
       ? { RUSTUP_HOME: base.RUSTUP_HOME, CARGO_HOME: '/home/agent/.cargo' }
       : {}),
     BRIDGE_TOKEN: '',
-    ...(settings.mode === 'custom' ? { REPELLET_AGENT_API_KEY: settings.apiKey! } : {}),
+    ...(settings.apiKey ? { REPELLET_AGENT_API_KEY: settings.apiKey } : {}),
   };
   // Docker's Exec API carries the key in Env, never in command arguments or a shared file.
   const execution = await container.exec({
