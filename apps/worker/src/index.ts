@@ -129,7 +129,7 @@ app.post('/projects/:id/probe', async (req) => {
   }
 });
 const allowedPath =
-  /^\/(preparation(?:\/[a-z0-9-]+)?|scaffold|fingerprint|inspect|health|processes(?:\/[0-9a-z-]+\/stop)?|files(?:\/(?:create|move|delete|upload))?|file-index|file|search|replace|format|terminals(?:\/[0-9a-z-]+)?|run(?:\/stop)?|environment|agent-usage|limits|usage|git(?:\/(?:status|diff|remote))?|shutdown)(?:\?[^\r\n]*)?$/;
+  /^\/(preparation(?:\/[a-z0-9-]+)?|scaffold|fingerprint|inspect|health|processes(?:\/[0-9a-z-]+\/stop)?|files(?:\/(?:create|move|delete|upload))?|file-index|file|search|replace|format|terminals(?:\/[0-9a-z-]+(?:\/output)?)?|run(?:\/stop)?|environment|agent-usage|limits|usage|git(?:\/(?:status|diff|remote))?|shutdown)(?:\?[^\r\n]*)?$/;
 app.post('/projects/:id/request', async (req) => {
   const b = req.body as { path: string; method: string; body?: unknown };
   if (!allowedPath.test(b.path) || !['GET', 'POST', 'PUT', 'DELETE'].includes(b.method))

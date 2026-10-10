@@ -1,6 +1,6 @@
 # Repellet agents
 
-Pi 1.1.0 runs in every workspace image. Repellet supervises a private `pi-host` process that owns Pi SDK traffic, durable JSONL sessions, tool execution, and model streaming. The web app sees only Repellet's provider-neutral agent protocol. Pi does not provide Codex's built-in sub-agent controls. Repellet bundles the web-search and plan-mode extensions described below.
+Pi 1.1.0 runs in every workspace image. Repellet supervises a private `pi-host` process that owns Pi SDK traffic, durable JSONL sessions, tool execution, and model streaming. The web app sees only Repellet's provider-neutral agent protocol. Pi does not provide Codex's built-in sub-agent controls. Repellet bundles the web-search, plan-mode, and main Run app extensions described below.
 
 ## Accounts and providers
 
@@ -30,13 +30,13 @@ Project agent homes persist in `repellet-PROJECT_UUID-agent`, mounted at `/home/
 
 Shared workspace permissions are prepared once before the workspace bridge starts. A versioned marker in the private agent home survives container recreation, so later workspace and agent starts avoid recursive permission scans and the resulting file-watcher traffic. The first start after upgrading may take longer while existing files are migrated. Stop and start an already-running workspace to apply this migration; agent restarts continue to refresh managed instructions without scanning project files.
 
-Every project agent home receives Repellet's managed global context at `/home/agent/.pi/agent/SYSTEM.md`. It stays outside `/workspace`, is refreshed at every agent start, and is advisory. Put project-specific instructions in the project's own `AGENTS.md`.
+Every project agent home receives Repellet's managed global context at `/home/agent/.pi/agent/SYSTEM.md` and `/home/agent/.pi/agent/AGENTS.md`. It stays outside `/workspace`, is refreshed at every agent start, and is advisory. Put project-specific instructions in the project's own `AGENTS.md`.
 
 Central account homes and provider settings persist in the worker's `repellet-agent-accounts` volume. Refresh credentials stay there. Custom keys reach only the Pi host and are redacted from returned errors/events. Backups include agent and account volumes.
 
 ## Bundled extensions
 
-Repellet pins [openai-websearch-pi](https://github.com/owenqwenstarsky/openai-websearch-pi) and [pi-plan](https://github.com/owenqwenstarsky/pi-plan) at the revisions recorded in `docker/pi-extensions/upstream/sources.json`. Only these trusted extensions load; workspace-installed extensions remain disabled.
+Repellet pins [openai-websearch-pi](https://github.com/owenqwenstarsky/openai-websearch-pi) and [pi-plan](https://github.com/owenqwenstarsky/pi-plan) at the revisions recorded in `docker/pi-extensions/upstream/sources.json`. These trusted wrappers and Repellet's first-party `project.ts` extension load; workspace-installed extensions remain disabled.
 
 `web_search` uses refreshed account credentials when signed in with ChatGPT. With a custom CLIProxyAPI provider, it uses that provider's base URL, private runtime key, and selected model through the Responses WebSocket endpoint. CLIProxyAPI must support Responses WebSockets and hosted web search. Search sends only the query, preserves source URLs, supports interruption, and does not create a proxy credential file or export its key to tools. `local_time` is also available.
 
@@ -44,4 +44,16 @@ The **Plan mode** button sits in the composer beside Run settings. It runs the e
 
 Planning questions appear in the browser. A completed plan appears in the transcript and pauses for **Implement the plan**, **Make changes**. Implementation restores write tools and queues the extension's implementation prompt. Make changes reveals an empty feedback field in the review form. Unanswered questions do not expire. The transcript keeps one current plan with compact progress entries. Interrupting a review clears the pending question and retains plan mode.
 
-The workspace base is now `repellet/workspace-base:0.6.3`. Stop and start older workspaces to receive attachment support and the updated plan-review extensions. Existing project files and canonical session histories remain in their volumes.
+The workspace base is now `repellet/workspace-base:0.6.4`. Stop and start older workspaces, or rebuild their environment, to receive the main Run app tools and updated bridge. Stopping only the app does not update a workspace. Existing project files and canonical session histories remain in their volumes. No database migration is required.
+
+## Main Run app tools
+
+`project_status` reports the current workspace, live main Run process state, configured command, preparation blockers, and preview readiness. A running process can have a failed or unavailable preview. `starting` indicates an unresolved start; `unknown` indicates a failed status check. Neither is permission to spawn a duplicate app.
+
+`project_logs` returns a snapshot of live main Run output, without attaching an interactive terminal. It defaults to the newest 200 lines, accepts 1–1,000 lines, strips terminal control sequences, and bounds combined output to 64 KiB. A stopped or exited app returns **not running** without historical output. The terminal UI continues to retain its own replay output.
+
+`project_start` starts the configured default Run app and preserves an already running app. `project_stop` stops only the main Run app. Both preserve the workspace, agent connection, and other processes; they share the operation lock used by the UI. Start flushes saved documents and checks preparation, storage, and workspace compatibility. It does not install dependencies or start the workspace. The existing Run button keeps its restart behavior.
+
+The system prompt and managed global instructions require `project_status` before every start or stop, and again between stop and start during a restart. The backend independently checks fresh state, without requiring a previous status-call receipt. Normal task authorization applies; ambiguous intent or project-specific approval requirements prompt an owner question. Plan mode exposes status and logs while hiding and blocking mutations, including restored and forked plans.
+
+Tool requests travel through the Pi event bus, host JSONL connection, and worker to a worker-authenticated internal API. The worker binds requests to the current project, enabled owner, and active turn; tool parameters cannot select other projects, commands, or process IDs. Control-plane credentials stay outside the agent. Requests cancel with the turn and never automatically retry a start or stop after an uncertain response. Check status again before deciding what to do next.

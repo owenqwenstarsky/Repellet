@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { WebSocket } from 'ws';
 import { root, resolvePath } from './files.js';
+import { terminalOutput } from './terminal-output.js';
 export type Session = {
   id: string;
   name: string;
@@ -21,6 +22,8 @@ export type Session = {
 };
 export const processEvents = new EventEmitter();
 export const terminals = new Map<string, Session>();
+export const readTerminalOutput = (id: string, tailLines = 200) =>
+  terminalOutput(terminals.get(id), tailLines);
 let environment: Record<string, string> = {};
 export function setEnvironment(value: Record<string, string>) {
   environment = { ...value };

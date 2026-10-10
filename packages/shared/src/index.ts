@@ -437,3 +437,4 @@ export * from './agentProjection.js';
 
 export * from './workspace.js';
 export * from './attachments.js';
+export * from './projectControl.js';

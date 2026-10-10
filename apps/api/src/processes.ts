@@ -95,7 +95,9 @@ export async function startProfile(
   profileId: string,
   actorId?: string,
   kind: 'run' | 'task' = 'run',
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const [project] = await db.select().from(projects).where(eq(projects.id, projectId));
   if (project?.state !== 'running')
     throw Object.assign(new Error('Start the workspace first'), { statusCode: 409 });
@@ -108,6 +110,7 @@ export async function startProfile(
   if (!profile) throw Object.assign(new Error('Run profile not found'), { statusCode: 404 });
   if (!profile.command.trim())
     throw Object.assign(new Error('Set a command first'), { statusCode: 400 });
+  signal?.throwIfAborted();
   if (profile.isDefault) await bridge(projectId, '/run/stop', 'POST');
   const health = await bridge<{ protocolVersion?: number; capabilities?: string[] }>(
     projectId,
@@ -131,12 +134,16 @@ export async function startProfile(
   if (active) return active;
   await flushProject(projectId);
   await assertPrepared(projectId);
+  signal?.throwIfAborted();
   const [record] = await db
     .insert(workspaceProcesses)
     .values({ projectId, profileId, kind, status: 'starting', actorId })
     .returning();
   await emit(projectId, { type: 'process', process: record });
+  let spawnRequested = false;
   try {
+    signal?.throwIfAborted();
+    spawnRequested = true;
     const result = await bridge(projectId, '/processes', 'POST', {
       id: record!.id,
       name: profile.name,
@@ -156,7 +163,7 @@ export async function startProfile(
     return current!;
   } catch (error) {
     const statusCode = (error as { statusCode?: number }).statusCode;
-    if (statusCode && statusCode >= 400 && statusCode < 500) {
+    if (!spawnRequested || (statusCode && statusCode >= 400 && statusCode < 500)) {
       await db
         .update(workspaceProcesses)
         .set({ status: 'failed', finishedAt: new Date() })

@@ -27,6 +27,7 @@ import { workspaceContext } from './workspaceContext.js';
 import { workspaceRoutes } from './workspaceRoutes.js';
 import { idempotencyHooks } from './idempotency.js';
 import { auditHooks } from './audit.js';
+import { projectControlRoutes } from './projectControl.js';
 export async function createApp(options: { static?: boolean; logger?: boolean } = {}) {
   const app = Fastify({
     logger: options.logger ?? true,
@@ -90,6 +91,7 @@ export async function createApp(options: { static?: boolean; logger?: boolean } 
   await workspaceRoutes(app);
   await githubRoutes(app);
   await agentRoutes(app);
+  await projectControlRoutes(app);
   app.get('/ws/projects/:id/events', { websocket: true }, async (ws, req) => {
     try {
       const user = await requireUser(req);

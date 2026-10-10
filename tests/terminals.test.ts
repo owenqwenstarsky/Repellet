@@ -37,10 +37,21 @@ import {
   info,
   terminals,
   setEnvironment,
+  readTerminalOutput,
 } from '../packages/bridge/src/terminals.js';
 function socket() {
   return Object.assign(new EventEmitter(), { readyState: 1, send: vi.fn(), close: vi.fn() });
 }
+
+it('reads a live replay-buffer snapshot without attaching a terminal and hides output after stop', async () => {
+  const id = randomUUID();
+  await createTerminal('Main', 'node server.js', '', { id, kind: 'run' });
+  fake.children[0].data('one\ntwo\n');
+  expect(readTerminalOutput(id, 1)).toMatchObject({ running: true, text: 'two', truncated: true });
+  expect(terminals.get(id)?.clients.size).toBe(0);
+  await stopTerminal(id);
+  expect(readTerminalOutput(id)).toEqual({ running: false });
+});
 beforeEach(() => {
   terminals.clear();
   fake.children = [];

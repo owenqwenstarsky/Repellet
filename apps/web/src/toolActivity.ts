@@ -97,6 +97,10 @@ export function toolLabel(name: string): string {
       plan_read: 'Read plan',
       plan_edit: 'Edit plan',
       todo_edit: 'Update todos',
+      project_status: 'Project status',
+      project_logs: 'Project logs',
+      project_start: 'Start app',
+      project_stop: 'Stop app',
     }[name] || name
   );
 }

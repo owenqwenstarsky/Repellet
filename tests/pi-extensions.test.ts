@@ -31,7 +31,7 @@ async function resources(root: string, eventBus = createEventBus()) {
     noSkills: true,
     noPromptTemplates: true,
     noThemes: true,
-    additionalExtensionPaths: ['websearch.ts', 'plan.ts'].map((name) =>
+    additionalExtensionPaths: ['websearch.ts', 'project.ts', 'plan.ts'].map((name) =>
       path.resolve('docker/pi-extensions', name),
     ),
   });

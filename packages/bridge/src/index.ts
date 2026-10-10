@@ -30,6 +30,7 @@ import {
   setEnvironment,
   projectEnvironment,
   processEvents,
+  readTerminalOutput,
 } from './terminals.js';
 import { attachLanguage, stopLanguages } from './language.js';
 import { formatFile } from './format.js';
@@ -89,7 +90,13 @@ app.post('/fingerprint', async (req) => {
 app.get('/health', async () => ({
   ok: true,
   protocolVersion: 1,
-  capabilities: ['processes', 'process-stop', 'terminal-close', 'terminal-readonly'],
+  capabilities: [
+    'processes',
+    'process-stop',
+    'terminal-close',
+    'terminal-readonly',
+    'terminal-output',
+  ],
 }));
 app.get('/files', async (req) =>
   listFiles(String((req.query as Record<string, string>).path || '')),
@@ -175,6 +182,13 @@ app.post('/replace', async (req) => {
   return replaceFiles(b.query, b.replacement, checkWrite);
 });
 app.get('/terminals', async () => info());
+app.get('/terminals/:id/output', async (req) => {
+  const { tailLines } = req.query as { tailLines?: string };
+  return readTerminalOutput(
+    (req.params as { id: string }).id,
+    tailLines === undefined ? 200 : Number(tailLines),
+  );
+});
 app.post('/terminals', async (req) => {
   if (suspended)
     throw Object.assign(new Error('Execution suspended: storage limit exceeded'), {

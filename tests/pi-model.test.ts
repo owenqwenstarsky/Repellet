@@ -63,8 +63,11 @@ function host(models = [...catalog], configuredModel = '') {
   const api = {
     SessionManager: { create: () => manager, open: () => manager },
     SettingsManager: { inMemory: () => ({}) },
-    createEventBus: () => ({ on: vi.fn() }),
+    createEventBus: () => ({ on: (name: string, handler: any) => events.set(name, handler) }),
     DefaultResourceLoader: class {
+      constructor(options: any) {
+        loaderOptions.push(options);
+      }
       async reload() {}
       getExtensions() {
         return { errors: [] };
@@ -82,6 +85,9 @@ function host(models = [...catalog], configuredModel = '') {
     readFileSync: () => '',
     realpathSync: (file: string) => file,
   };
+  const events = new Map<string, any>();
+  const loaderOptions: any[] = [];
+  const output: any[] = [];
   const helpers = {
     ...h,
     readIndex: () => index,
@@ -90,7 +96,7 @@ function host(models = [...catalog], configuredModel = '') {
   const source = readFileSync(new URL('../docker/pi-host.cjs', import.meta.url), 'utf8');
   const service = runInNewContext(
     source.slice(0, source.lastIndexOf('main().catch(')) +
-      '\nruntime = testRuntime; api = testApi; ({ handle, isActive: () => active !== null });',
+      '\nruntime = testRuntime; api = testApi; ({ handle, load, isActive: () => active !== null, respond: (id, result) => pending.get(id).resolve(result) });',
     {
       require: (name: string) =>
         ({ 'node:fs': fs, 'node:path': path, 'node:crypto': crypto, './pi-session.cjs': helpers })[
@@ -100,7 +106,7 @@ function host(models = [...catalog], configuredModel = '') {
       process: {
         env: { PI_CODING_AGENT_SESSION_DIR: '/sessions', REPELLET_PI_MODEL: configuredModel },
         umask: vi.fn(),
-        stdout: { write: vi.fn() },
+        stdout: { write: (line: string) => output.push(JSON.parse(line)) },
       },
       testRuntime: runtime,
       testApi: api,
@@ -110,8 +116,58 @@ function host(models = [...catalog], configuredModel = '') {
       clearTimeout,
     },
   );
-  return { ...service, session, api, index, models };
+  return { ...service, session, api, index, models, events, output, loaderOptions };
 }
+
+it('routes project extension requests through the current host turn and loads the bundled extension', async () => {
+  const f = host();
+  let finish!: () => void;
+  f.session.prompt.mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  await f.handle({ method: 'thread/start' });
+  const { turn } = await f.handle({
+    method: 'turn/start',
+    params: { threadId: 'thread', input: [{ type: 'text', text: 'Inspect app' }] },
+  });
+  const resolve = vi.fn(),
+    reject = vi.fn();
+  expect(f.loaderOptions[0].additionalExtensionPaths).toContain('/opt/pi/extensions/project.ts');
+  f.events.get('repellet:project-control')({
+    operation: 'status',
+    arguments: {},
+    signal: new AbortController().signal,
+    resolve,
+    reject,
+  });
+  const outbound = f.output.find((message) => message.method === 'repellet/project/control');
+  expect(outbound).toMatchObject({
+    params: { operation: 'status', arguments: {}, threadId: 'thread', turnId: turn.id },
+  });
+  expect(outbound.params).not.toHaveProperty('projectId');
+  f.respond(outbound.id, { outcome: 'status' });
+  await vi.waitFor(() => expect(resolve).toHaveBeenCalledWith({ outcome: 'status' }));
+  expect(reject).not.toHaveBeenCalled();
+  finish();
+});
+
+it('rejects project extension calls with no active host turn', async () => {
+  const f = host();
+  await f.handle({ method: 'thread/start' });
+  await f.load('thread');
+  const reject = vi.fn();
+  f.events.get('repellet:project-control')({
+    operation: 'start',
+    arguments: {},
+    resolve: vi.fn(),
+    reject,
+  });
+  expect(reject).toHaveBeenCalledOnce();
+  expect(f.output.some((message) => message.method === 'repellet/project/control')).toBe(false);
+});
 
 it('advertises exactly the newest Sol as the provider default', async () => {
   const f = host();
