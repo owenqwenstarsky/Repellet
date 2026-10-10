@@ -146,7 +146,13 @@ export type ThreadItem =
       namespace: string | null;
       output: FunctionCallOutputBody;
     }
-  | { type: 'plan'; id: string; text: string }
+  | {
+      type: 'plan';
+      id: string;
+      text: string;
+      action?: 'create' | 'read' | 'edit' | 'todo_edit';
+      summary?: string;
+    }
   | { type: 'reasoning'; id: string; summary: Array<string>; content: Array<string> }
   | {
       type: 'commandExecution';

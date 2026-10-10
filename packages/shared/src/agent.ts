@@ -136,6 +136,22 @@ export const agentRpcSchema = z
     return { ...value, params: parsed.data as Record<string, any> };
   });
 export type AgentRpc = z.infer<typeof agentRpcSchema>;
+/** Validate the answer against the pending question before resolving it. */
+export function validQuestionAnswers(
+  questions: ToolRequestUserInputParams['questions'],
+  answers: Record<string, { answers: string[] }>,
+): boolean {
+  return (
+    Object.keys(answers).every((id) => questions.some((question) => question.id === id)) &&
+    questions.every((question) => {
+      const values = answers[question.id]?.answers;
+      if (!values?.[0]?.trim()) return false;
+      const option = question.options?.find((option) => option.label === values[0]);
+      if (question.isOther === false && question.options?.length && !option) return false;
+      return !option?.textInput || !!values[1]?.trim();
+    })
+  );
+}
 export type AgentQuestion = {
   displayThreadId?: string;
   id: string | number;

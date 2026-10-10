@@ -194,7 +194,7 @@ export function AgentItem({
   if (item.type === 'plan')
     return (
       <article className="agent-item plan">
-        <PlanContent text={item.text} />
+        {item.text ? <PlanContent text={item.text} /> : <p>{item.summary || 'Plan updated'}</p>}
       </article>
     );
   if (item.type === 'userMessage')

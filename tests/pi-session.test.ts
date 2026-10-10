@@ -422,3 +422,70 @@ it('withholds credential fragments across streamed message and cumulative tool d
       .join(''),
   ).toBe('prefix [redacted] suffix');
 });
+
+it('keeps owner requests pending beyond two minutes and settles once on answer or abort', async () => {
+  const { vi } = await import('vitest');
+  vi.useFakeTimers();
+  try {
+    const pending = new Map();
+    const emit = vi.fn(),
+      notify = vi.fn();
+    const request = h.createRequest(pending, emit, notify);
+    const controller = new AbortController();
+    const response = request('item/tool/requestUserInput', {}, controller.signal);
+    const id = emit.mock.calls[0][0].id;
+    const handler = pending.get(id);
+    vi.advanceTimersByTime(10 * 60000);
+    expect(pending.has(id)).toBe(true);
+    expect(notify).not.toHaveBeenCalled();
+    handler.resolve({ answers: ['Implement the plan'] });
+    await expect(response).resolves.toEqual({ answers: ['Implement the plan'] });
+    controller.abort();
+    handler.resolve({});
+    expect(pending.size).toBe(0);
+    expect(notify).toHaveBeenCalledTimes(1);
+
+    const abort = new AbortController();
+    const cancelled = request('item/tool/requestUserInput', {}, abort.signal);
+    const rejection = expect(cancelled).rejects.toThrow('Request cancelled');
+    abort.abort();
+    await rejection;
+    expect(pending.size).toBe(0);
+    expect(notify).toHaveBeenCalledTimes(2);
+
+    const refresh = request('account/chatgptAuthTokens/refresh', {});
+    const timedOut = expect(refresh).rejects.toThrow('Request cancelled');
+    vi.advanceTimersByTime(120000);
+    await timedOut;
+    expect(pending.size).toBe(0);
+    expect(notify).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('projects only completed successful plan snapshots with compact progress metadata', () => {
+  for (const name of ['plan', 'plan_read', 'plan_edit', 'todo_edit']) {
+    expect(h.toolItem(name, name, { plan: 'Unfinished' }, null, true)).toMatchObject({
+      type: 'dynamicToolCall',
+      status: 'inProgress',
+    });
+    expect(
+      h.toolItem(name, name, {}, { isError: true, content: [{ type: 'text', text: 'Failed' }] }),
+    ).toMatchObject({ type: 'dynamicToolCall', status: 'failed' });
+  }
+  expect(
+    h.toolItem(
+      'todo_edit',
+      'todo',
+      {},
+      {
+        content: [{ type: 'text', text: 'Plan:\nCurrent\n\nTodos:\n[x] #1: Work' }],
+        details: { todos: [{ id: 1, text: 'Work', done: true }] },
+      },
+    ),
+  ).toMatchObject({ type: 'plan', action: 'todo_edit', summary: '1/1 todos complete' });
+  expect(
+    h.toolItem('plan_read', 'read', {}, { content: [{ type: 'text', text: 'Current' }] }),
+  ).toMatchObject({ type: 'plan', action: 'read', summary: 'Read plan' });
+});

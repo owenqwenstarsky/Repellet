@@ -30,35 +30,7 @@ let runtime,
   active = null;
 const sessions = new Map(),
   pending = new Map();
-const request = (method, params, signal) =>
-  new Promise((resolve, reject) => {
-    const id = crypto.randomUUID();
-    const resolved = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', cancel);
-      if (method === 'item/tool/requestUserInput')
-        notify('serverRequest/resolved', { requestId: id });
-    };
-    const cancel = () => {
-      pending.delete(id);
-      resolved();
-      reject(new Error('Request cancelled'));
-    };
-    const timer = setTimeout(cancel, 120000);
-    pending.set(id, {
-      resolve: (value) => {
-        resolved();
-        resolve(value);
-      },
-      reject: (error) => {
-        resolved();
-        reject(error);
-      },
-    });
-    signal?.addEventListener('abort', cancel, { once: true });
-    if (signal?.aborted) return cancel();
-    emit({ id, method, params });
-  });
+const request = h.createRequest(pending, emit, notify);
 function expiry(token) {
   try {
     return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).exp * 1000;
